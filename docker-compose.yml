@@ -1,0 +1,61 @@
+services:
+
+  syncthing:
+    image: syncthing/syncthing:latest
+    container_name: syncthing
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+    ports:
+      - "8384:8384"        # Web-UI (nur für Erstkonfiguration)
+      - "22000:22000"      # Sync TCP
+      - "22000:22000/udp"
+      - "21027:21027/udp"  # Discovery
+    volumes:
+      - ./syncthing/config:/var/syncthing/config
+      - ./syncthing/data:/data
+    networks:
+      - docling-net
+
+  docling-serve:
+    image: quay.io/docling-project/docling-serve:latest
+    container_name: docling-serve
+    restart: unless-stopped
+    environment:
+      - DOCLING_SERVE_NUM_WORKERS=2
+      - DOCLING_SERVE_MAX_SYNC_WAIT=600
+    volumes:
+      - ./docling-cache:/home/docling/.cache
+    networks:
+      - docling-net
+    # Kein Port nach außen — nur Watcher kommuniziert intern
+
+  watcher:
+    build: ./watcher
+    container_name: docling-watcher
+    restart: unless-stopped
+    environment:
+      - WATCH_DIR=/data/input-docs
+      - OUTPUT_DIR=/data/obsidian-vault/Converted
+      - ORIGINALS_DIR=/data/obsidian-vault/Originale
+      - DOCLING_URL=http://docling-serve:5001
+      - WEBUI_URL=http://open-webui:8080
+      - WEBUI_API_KEY=sk-6733607e160c777c1cd1315d4aa86f200ad2d11dfe19a2870ba625fcfa99d0c7
+      - KNOWLEDGE_NAME=Vault
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=qwen2.5:7b
+    volumes:
+      - ./syncthing/data:/data
+    networks:
+      - docling-net
+      - ollama-net
+    depends_on:
+      - docling-serve
+
+networks:
+  docling-net:
+    name: docling-net
+  ollama-net:
+    external: true
+    name: ollama-net

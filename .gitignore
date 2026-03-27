@@ -1,0 +1,21 @@
+# Syncthing-Daten und persönliche Dokumente
+syncthing/data/
+syncthing/config/
+
+# Docling-Cache
+docling-cache/
+
+# enzyme
+.enzyme/
+.enzyme-embeddings/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Secrets (falls .env verwendet wird)
+.env
+
+# macOS
+.DS_Store
