@@ -41,7 +41,7 @@ services:
       - ORIGINALS_DIR=/data/obsidian-vault/Originale
       - DOCLING_URL=http://docling-serve:5001
       - WEBUI_URL=http://open-webui:8080
-      - WEBUI_API_KEY=sk-6733607e160c777c1cd1315d4aa86f200ad2d11dfe19a2870ba625fcfa99d0c7
+      - WEBUI_API_KEY=${WEBUI_API_KEY}
       - KNOWLEDGE_NAME=Vault
       - OLLAMA_URL=http://ollama:11434
       - OLLAMA_MODEL=qwen2.5:7b
