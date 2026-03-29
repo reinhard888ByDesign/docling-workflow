@@ -36,7 +36,7 @@ SUPPORTED      = {".pdf", ".docx", ".doc", ".pptx", ".html"}
 
 SILOS = {
     "finanzen":     {"privacy": "lokal",    "kategorien": ["Rechnung", "Kontoauszug", "Steuer", "Vertrag", "Finanzen", "Sonstiges"]},
-    "krankenkasse": {"privacy": "lokal",    "kategorien": ["Leistungsabrechnung", "Rezept", "Befund", "Arztbrief", "Versicherung", "Sonstiges"]},
+    "krankenkasse": {"privacy": "lokal",    "kategorien": ["Leistungsabrechnung", "Rezept", "Hilfsmittel", "Befund", "Arztbrief", "Versicherung", "Sonstiges"]},
     "anleitungen":  {"privacy": "cloud-ok", "kategorien": ["Bedienungsanleitung", "Handbuch", "Datenblatt", "Sonstiges"]},
     "archiv":       {"privacy": "lokal",    "kategorien": ["Korrespondenz", "Vertrag", "Zeugnis", "Sonstiges"]},
     "projekte":     {"privacy": "lokal",    "kategorien": ["Planung", "Notiz", "Meeting", "Ergebnis", "Sonstiges"]},
@@ -45,7 +45,7 @@ SILOS = {
 
 SILO_KATEGORIEN_PROMPT = {
     "finanzen":     "Rechnung | Kontoauszug | Steuer | Vertrag | Finanzen | Sonstiges",
-    "krankenkasse": "Leistungsabrechnung | Rezept | Befund | Arztbrief | Versicherung | Sonstiges",
+    "krankenkasse": "Leistungsabrechnung | Rezept | Hilfsmittel | Befund | Arztbrief | Versicherung | Sonstiges",
     "anleitungen":  "Bedienungsanleitung | Handbuch | Datenblatt | Sonstiges",
     "archiv":       "Korrespondenz | Vertrag | Zeugnis | Sonstiges",
     "projekte":     "Planung | Notiz | Meeting | Ergebnis | Sonstiges",
@@ -229,6 +229,7 @@ def build_analysis_prompt(silo: str, content: str) -> str:
             "Hinweise zur Kategorisierung:\n"
             "- 'Leistungsabrechnung': Dokument von HUK-COBURG oder Gothaer/Barmenia Versicherung mit Tabelle eingereichter Rechnungen und Erstattungsbeträgen.\n"
             "- 'Rezept': Kleinformatiges Dokument, ausgestellt von einem Arzt, enthält Medikamentennamen und Preis. Apotheke liefert es oft mit Stempel. Erkennungsworte: Rezept, Privatrezept, Arzneimittel, Verschreibung, Apotheke.\n"
+            "- 'Hilfsmittel': Rechnung direkt vom Fachgeschäft (Sanitätshaus, Optiker, Orthopädie-Schuhtechnik) für medizinische Hilfsmittel wie Brille, Einlagen, Bandagen, Kompressionsstrümpfe, Orthesen, Hörgeräte. Absender ist typischerweise ein Fachgeschäft, kein Arzt und keine Versicherung.\n"
             "- 'Befund': Medizinischer Befundbericht, Laborbericht, Diagnose-Dokument ohne Erstattungsrechnung.\n"
             "- 'Arztbrief': Arztbrief oder Korrespondenz zwischen Ärzten, ohne Rechnungscharakter.\n"
             "- 'Versicherung': Versicherungsschein, Vertragsunterlagen, Beitragsbescheinigung.\n"
@@ -421,6 +422,7 @@ def detect_silo(file_path: Path) -> str:
 KRANKENKASSE_SUBFOLDERS = {
     "leistungsabrechnung": "leistungsabrechnung",
     "rezept":              "rezept",
+    "hilfsmittel":         "hilfsmittel",
     "arztrechnung":        "arztrechnung",
     "befund":              "befund",
     "versicherung":        "versicherung",
