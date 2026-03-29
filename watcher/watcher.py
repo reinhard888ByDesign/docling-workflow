@@ -36,7 +36,7 @@ SUPPORTED      = {".pdf", ".docx", ".doc", ".pptx", ".html"}
 
 SILOS = {
     "finanzen":     {"privacy": "lokal",    "kategorien": ["Rechnung", "Kontoauszug", "Steuer", "Vertrag", "Finanzen", "Sonstiges"]},
-    "krankenkasse": {"privacy": "lokal",    "kategorien": ["Leistungsabrechnung", "Befund", "Arztbrief", "Versicherung", "Sonstiges"]},
+    "krankenkasse": {"privacy": "lokal",    "kategorien": ["Leistungsabrechnung", "Rezept", "Befund", "Arztbrief", "Versicherung", "Sonstiges"]},
     "anleitungen":  {"privacy": "cloud-ok", "kategorien": ["Bedienungsanleitung", "Handbuch", "Datenblatt", "Sonstiges"]},
     "archiv":       {"privacy": "lokal",    "kategorien": ["Korrespondenz", "Vertrag", "Zeugnis", "Sonstiges"]},
     "projekte":     {"privacy": "lokal",    "kategorien": ["Planung", "Notiz", "Meeting", "Ergebnis", "Sonstiges"]},
@@ -45,7 +45,7 @@ SILOS = {
 
 SILO_KATEGORIEN_PROMPT = {
     "finanzen":     "Rechnung | Kontoauszug | Steuer | Vertrag | Finanzen | Sonstiges",
-    "krankenkasse": "Leistungsabrechnung | Befund | Arztbrief | Versicherung | Sonstiges",
+    "krankenkasse": "Leistungsabrechnung | Rezept | Befund | Arztbrief | Versicherung | Sonstiges",
     "anleitungen":  "Bedienungsanleitung | Handbuch | Datenblatt | Sonstiges",
     "archiv":       "Korrespondenz | Vertrag | Zeugnis | Sonstiges",
     "projekte":     "Planung | Notiz | Meeting | Ergebnis | Sonstiges",
@@ -219,7 +219,20 @@ def tg_wait_confirmation(filename: str, silo: str, meta: dict) -> tuple[str, str
 def build_analysis_prompt(silo: str, content: str) -> str:
     kategorien = SILO_KATEGORIEN_PROMPT.get(silo, "Sonstiges")
     if silo == "krankenkasse":
-        extra = "- patient: Name des Patienten falls erkennbar\n- krankenversicherung: Name der Krankenkasse\n- betrag_erstattung: Erstattungsbetrag falls vorhanden\n"
+        extra = (
+            "- patient: Name des Patienten falls erkennbar\n"
+            "- krankenversicherung: Name der Krankenkasse falls vorhanden\n"
+            "- betrag_erstattung: Erstattungsbetrag falls vorhanden\n"
+            "- medikamente: Liste der Medikamentennamen falls Rezept (sonst null)\n"
+            "- apotheke: Name der Apotheke falls Rezept (sonst null)\n"
+            "\n"
+            "Hinweise zur Kategorisierung:\n"
+            "- 'Leistungsabrechnung': Dokument von HUK-COBURG oder Gothaer/Barmenia Versicherung mit Tabelle eingereichter Rechnungen und Erstattungsbeträgen.\n"
+            "- 'Rezept': Kleinformatiges Dokument, ausgestellt von einem Arzt, enthält Medikamentennamen und Preis. Apotheke liefert es oft mit Stempel. Erkennungsworte: Rezept, Privatrezept, Arzneimittel, Verschreibung, Apotheke.\n"
+            "- 'Befund': Medizinischer Befundbericht, Laborbericht, Diagnose-Dokument ohne Erstattungsrechnung.\n"
+            "- 'Arztbrief': Arztbrief oder Korrespondenz zwischen Ärzten, ohne Rechnungscharakter.\n"
+            "- 'Versicherung': Versicherungsschein, Vertragsunterlagen, Beitragsbescheinigung.\n"
+        )
     elif silo == "finanzen":
         extra = "- betrag: Geldbetrag falls vorhanden (z.B. '342,50 EUR')\n- faellig: Zahlungstermin als YYYY-MM-DD falls vorhanden, sonst null\n- steuerrelevant: true/false\n"
     elif silo == "anleitungen":
@@ -294,7 +307,7 @@ def build_frontmatter(meta: dict, silo: str, kategorie: str, source_file: str, e
 
     # Silo-spezifische Felder
     for field in ["betrag", "faellig", "steuerrelevant", "patient", "krankenversicherung",
-                  "betrag_erstattung", "hersteller", "modell", "produkttyp"]:
+                  "betrag_erstattung", "medikamente", "apotheke", "hersteller", "modell", "produkttyp"]:
         val = meta.get(field)
         if val is not None and val != "":
             lines.append(f"{field}: {val}")
@@ -404,6 +417,29 @@ def detect_silo(file_path: Path) -> str:
     return "inbox"
 
 
+# Mapping von Kategorie → Unterordner (nur für Silos mit Unterordner-Routing)
+KRANKENKASSE_SUBFOLDERS = {
+    "leistungsabrechnung": "leistungsabrechnung",
+    "rezept":              "rezept",
+    "arztrechnung":        "arztrechnung",
+    "befund":              "befund",
+    "versicherung":        "versicherung",
+    "arztbrief":           "arztbrief",
+}
+
+
+def get_output_dir(silo: str, kategorie: str, datum: str) -> Path:
+    """Gibt den Ausgabeordner zurück, für krankenkasse mit Kategorie/Jahr-Routing."""
+    base = OUTPUT_DIR / silo
+    if silo == "krankenkasse":
+        kat_lower = (kategorie or "").lower()
+        subfolder = KRANKENKASSE_SUBFOLDERS.get(kat_lower)
+        if subfolder:
+            year = datum[:4] if datum and re.match(r"^\d{4}", datum) else datetime.now().strftime("%Y")
+            return base / subfolder / year
+    return base
+
+
 def convert_document(file_path: Path) -> bool:
     log.info(f"Konvertiere: {file_path.name}")
     silo = detect_silo(file_path)
@@ -473,8 +509,10 @@ def convert_document(file_path: Path) -> bool:
         lines.insert(insert_pos, orig_link)
         final_content = "\n".join(lines)
 
-        # ── Ausgabepfad in Silo-Unterordner ──
-        silo_out = OUTPUT_DIR / confirmed_silo
+        # ── Ausgabepfad in Silo-Unterordner (mit Kategorie/Jahr-Routing) ──
+        datum_str = str(meta.get("datum", "")).strip()
+        silo_out = get_output_dir(confirmed_silo, confirmed_kategorie, datum_str)
+        silo_out.mkdir(parents=True, exist_ok=True)
         out_file = silo_out / f"{stem}.md"
         counter = 1
         while out_file.exists():
