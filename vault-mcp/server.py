@@ -207,7 +207,7 @@ async def tool_grep_vault(args: dict) -> list[types.TextContent]:
     else:
         paths = [CONVERTED_VAULT / silo]
 
-    cmd = ["rg", "--no-heading", "-n", "--max-count=3", f"--max-results={limit}"]
+    cmd = ["rg", "--no-heading", "-n", "--max-count=3"]
     if not case_sensitive:
         cmd.append("-i")
     cmd.append(pattern)
@@ -266,9 +266,9 @@ async def tool_search_qdrant(args: dict) -> list[types.TextContent]:
 
     # Query the knowledge collection
     try:
-        payload = json.dumps({"query": query, "k": limit}).encode()
+        payload = json.dumps({"query": query, "k": limit, "collection_names": [kb_id]}).encode()
         req = urllib.request.Request(
-            f"{WEBUI_URL}/api/v1/knowledge/{kb_id}/query",
+            f"{WEBUI_URL}/api/v1/retrieval/query/collection",
             data=payload,
             headers=headers,
             method="POST"
