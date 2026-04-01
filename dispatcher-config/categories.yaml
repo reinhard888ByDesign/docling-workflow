@@ -1,0 +1,19 @@
+categories:
+  krankenversicherung:
+    label: "Krankenversicherung"
+    types:
+      - id: leistungsabrechnung_reinhard
+        label: "Leistungsabrechnung (Reinhard)"
+        hints: ["Gothaer", "Barmenia", "Reinhard Janning", "Reinhard"]
+      - id: leistungsabrechnung_marion
+        label: "Leistungsabrechnung (Marion)"
+        hints: ["HUK", "HUK-COBURG", "Marion"]
+      - id: arztrechnung
+        label: "Arztrechnung"
+        hints: ["Arztrechnung", "Honorarrechnung", "GOÄ", "Liquidation", "Labor", "Pathologie", "Radiologie", "MVZ", "Krankenhaus"]
+      - id: rezept
+        label: "Rezept"
+        hints: ["Rezept", "Privatrezept", "Arzneimittel", "Verschreibung", "Apotheke", "Medikament"]
+      - id: sonstige_medizinische_leistung
+        label: "Sonstige medizinische Leistung"
+        hints: ["Sanitätshaus", "Optiker", "Brille", "Einlagen", "Bandage", "Hörgerät", "Orthopädie"]

@@ -39,6 +39,8 @@ WEBUI_API_KEY = os.environ.get("WEBUI_API_KEY", "")
 
 SILOS = ["finanzen", "krankenkasse", "anleitungen", "archiv", "projekte", "inbox"]
 
+FRONTMATTER_FIELDS = ["datum", "absender", "thema", "betrag", "zusammenfassung", "kategorie"]
+
 # ── MCP Server ─────────────────────────────────────────────────────────────────
 
 server = Server("vault-mcp")
@@ -129,6 +131,34 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="list_documents",
+            description=(
+                "Listet Dokumente in einem Silo auf, optional gefiltert nach Jahr und/oder Kategorie. "
+                "Gibt Metadaten (Datum, Absender, Betrag, Zusammenfassung) zurück — ideal für "
+                "'Welche Dokumente gibt es aus Jahr X?' oder 'Alle Rechnungen von Absender Y?'"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "silo": {
+                        "type": "string",
+                        "enum": SILOS,
+                        "description": "Silo: finanzen | krankenkasse | anleitungen | archiv | projekte | inbox",
+                    },
+                    "year": {
+                        "type": "string",
+                        "description": "Jahresfilter, z.B. '2025'. Optional.",
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Unterordner-Filter z.B. 'versicherung', 'arztrechnung', 'rezept'. Optional.",
+                    },
+                    "limit": {"type": "integer", "default": 50},
+                },
+                "required": ["silo"],
+            },
+        ),
+        types.Tool(
             name="vault_stats",
             description="Zeigt Statistiken pro Silo (Anzahl Dateien, letzte Änderung).",
             inputSchema={
@@ -151,6 +181,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         return await tool_search_qdrant(arguments)
     elif name == "get_document":
         return await tool_get_document(arguments)
+    elif name == "list_documents":
+        return await tool_list_documents(arguments)
     elif name == "vault_stats":
         return await tool_vault_stats(arguments)
     else:
@@ -320,6 +352,85 @@ async def tool_get_document(args: dict) -> list[types.TextContent]:
         return [types.TextContent(type="text", text=content)]
     except Exception as e:
         return [types.TextContent(type="text", text=f"Lesefehler: {e}")]
+
+
+async def tool_list_documents(args: dict) -> list[types.TextContent]:
+    silo = args["silo"]
+    year = args.get("year")
+    category = args.get("category")
+    limit = args.get("limit", 50)
+
+    base = CONVERTED_VAULT / silo
+
+    # Build search path
+    if category and year:
+        search_paths = [base / category / year]
+    elif category:
+        search_paths = [base / category]
+    elif year:
+        # Year can appear at different depths: silo/year/ or silo/category/year/
+        search_paths = list(base.glob(f"*/{year}")) + list(base.glob(year))
+        search_paths = [p for p in search_paths if p.is_dir()]
+        if not search_paths:
+            # Fallback: search all, filter by frontmatter datum
+            search_paths = [base]
+    else:
+        search_paths = [base]
+
+    if not search_paths or not any(p.exists() for p in search_paths):
+        return [types.TextContent(type="text", text=f"Pfad nicht gefunden: silo={silo}, year={year}, category={category}")]
+
+    # Collect markdown files
+    files = []
+    for sp in search_paths:
+        if sp.exists():
+            files.extend(sorted(sp.rglob("*.md")))
+
+    files = files[:limit]
+
+    if not files:
+        return [types.TextContent(type="text", text=f"Keine Dokumente gefunden (silo={silo}, year={year}, category={category})")]
+
+    def parse_frontmatter(path: Path) -> dict:
+        """Extract YAML frontmatter fields quickly without full YAML parse."""
+        meta = {}
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if text.startswith("---"):
+                end = text.find("\n---", 3)
+                if end > 0:
+                    fm = text[3:end]
+                    for line in fm.splitlines():
+                        for field in FRONTMATTER_FIELDS:
+                            if line.startswith(f"{field}:"):
+                                val = line[len(field)+1:].strip().strip('"')
+                                meta[field] = val
+                                break
+        except Exception:
+            pass
+        return meta
+
+    lines = [f"**list_documents** silo={silo}" +
+             (f", year={year}" if year else "") +
+             (f", category={category}" if category else "") +
+             f" — {len(files)} Dokumente\n"]
+
+    for f in files:
+        meta = parse_frontmatter(f)
+        rel = str(f.relative_to(CONVERTED_VAULT))
+        parts = [f"- **{f.name}**"]
+        if meta.get("datum"):
+            parts.append(f"Datum: {meta['datum']}")
+        if meta.get("absender"):
+            parts.append(f"Von: {meta['absender']}")
+        if meta.get("betrag"):
+            parts.append(f"Betrag: {meta['betrag']}")
+        if meta.get("zusammenfassung"):
+            parts.append(f"→ {meta['zusammenfassung'][:120]}")
+        parts.append(f"[{rel}]")
+        lines.append("  ".join(parts))
+
+    return [types.TextContent(type="text", text="\n".join(lines))]
 
 
 async def tool_vault_stats(args: dict) -> list[types.TextContent]:

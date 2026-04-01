@@ -55,6 +55,29 @@ services:
     depends_on:
       - docling-serve
 
+  dispatcher:
+    build: ./dispatcher
+    container_name: document-dispatcher
+    restart: unless-stopped
+    environment:
+      - WATCH_DIR=/data/input-dispatcher
+      - TEMP_DIR=/data/dispatcher-temp
+      - CONFIG_FILE=/config/categories.yaml
+      - DOCLING_URL=http://docling-serve:5001
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=qwen2.5:7b
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+    volumes:
+      - ./syncthing/data/input-dispatcher:/data/input-dispatcher
+      - ./dispatcher-temp:/data/dispatcher-temp
+      - ./dispatcher-config:/config
+    networks:
+      - docling-net
+      - ollama-net
+    depends_on:
+      - docling-serve
+
 networks:
   docling-net:
     name: docling-net
