@@ -81,13 +81,37 @@ def init_db():
                 erstattungsbetrag  REAL,
                 erstattungsprozent REAL
             );
+
+            CREATE TABLE IF NOT EXISTS aussteller (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                name     TEXT NOT NULL UNIQUE,
+                typ      TEXT,
+                strasse  TEXT,
+                plz      TEXT,
+                ort      TEXT,
+                telefon  TEXT,
+                email    TEXT,
+                notizen  TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS aussteller_aliases (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                aussteller_id INTEGER NOT NULL REFERENCES aussteller(id) ON DELETE CASCADE,
+                alias         TEXT NOT NULL UNIQUE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_aliases_alias ON aussteller_aliases(alias);
         """)
-    # Migration: Spalte nachrüsten falls DB bereits existierte
+    # Migrationen: Spalten/Tabellen nachrüsten falls DB bereits existierte
     with get_db() as con:
         cols = {r[1] for r in con.execute("PRAGMA table_info(rechnungen)")}
         if "erstattungsdatum" not in cols:
             con.execute("ALTER TABLE rechnungen ADD COLUMN erstattungsdatum TEXT")
             log.info("Migration: Spalte erstattungsdatum hinzugefügt")
+        cols_dok = {r[1] for r in con.execute("PRAGMA table_info(dokumente)")}
+        if "aussteller_id" not in cols_dok:
+            con.execute("ALTER TABLE dokumente ADD COLUMN aussteller_id INTEGER REFERENCES aussteller(id)")
+            log.info("Migration: Spalte aussteller_id in dokumente hinzugefügt")
     log.info(f"Datenbank initialisiert: {DB_FILE}")
 
 
