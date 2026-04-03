@@ -3,6 +3,7 @@ import re
 import json
 import time
 import queue
+import shutil
 import sqlite3
 import logging
 import requests
@@ -35,8 +36,22 @@ TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT_ID",    "")
 
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
+_vault_orig = os.environ.get("VAULT_ORIGINALE", "")
+_vault_conv = os.environ.get("VAULT_CONVERTED", "")
+VAULT_ORIGINALE = Path(_vault_orig) if _vault_orig else None
+VAULT_CONVERTED = Path(_vault_conv) if _vault_conv else None
+
 # Leistungsabrechnung type_ids
 LEISTUNGSABRECHNUNG_TYPES = {"leistungsabrechnung_reinhard", "leistungsabrechnung_marion"}
+
+TYP_TO_FOLDER = {
+    "leistungsabrechnung_reinhard": "leistungsabrechnung",
+    "leistungsabrechnung_marion":   "leistungsabrechnung",
+    "arztrechnung":                 "arztrechnung",
+    "rezept":                       "rezept",
+    "hilfsmittel":                  "hilfsmittel",
+    "anderes":                      "anderes",
+}
 
 # ── Datenbank ──────────────────────────────────────────────────────────────────
 
@@ -435,11 +450,49 @@ Dokument:
 
 # ── Verarbeitung ───────────────────────────────────────────────────────────────
 
+def move_to_vault(file_path: Path, temp_md: Path, type_id: str, rechnungsdatum: str | None):
+    """Verschiebt PDF nach Vault/Originale und MD nach Vault/Converted/krankenkasse/{typ}/{jahr}/."""
+    if not VAULT_ORIGINALE or not VAULT_CONVERTED:
+        log.warning("VAULT_ORIGINALE/VAULT_CONVERTED nicht konfiguriert — Dateien bleiben in WATCH_DIR")
+        return
+
+    year = rechnungsdatum[-4:] if rechnungsdatum and len(rechnungsdatum) >= 4 else datetime.now().strftime("%Y")
+    typ_folder = TYP_TO_FOLDER.get(type_id, "anderes")
+
+    dest_pdf = VAULT_ORIGINALE / file_path.name
+    dest_md_dir = VAULT_CONVERTED / "krankenkasse" / typ_folder / year
+    dest_md = dest_md_dir / (file_path.stem + ".md")
+
+    # PDF verschieben
+    if dest_pdf.exists():
+        log.warning(f"PDF bereits im Vault: {file_path.name} — wird aus WATCH_DIR entfernt")
+        file_path.unlink()
+    else:
+        shutil.move(str(file_path), str(dest_pdf))
+        log.info(f"PDF → Vault Originale: {dest_pdf.name}")
+
+    # MD verschieben
+    dest_md_dir.mkdir(parents=True, exist_ok=True)
+    if dest_md.exists():
+        log.warning(f"MD bereits im Vault: {dest_md.name} — temp wird gelöscht")
+        temp_md.unlink(missing_ok=True)
+    else:
+        shutil.move(str(temp_md), str(dest_md))
+        log.info(f"MD → Vault Converted: krankenkasse/{typ_folder}/{year}/{dest_md.name}")
+
+
 def process_file(file_path: Path):
     if file_path.suffix.lower() != ".pdf":
         return
 
     log.info(f"Neue Datei: {file_path.name}")
+
+    # Duplikat-Check gegen Vault
+    if VAULT_ORIGINALE and (VAULT_ORIGINALE / file_path.name).exists():
+        log.info(f"Bereits im Vault: {file_path.name} — überspringe")
+        tg_send(f"ℹ️ Bereits im Vault vorhanden — übersprungen\n<code>{file_path.name}</code>")
+        file_path.unlink()
+        return
 
     if not wait_for_file_stable(file_path):
         log.warning(f"Datei nicht stabil: {file_path.name}")
@@ -538,6 +591,9 @@ def process_file(file_path: Path):
     lines.append(f"🎯 Konfidenz:  {konfidenz_icon} {konfidenz}")
     tg_send("\n".join(lines))
     log.info(f"Klassifiziert: {file_path.name} → {type_id}")
+
+    # 6. Dateien in Vault verschieben
+    move_to_vault(file_path, temp_md, type_id, result.get("rechnungsdatum"))
 
 
 # ── Queue-Worker ───────────────────────────────────────────────────────────────
