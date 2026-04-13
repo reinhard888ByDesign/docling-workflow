@@ -620,7 +620,7 @@ Verfügbare Kategorien und Typen:
 {cat_desc}
 {kv_rules}
 Für ALLE Kategorien:
-- Adressat: "Reinhard" wenn Reinhard Janning der Empfänger ist, "Marion" wenn Marion Janning, sonst null.
+- Adressat: IMMER ausfüllen. "Reinhard" wenn Reinhard Janning/R. Janning der Empfänger ist, "Marion" wenn Marion Janning/M. Janning, "Reinhard & Marion" wenn beide adressiert sind. Wenn keine andere Person erkennbar ist, ist der Adressat "Reinhard" (Standardwert). Nur null wenn eindeutig eine dritte Person adressiert wird.
 
 Antworte NUR mit einem JSON-Objekt mit diesen Feldern:
 - "category_id": ID der erkannten Kategorie (z.B. "krankenversicherung", "finanzen", "fahrzeuge"), oder null
@@ -628,7 +628,7 @@ Antworte NUR mit einem JSON-Objekt mit diesen Feldern:
 - "type_id": ID des erkannten Typs (nur bei Kategorien mit definierten Typen), oder null
 - "type_label": Bezeichnung des Typs, oder null
 - "absender": Name des Absenders/Ausstellers (Firma oder Person), oder null
-- "adressat": "Reinhard" | "Marion" | null
+- "adressat": "Reinhard" | "Marion" | "Reinhard & Marion" | null
 - "rechnungsdatum": Datum des Dokuments als String "DD.MM.YYYY", oder null
 - "rechnungsbetrag": Gesamtbetrag als String (z.B. "33,06 EUR"), oder null
 - "erstattungsbetrag": Erstatteter Betrag — NUR bei Leistungsabrechnung, sonst null
@@ -832,7 +832,7 @@ def process_file(file_path: Path):
     is_la              = type_id in LEISTUNGSABRECHNUNG_TYPES
     is_versicherung    = type_id in VERSICHERUNG_TYPES
     absender           = result.get("absender") or "–"
-    adressat           = result.get("adressat") or "–"
+    adressat           = result.get("adressat") or "Reinhard"
     rechnungsdatum     = result.get("rechnungsdatum")
     rechnungsbetrag    = result.get("rechnungsbetrag")
     erstattungsbetrag  = result.get("erstattungsbetrag")
@@ -840,10 +840,13 @@ def process_file(file_path: Path):
     konfidenz          = result.get("konfidenz", "")
     konfidenz_icon     = {"hoch": "🟢", "mittel": "🟡", "niedrig": "🔴"}.get(konfidenz, "⚪")
 
+    # Neuen Dateinamen für Telegram-Nachricht berechnen
+    clean_name = build_clean_filename(result, file_path.stem)
+
     lines = [
         f"✅ <b>Dokument klassifiziert</b>",
         f"",
-        f"📄 Datei:      <code>{file_path.name}</code>",
+        f"📄 Datei:      <code>{clean_name}.pdf</code>",
         f"🏢 Absender:   {absender}",
         f"👤 Adressat:   {adressat}",
     ]
