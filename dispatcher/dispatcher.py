@@ -897,9 +897,6 @@ def process_file(file_path: Path):
     move_to_vault(file_path, temp_md, category_id, type_id, result)
 
 
-    syncthing_revert()
-
-
 # ── Queue-Worker ───────────────────────────────────────────────────────────────
 
 def queue_worker():
