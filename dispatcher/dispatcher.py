@@ -386,6 +386,25 @@ def tg_edit_message(chat_id: str, message_id: int, text: str, reply_markup: dict
         log.warning(f"Telegram Edit Fehler: {e}")
 
 
+def tg_send_document(file_path: Path, caption: str = "", chat_id: str | None = None):
+    """Sendet eine Datei (PDF) als Dokument im Telegram-Chat."""
+    if not TELEGRAM_TOKEN:
+        return
+    target = chat_id or TELEGRAM_CHAT
+    if not target:
+        return
+    try:
+        with open(file_path, "rb") as f:
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
+                data={"chat_id": target, "caption": caption, "parse_mode": "HTML"},
+                files={"document": (file_path.name, f)},
+                timeout=30,
+            )
+    except Exception as e:
+        log.warning(f"Telegram Dokument-Versand Fehler: {e}")
+
+
 def tg_answer_callback(callback_query_id: str, text: str = ""):
     """Bestätigt einen Callback-Query (entfernt Ladeindikator)."""
     try:
@@ -1085,6 +1104,9 @@ def process_file(file_path: Path):
     faelligkeitsdatum  = result.get("faelligkeitsdatum")
     konfidenz          = result.get("konfidenz", "")
     konfidenz_icon     = {"hoch": "🟢", "mittel": "🟡", "niedrig": "🔴"}.get(konfidenz, "⚪")
+
+    # PDF im Chat senden zur Überprüfung
+    tg_send_document(file_path)
 
     # Neuen Dateinamen für Telegram-Nachricht berechnen
     clean_name = build_clean_filename(result, file_path.stem)
