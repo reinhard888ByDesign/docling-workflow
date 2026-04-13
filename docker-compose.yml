@@ -46,6 +46,8 @@ services:
       - VAULT_PDF_ARCHIV=/data/pdf-archiv
       - VAULT_ROOT=/data/reinhards-vault
       - API_PORT=8765
+    ports:
+      - "8765:8765"
     volumes:
       - ./syncthing/data/input-dispatcher:/data/input-dispatcher
       - ./dispatcher-temp:/data/dispatcher-temp

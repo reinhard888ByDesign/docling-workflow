@@ -719,36 +719,134 @@ def tg_poll():
             time.sleep(5)
 
 
-# ── Query-API (für Open WebUI) ─────────────────────────────────────────────────
+# ── REST-API (für Wilson/Open WebUI) ──────────────────────────────────────────
 
-class _QueryHandler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        if self.path != "/api/query":
-            self.send_response(404); self.end_headers(); return
-        length = int(self.headers.get("Content-Length", 0))
-        try:
-            data     = json.loads(self.rfile.read(length))
-            question = data.get("question", "").strip()
-        except Exception:
-            self.send_response(400); self.end_headers(); return
-        if not question:
-            self.send_response(400); self.end_headers(); return
+from urllib.parse import urlparse, parse_qs
 
-        result = query_db_with_nl(question)
-        body   = json.dumps({"result": result}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+class _ApiHandler(BaseHTTPRequestHandler):
+
+    def _json_response(self, data, status=200):
+        body = json.dumps(data, ensure_ascii=False, default=str).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", len(body))
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_body(self) -> dict:
+        length = int(self.headers.get("Content-Length", 0))
+        return json.loads(self.rfile.read(length)) if length else {}
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        params = parse_qs(parsed.query)
+
+        # GET /api/categories — alle Kategorien + Typen
+        if path == "/api/categories":
+            cats = load_categories()
+            result = {}
+            for cat_id, cat in cats.items():
+                result[cat_id] = {
+                    "label": cat.get("label", cat_id),
+                    "vault_folder": cat.get("vault_folder", "00 Inbox"),
+                    "types": [{"id": t["id"], "label": t["label"]} for t in cat.get("types", [])],
+                }
+            self._json_response(result)
+
+        # GET /api/recent?limit=10 — letzte Dokumente
+        elif path == "/api/recent":
+            limit = int(params.get("limit", [10])[0])
+            with get_db() as con:
+                rows = con.execute(
+                    "SELECT id, dateiname, rechnungsdatum, kategorie, typ, absender, adressat, konfidenz, vault_pfad, erstellt_am "
+                    "FROM dokumente ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall()
+            self._json_response([dict(r) for r in rows])
+
+        # GET /api/document/<id> — Dokument-Details + MD-Inhalt
+        elif path.startswith("/api/document/"):
+            try:
+                doc_id = int(path.split("/")[-1])
+            except ValueError:
+                self._json_response({"error": "Ungültige ID"}, 400); return
+            with get_db() as con:
+                row = con.execute(
+                    "SELECT id, dateiname, rechnungsdatum, kategorie, typ, absender, adressat, konfidenz, vault_pfad, erstellt_am "
+                    "FROM dokumente WHERE id = ?", (doc_id,)
+                ).fetchone()
+            if not row:
+                self._json_response({"error": "Dokument nicht gefunden"}, 404); return
+            doc = dict(row)
+            # MD-Inhalt laden
+            vault_pfad = doc.get("vault_pfad")
+            if vault_pfad and VAULT_ROOT:
+                md_path = VAULT_ROOT / vault_pfad
+                if md_path.exists():
+                    doc["md_content"] = md_path.read_text(encoding="utf-8", errors="replace")
+                else:
+                    doc["md_content"] = None
+            self._json_response(doc)
+
+        # GET /api/search?q=vodafone&limit=10 — Dokumente suchen
+        elif path == "/api/search":
+            q = params.get("q", [""])[0]
+            limit = int(params.get("limit", [10])[0])
+            if not q:
+                self._json_response({"error": "Parameter q fehlt"}, 400); return
+            with get_db() as con:
+                rows = con.execute(
+                    "SELECT id, dateiname, rechnungsdatum, kategorie, typ, absender, adressat, vault_pfad "
+                    "FROM dokumente WHERE dateiname LIKE ? OR absender LIKE ? OR kategorie LIKE ? OR typ LIKE ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", limit)
+                ).fetchall()
+            self._json_response([dict(r) for r in rows])
+
+        else:
+            self._json_response({"error": "Unbekannter Endpunkt"}, 404)
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+
+        # POST /api/query — NL-Datenbankabfrage (bestehend)
+        if path == "/api/query":
+            try:
+                data = self._read_body()
+                question = data.get("question", "").strip()
+            except Exception:
+                self._json_response({"error": "Ungültiger Body"}, 400); return
+            if not question:
+                self._json_response({"error": "question fehlt"}, 400); return
+            result = query_db_with_nl(question)
+            self._json_response({"result": result})
+
+        # POST /api/correct — Kategorie/Typ korrigieren
+        elif path == "/api/correct":
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json_response({"error": "Ungültiger Body"}, 400); return
+            doc_id = data.get("doc_id")
+            category = data.get("category")
+            type_id = data.get("type_id", "allgemein")
+            if not doc_id or not category:
+                self._json_response({"error": "doc_id und category sind Pflicht"}, 400); return
+            result = handle_correction(int(doc_id), category, type_id)
+            # Auch Telegram benachrichtigen
+            tg_send(result)
+            self._json_response({"result": result})
+
+        else:
+            self._json_response({"error": "Unbekannter Endpunkt"}, 404)
+
     def log_message(self, fmt, *args):
-        log.info(f"API: {fmt % args}")
+        pass  # Kein Access-Log-Spam
 
 
 def start_api_server():
-    server = HTTPServer(("0.0.0.0", API_PORT), _QueryHandler)
-    log.info(f"Query-API gestartet auf Port {API_PORT}")
+    server = HTTPServer(("0.0.0.0", API_PORT), _ApiHandler)
+    log.info(f"API gestartet auf Port {API_PORT}")
     server.serve_forever()
 
 # ── Docling ────────────────────────────────────────────────────────────────────
@@ -1161,21 +1259,8 @@ def process_file(file_path: Path):
 
     lines.append(f"🎯 Konfidenz:  {konfidenz_icon} {konfidenz}")
 
-    # doc_id für Inline-Buttons holen
     category_id = result.get("category_id", "")
-    doc_id = None
-    try:
-        with get_db() as con:
-            row = con.execute(
-                "SELECT id FROM dokumente WHERE dateiname = ?", (file_path.name,)
-            ).fetchone()
-            if row:
-                doc_id = row["id"]
-    except Exception:
-        pass
-
-    reply_markup = build_confirm_keyboard(doc_id) if doc_id else None
-    tg_send("\n".join(lines), reply_markup=reply_markup)
+    tg_send("\n".join(lines))
     log.info(f"Klassifiziert: {file_path.name} → {category_id}/{type_id}")
 
     # 6. Dateien in Vault verschieben
@@ -1235,7 +1320,8 @@ def main():
     worker.start()
 
     threading.Thread(target=start_api_server, daemon=True).start()
-    threading.Thread(target=tg_poll, daemon=True).start()
+    # Telegram-Polling deaktiviert — Wilson/OpenClaw pollt, Dispatcher nutzt API
+    # threading.Thread(target=tg_poll, daemon=True).start()
 
     for f in WATCH_DIR.glob("*.pdf"):
         file_queue.put(f)
