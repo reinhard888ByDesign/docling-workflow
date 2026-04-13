@@ -347,23 +347,194 @@ file_queue: queue.Queue = queue.Queue()
 
 # ── Telegram ───────────────────────────────────────────────────────────────────
 
-def tg_send(text: str, chat_id: str | None = None):
+def tg_send(text: str, chat_id: str | None = None, reply_markup: dict | None = None) -> int | None:
+    """Sendet Telegram-Nachricht, optional mit Inline-Keyboard. Gibt message_id zurück."""
     if not TELEGRAM_TOKEN:
         log.warning("Telegram nicht konfiguriert.")
-        return
+        return None
     target = chat_id or TELEGRAM_CHAT
     if not target:
-        return
+        return None
+    payload = {"chat_id": target, "text": text, "parse_mode": "HTML"}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     try:
         r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": target, "text": text, "parse_mode": "HTML"},
-            timeout=10
+            json=payload, timeout=10
         )
         if not r.ok:
             log.warning(f"Telegram Fehler: {r.text[:200]}")
+            return None
+        return r.json().get("result", {}).get("message_id")
     except Exception as e:
         log.warning(f"Telegram Fehler: {e}")
+        return None
+
+
+def tg_edit_message(chat_id: str, message_id: int, text: str, reply_markup: dict | None = None):
+    """Bearbeitet eine bestehende Telegram-Nachricht."""
+    payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText",
+            json=payload, timeout=10
+        )
+    except Exception as e:
+        log.warning(f"Telegram Edit Fehler: {e}")
+
+
+def tg_answer_callback(callback_query_id: str, text: str = ""):
+    """Bestätigt einen Callback-Query (entfernt Ladeindikator)."""
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
+            json={"callback_query_id": callback_query_id, "text": text},
+            timeout=10
+        )
+    except Exception:
+        pass
+
+
+# ── Telegram Inline-Keyboards & Korrektur ─────────────────────────────────────
+
+def build_confirm_keyboard(doc_id: int) -> dict:
+    """Baut Inline-Keyboard mit OK/Korrigieren-Buttons."""
+    return {"inline_keyboard": [[
+        {"text": "✅ Passt", "callback_data": f"ok:{doc_id}"},
+        {"text": "✏️ Korrigieren", "callback_data": f"cat:{doc_id}"},
+    ]]}
+
+
+def build_category_keyboard(doc_id: int) -> dict:
+    """Baut Inline-Keyboard mit allen Kategorien (2 Spalten)."""
+    cats = load_categories()
+    buttons = []
+    row = []
+    for cat_id, cat in cats.items():
+        row.append({"text": cat["label"], "callback_data": f"sc:{doc_id}:{cat_id}"})
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([{"text": "❌ Abbrechen", "callback_data": f"cancel:{doc_id}"}])
+    return {"inline_keyboard": buttons}
+
+
+def build_type_keyboard(doc_id: int, cat_id: str) -> dict:
+    """Baut Inline-Keyboard mit Typen einer Kategorie."""
+    cats = load_categories()
+    cat = cats.get(cat_id, {})
+    types = cat.get("types", [])
+    buttons = []
+    if types:
+        row = []
+        for t in types:
+            # Callback-Daten: max 64 Bytes — kürze type_id falls nötig
+            cb = f"st:{doc_id}:{cat_id}:{t['id']}"
+            if len(cb.encode()) <= 64:
+                row.append({"text": t["label"], "callback_data": cb})
+            else:
+                # Fallback: kürze type_id auf 20 Zeichen
+                row.append({"text": t["label"], "callback_data": f"st:{doc_id}:{cat_id}:{t['id'][:20]}"})
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+    else:
+        # Kategorie ohne Typen → direkt als "allgemein" setzen
+        buttons.append([{"text": "✅ Allgemein", "callback_data": f"st:{doc_id}:{cat_id}:allgemein"}])
+    buttons.append([{"text": "⬅️ Zurück", "callback_data": f"cat:{doc_id}"}])
+    return {"inline_keyboard": buttons}
+
+
+def handle_correction(doc_id: int, new_cat: str, new_type: str) -> str:
+    """Korrigiert Kategorie/Typ: DB updaten + MD im Vault verschieben."""
+    cats = load_categories()
+    cat_def = cats.get(new_cat, {})
+    cat_label = cat_def.get("label", new_cat)
+    type_label = new_type
+    for t in cat_def.get("types", []):
+        if t["id"] == new_type:
+            type_label = t["label"]
+            break
+
+    with get_db() as con:
+        row = con.execute(
+            "SELECT dateiname, kategorie, typ, vault_pfad FROM dokumente WHERE id = ?", (doc_id,)
+        ).fetchone()
+        if not row:
+            return f"❌ Dokument {doc_id} nicht gefunden"
+
+        old_cat = row["kategorie"]
+        old_type = row["typ"]
+        old_vault_pfad = row["vault_pfad"]
+        dateiname = row["dateiname"]
+
+        # Neuen Vault-Pfad berechnen
+        new_vault_folder = CATEGORY_TO_VAULT_FOLDER.get(new_cat, "00 Inbox")
+        if new_type in TYP_TO_FOLDER:
+            new_typ_folder = TYP_TO_FOLDER[new_type]
+        else:
+            new_typ_folder = new_type or "allgemein"
+
+        # Jahr aus altem Pfad extrahieren oder aus Dateiname
+        year_match = re.search(r"/(\d{4})/", old_vault_pfad or "")
+        if year_match:
+            year = year_match.group(1)
+        else:
+            m = re.match(r"(\d{4})", dateiname)
+            year = m.group(1) if m else datetime.now().strftime("%Y")
+
+        # MD-Dateiname aus vault_pfad extrahieren
+        md_filename = Path(old_vault_pfad).name if old_vault_pfad else f"{dateiname}.md"
+        new_vault_pfad = f"{new_vault_folder}/Converted/{new_typ_folder}/{year}/{md_filename}"
+
+        # DB updaten
+        con.execute(
+            "UPDATE dokumente SET kategorie=?, typ=?, vault_kategorie=?, vault_typ=?, vault_pfad=? WHERE id=?",
+            (new_cat, new_type, new_cat, new_type, new_vault_pfad, doc_id)
+        )
+
+    # MD-Datei im Vault verschieben
+    if old_vault_pfad and VAULT_ROOT:
+        old_md = VAULT_ROOT / old_vault_pfad
+        new_md = VAULT_ROOT / new_vault_pfad
+        if old_md.exists() and old_md != new_md:
+            new_md.parent.mkdir(parents=True, exist_ok=True)
+            # Frontmatter aktualisieren
+            try:
+                content = old_md.read_text(encoding="utf-8")
+                if content.startswith("---\n"):
+                    # Frontmatter ersetzen
+                    end = content.index("---", 4)
+                    frontmatter = content[4:end]
+                    rest = content[end + 3:]
+                    frontmatter = re.sub(r"(?m)^kategorie:.*$", f"kategorie: {cat_label}", frontmatter)
+                    frontmatter = re.sub(r"(?m)^kategorie_id:.*$", f"kategorie_id: {new_cat}", frontmatter)
+                    frontmatter = re.sub(r"(?m)^typ:.*$", f"typ: {type_label}", frontmatter)
+                    frontmatter = re.sub(r"(?m)^typ_id:.*$", f"typ_id: {new_type}", frontmatter)
+                    content = f"---\n{frontmatter}---{rest}"
+                new_md.write_text(content, encoding="utf-8")
+                old_md.unlink()
+                # Leeren Quellordner aufräumen
+                try:
+                    old_md.parent.rmdir()
+                except OSError:
+                    pass
+                log.info(f"Korrektur: MD verschoben {old_vault_pfad} → {new_vault_pfad}")
+            except Exception as e:
+                log.warning(f"Fehler beim Verschieben der MD: {e}")
+                # DB ist bereits aktualisiert, MD manuell verschieben
+                return f"⚠️ DB aktualisiert, aber MD-Verschiebung fehlgeschlagen: {e}"
+
+    old_label = f"{old_cat}/{old_type}"
+    new_label = f"{new_cat}/{new_type}"
+    return f"✅ Korrigiert: {old_label} → <b>{new_label}</b>\n📄 {dateiname}"
 
 
 # ── NL-Datenbankabfrage ────────────────────────────────────────────────────────
@@ -425,7 +596,7 @@ Regeln:
 # ── Telegram-Polling ───────────────────────────────────────────────────────────
 
 def tg_poll():
-    """Empfängt Telegram-Updates und beantwortet /frage-Befehle."""
+    """Empfängt Telegram-Updates: /frage-Befehle + Callback Queries für Korrekturen."""
     if not TELEGRAM_TOKEN:
         return
     offset = 0
@@ -442,11 +613,75 @@ def tg_poll():
                 continue
             for update in r.json().get("result", []):
                 offset = update["update_id"] + 1
+
+                # ── Callback Queries (Inline-Buttons) ──
+                cb = update.get("callback_query")
+                if cb:
+                    cb_id = cb["id"]
+                    cb_data = cb.get("data", "")
+                    cb_msg = cb.get("message", {})
+                    cb_chat = str(cb_msg.get("chat", {}).get("id", ""))
+                    cb_msg_id = cb_msg.get("message_id")
+
+                    if cb_chat != TELEGRAM_CHAT:
+                        tg_answer_callback(cb_id, "⛔ Nicht autorisiert")
+                        continue
+
+                    try:
+                        if cb_data.startswith("ok:"):
+                            # Bestätigung — Buttons entfernen
+                            tg_answer_callback(cb_id, "✅")
+                            tg_edit_message(cb_chat, cb_msg_id,
+                                            cb_msg.get("text", "") + "\n\n✅ Bestätigt",
+                                            reply_markup={"inline_keyboard": []})
+
+                        elif cb_data.startswith("cat:"):
+                            # Kategorie-Auswahl anzeigen
+                            doc_id = int(cb_data.split(":")[1])
+                            tg_answer_callback(cb_id)
+                            tg_edit_message(cb_chat, cb_msg_id,
+                                            f"🗂 Kategorie wählen für Dokument #{doc_id}:",
+                                            reply_markup=build_category_keyboard(doc_id))
+
+                        elif cb_data.startswith("sc:"):
+                            # Kategorie gewählt → Typen anzeigen
+                            parts = cb_data.split(":")
+                            doc_id = int(parts[1])
+                            cat_id = parts[2]
+                            cats = load_categories()
+                            cat_label = cats.get(cat_id, {}).get("label", cat_id)
+                            tg_answer_callback(cb_id)
+                            tg_edit_message(cb_chat, cb_msg_id,
+                                            f"📁 Typ wählen für <b>{cat_label}</b>:",
+                                            reply_markup=build_type_keyboard(doc_id, cat_id))
+
+                        elif cb_data.startswith("st:"):
+                            # Typ gewählt → Korrektur durchführen
+                            parts = cb_data.split(":")
+                            doc_id = int(parts[1])
+                            cat_id = parts[2]
+                            type_id = parts[3]
+                            tg_answer_callback(cb_id, "⏳ Korrigiere...")
+                            result_text = handle_correction(doc_id, cat_id, type_id)
+                            tg_edit_message(cb_chat, cb_msg_id, result_text,
+                                            reply_markup={"inline_keyboard": []})
+
+                        elif cb_data.startswith("cancel:"):
+                            tg_answer_callback(cb_id, "Abgebrochen")
+                            tg_edit_message(cb_chat, cb_msg_id,
+                                            cb_msg.get("text", "") + "\n\n❌ Abgebrochen",
+                                            reply_markup={"inline_keyboard": []})
+
+                    except Exception as e:
+                        log.warning(f"Callback-Fehler: {e}")
+                        tg_answer_callback(cb_id, f"❌ Fehler: {str(e)[:100]}")
+                    continue
+
+                # ── Normale Nachrichten ──
                 msg     = update.get("message", {})
                 text    = msg.get("text", "")
                 chat_id = str(msg.get("chat", {}).get("id", ""))
 
-                # Nur aus dem konfigurierten Chat akzeptieren
                 if chat_id != TELEGRAM_CHAT:
                     continue
 
@@ -770,7 +1005,18 @@ def move_to_vault(file_path: Path, temp_md: Path, category_id: str, type_id: str
     # MD verschieben
     dest_md_dir.mkdir(parents=True, exist_ok=True)
     shutil.move(str(temp_md), str(dest_md))
-    log.info(f"MD → Vault: {vault_folder}/Converted/{typ_folder}/{year}/{dest_md.name}")
+    vault_pfad = f"{vault_folder}/Converted/{typ_folder}/{year}/{dest_md.name}"
+    log.info(f"MD → Vault: {vault_pfad}")
+
+    # vault_pfad in DB speichern
+    try:
+        with get_db() as con:
+            con.execute(
+                "UPDATE dokumente SET vault_kategorie=?, vault_typ=?, vault_pfad=? WHERE dateiname=?",
+                (category_id, type_id, vault_pfad, file_path.name)
+            )
+    except Exception as e:
+        log.warning(f"vault_pfad DB-Update fehlgeschlagen: {e}")
 
 
 
@@ -892,8 +1138,22 @@ def process_file(file_path: Path):
             lines.append(f"💰 Betrag:     –")
 
     lines.append(f"🎯 Konfidenz:  {konfidenz_icon} {konfidenz}")
-    tg_send("\n".join(lines))
+
+    # doc_id für Inline-Buttons holen
     category_id = result.get("category_id", "")
+    doc_id = None
+    try:
+        with get_db() as con:
+            row = con.execute(
+                "SELECT id FROM dokumente WHERE dateiname = ?", (file_path.name,)
+            ).fetchone()
+            if row:
+                doc_id = row["id"]
+    except Exception:
+        pass
+
+    reply_markup = build_confirm_keyboard(doc_id) if doc_id else None
+    tg_send("\n".join(lines), reply_markup=reply_markup)
     log.info(f"Klassifiziert: {file_path.name} → {category_id}/{type_id}")
 
     # 6. Dateien in Vault verschieben
@@ -953,8 +1213,7 @@ def main():
     worker.start()
 
     threading.Thread(target=start_api_server, daemon=True).start()
-    # Telegram-Polling deaktiviert — kollidiert mit OpenClaw (getUpdates conflict)
-    # threading.Thread(target=tg_poll, daemon=True).start()
+    threading.Thread(target=tg_poll, daemon=True).start()
 
     for f in WATCH_DIR.glob("*.pdf"):
         file_queue.put(f)
