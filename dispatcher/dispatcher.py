@@ -9,6 +9,7 @@ import logging
 import requests
 import threading
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import yaml
@@ -33,25 +34,80 @@ OLLAMA_URL     = os.environ.get("OLLAMA_URL",           "http://ollama:11434")
 OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL",         "qwen2.5:7b")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT_ID",    "")
+API_PORT       = int(os.environ.get("API_PORT", "8765"))
 
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-_vault_orig = os.environ.get("VAULT_ORIGINALE", "")
-_vault_conv = os.environ.get("VAULT_CONVERTED", "")
-VAULT_ORIGINALE = Path(_vault_orig) if _vault_orig else None
-VAULT_CONVERTED = Path(_vault_conv) if _vault_conv else None
+_vault_pdf = os.environ.get("VAULT_PDF_ARCHIV", "")
+_vault_root = os.environ.get("VAULT_ROOT", "")
+VAULT_PDF_ARCHIV = Path(_vault_pdf) if _vault_pdf else None
+VAULT_ROOT = Path(_vault_root) if _vault_root else None
 
 # Leistungsabrechnung type_ids
 LEISTUNGSABRECHNUNG_TYPES = {"leistungsabrechnung_reinhard", "leistungsabrechnung_marion"}
 
-TYP_TO_FOLDER = {
-    "leistungsabrechnung_reinhard": "leistungsabrechnung",
-    "leistungsabrechnung_marion":   "leistungsabrechnung",
-    "arztrechnung":                 "arztrechnung",
-    "rezept":                       "rezept",
-    "hilfsmittel":                  "hilfsmittel",
-    "anderes":                      "anderes",
+# Versicherungsdokument type_ids (keine Rechnung in DB anlegen)
+VERSICHERUNG_TYPES = {
+    "versicherungsschein",
+    "beitragsanpassung",
+    "beitragsbescheinigung",
+    "kostenuebernahme",
+    "versicherungsbedingungen",
+    "versicherungskorrespondenz",
 }
+
+TYP_TO_FOLDER = {
+    "leistungsabrechnung_reinhard":  "leistungsabrechnung",
+    "leistungsabrechnung_marion":    "leistungsabrechnung",
+    "arztrechnung":                  "arztrechnung",
+    "rezept":                        "rezept",
+    "hilfsmittel":                   "hilfsmittel",
+    "anderes":                       "anderes",
+    "versicherungsschein":           "versicherung",
+    "beitragsanpassung":             "versicherung",
+    "beitragsbescheinigung":         "versicherung",
+    "kostenuebernahme":              "versicherung",
+    "versicherungsbedingungen":      "versicherung",
+    "versicherungskorrespondenz":    "versicherung",
+}
+
+# Wird beim Start aus categories.yaml geladen (vault_folder-Feld)
+CATEGORY_TO_VAULT_FOLDER: dict[str, str] = {}
+
+# ── DB-Schema für NL-Abfragen ──────────────────────────────────────────────────
+
+DB_SCHEMA = """
+SQLite-Datenbank für Dokumente der Familie Janning.
+
+Tabelle: dokumente
+  id, dateiname, rechnungsdatum TEXT (Format DD.MM.YYYY),
+  kategorie TEXT (z.B. 'krankenversicherung', 'versicherung', 'finanzen', 'fahrzeuge',
+    'persoenlich', 'familie', 'fengshui', 'immobilien_eigen', 'immobilien_vermietet',
+    'garten', 'italien', 'business', 'digitales', 'wissen', 'reisen',
+    'bedienungsanleitung', 'archiv'),
+  typ TEXT (bei KV z.B. 'leistungsabrechnung_reinhard', 'arztrechnung', 'rezept';
+    bei Versicherung z.B. 'versicherungsschein', 'beitragsanpassung';
+    bei anderen Kategorien noch nicht definiert),
+  absender TEXT, adressat ('Reinhard' | 'Marion'), konfidenz ('hoch'|'mittel'|'niedrig')
+
+Tabelle: rechnungen
+  id, dokument_id (FK dokumente.id), rechnungsbetrag REAL, faelligkeitsdatum TEXT,
+  status ('offen' | 'erstattet' | 'teilweise_erstattet'), erstattungsdatum TEXT
+
+Tabelle: erstattungspositionen
+  id, dokument_id (FK dokumente.id), rechnung_id (FK rechnungen.id),
+  leistungserbringer TEXT, zeitraum TEXT,
+  rechnungsbetrag REAL, erstattungsbetrag REAL, erstattungsprozent REAL
+
+Tabelle: aussteller
+  id, name, typ, strasse, plz, ort, telefon, email, notizen
+
+Wichtige Kontextinfos:
+- Reinhard → Gothaer Krankenversicherung (leistungsabrechnung_reinhard)
+- Marion   → HUK-COBURG Krankenversicherung (leistungsabrechnung_marion)
+- Jahresfilter: rechnungsdatum LIKE '%2024'
+- SUM/AVG auf rechnungsbetrag immer mit ROUND(...,2)
+"""
 
 # ── Datenbank ──────────────────────────────────────────────────────────────────
 
@@ -147,7 +203,10 @@ def save_to_db(file_path: Path, result: dict) -> list[dict]:
     Gibt Liste von Match-Infos zurück: [{leistungserbringer, betrag, prozent, matched}]
     """
     type_id = result.get("type_id", "")
+    category_id = result.get("category_id", "")
     is_la = type_id in LEISTUNGSABRECHNUNG_TYPES
+    is_versicherung = type_id in VERSICHERUNG_TYPES
+    is_kv = category_id in ("krankenversicherung", "versicherung")
 
     with get_db() as con:
         # Duplikat-Schutz: bereits verarbeitete Dateinamen überspringen
@@ -166,7 +225,7 @@ def save_to_db(file_path: Path, result: dict) -> list[dict]:
             (
                 file_path.name,
                 result.get("rechnungsdatum"),
-                result.get("category_id"),
+                category_id,
                 type_id,
                 result.get("absender"),
                 result.get("adressat"),
@@ -175,10 +234,15 @@ def save_to_db(file_path: Path, result: dict) -> list[dict]:
         )
         dok_id = cur.lastrowid
 
-        # 2. Rechnung oder Erstattungspositionen
+        # 2. Rechnung oder Erstattungspositionen (nur für KV-Kategorien)
         match_infos = []
 
-        if not is_la:
+        if not is_kv:
+            # Nicht-KV-Dokument: nur Dokument speichern, keine Rechnungs-Logik
+            log.info(f"Dokument in DB: {file_path.name} → {category_id}")
+            return match_infos
+
+        if not is_la and not is_versicherung:
             # Arztrechnung / Rezept / sonstige → Rechnung anlegen
             con.execute(
                 """INSERT INTO rechnungen (dokument_id, rechnungsbetrag, faelligkeitsdatum)
@@ -258,13 +322,20 @@ def load_categories() -> dict:
         log.warning(f"Config nicht gefunden: {CONFIG_FILE}")
         return {}
     with open(CONFIG_FILE, encoding="utf-8") as f:
-        return yaml.safe_load(f).get("categories", {})
+        cats = yaml.safe_load(f).get("categories", {})
+    # vault_folder-Mapping aufbauen
+    for cat_id, cat in cats.items():
+        if "vault_folder" in cat:
+            CATEGORY_TO_VAULT_FOLDER[cat_id] = cat["vault_folder"]
+    return cats
 
 
 def build_category_description(categories: dict) -> str:
     lines = []
     for cat_id, cat in categories.items():
-        lines.append(f"\nKategorie: {cat['label']} (id: {cat_id})")
+        desc = cat.get("description", "")
+        desc_str = f" — {desc}" if desc else ""
+        lines.append(f"\nKategorie: {cat['label']} (id: {cat_id}){desc_str}")
         for t in cat.get("types", []):
             hints = ", ".join(t.get("hints", []))
             lines.append(f"  - Typ: {t['label']} (id: {t['id']}) | Erkennungshinweise: {hints}")
@@ -276,20 +347,155 @@ file_queue: queue.Queue = queue.Queue()
 
 # ── Telegram ───────────────────────────────────────────────────────────────────
 
-def tg_send(text: str):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
+def tg_send(text: str, chat_id: str | None = None):
+    if not TELEGRAM_TOKEN:
         log.warning("Telegram nicht konfiguriert.")
+        return
+    target = chat_id or TELEGRAM_CHAT
+    if not target:
         return
     try:
         r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT, "text": text, "parse_mode": "HTML"},
+            json={"chat_id": target, "text": text, "parse_mode": "HTML"},
             timeout=10
         )
         if not r.ok:
             log.warning(f"Telegram Fehler: {r.text[:200]}")
     except Exception as e:
         log.warning(f"Telegram Fehler: {e}")
+
+
+# ── NL-Datenbankabfrage ────────────────────────────────────────────────────────
+
+def query_db_with_nl(question: str) -> str:
+    """Natürlichsprachliche Frage → Ollama generiert SQL → Ergebnis als Text."""
+    prompt = f"""Du bist ein SQL-Experte. Schreibe eine SQLite-SELECT-Abfrage für folgende Frage.
+
+Datenbankschema:
+{DB_SCHEMA}
+
+Frage: {question}
+
+Regeln:
+- Antworte NUR mit der SQL-Abfrage, kein erklärender Text
+- Kein Markdown, keine Backticks, kein ```sql
+- Nur SELECT (kein INSERT/UPDATE/DELETE)
+- Maximal 50 Zeilen (LIMIT 50)
+- Beträge mit ROUND(...,2)
+- Bei Datumsfiltern: SUBSTR(rechnungsdatum, 7, 4) = '2024' für Jahrfilter"""
+
+    try:
+        r = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
+            timeout=60,
+        )
+        sql = r.json().get("response", "").strip()
+        sql = re.sub(r'```sql\s*', '', sql, flags=re.IGNORECASE)
+        sql = re.sub(r'```\s*', '', sql).strip()
+    except Exception as e:
+        return f"❌ SQL-Generierung fehlgeschlagen: {e}"
+
+    if not re.match(r'\s*SELECT', sql, re.IGNORECASE):
+        return f"❌ Ungültige SQL-Abfrage:\n{sql[:200]}"
+
+    try:
+        with get_db() as con:
+            cur = con.execute(sql)
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+    except Exception as e:
+        return f"❌ SQL-Fehler: {e}\n\nSQL: {sql}"
+
+    if not rows:
+        return "Keine Ergebnisse gefunden."
+
+    # Tabellarisch formatieren
+    col_str = " | ".join(cols)
+    sep = "─" * min(len(col_str), 60)
+    lines = [col_str, sep]
+    for row in rows:
+        lines.append(" | ".join("–" if v is None else str(v) for v in row))
+
+    header = f"📊 {len(rows)} Ergebnis{'se' if len(rows) != 1 else ''}"
+    return f"{header}\n\n<pre>{chr(10).join(lines)}</pre>"
+
+
+# ── Telegram-Polling ───────────────────────────────────────────────────────────
+
+def tg_poll():
+    """Empfängt Telegram-Updates und beantwortet /frage-Befehle."""
+    if not TELEGRAM_TOKEN:
+        return
+    offset = 0
+    log.info("Telegram-Polling gestartet.")
+    while True:
+        try:
+            r = requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+                params={"offset": offset, "timeout": 30},
+                timeout=35,
+            )
+            if not r.ok:
+                time.sleep(5)
+                continue
+            for update in r.json().get("result", []):
+                offset = update["update_id"] + 1
+                msg     = update.get("message", {})
+                text    = msg.get("text", "")
+                chat_id = str(msg.get("chat", {}).get("id", ""))
+
+                # Nur aus dem konfigurierten Chat akzeptieren
+                if chat_id != TELEGRAM_CHAT:
+                    continue
+
+                if text.lower().startswith("/frage "):
+                    question = text[7:].strip()
+                    if not question:
+                        continue
+                    tg_send(f"🔍 <i>{question}</i>", chat_id=chat_id)
+                    result = query_db_with_nl(question)
+                    tg_send(result[:4096], chat_id=chat_id)
+
+        except requests.exceptions.Timeout:
+            pass
+        except Exception as e:
+            log.warning(f"Telegram-Poll Fehler: {e}")
+            time.sleep(5)
+
+
+# ── Query-API (für Open WebUI) ─────────────────────────────────────────────────
+
+class _QueryHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path != "/api/query":
+            self.send_response(404); self.end_headers(); return
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            data     = json.loads(self.rfile.read(length))
+            question = data.get("question", "").strip()
+        except Exception:
+            self.send_response(400); self.end_headers(); return
+        if not question:
+            self.send_response(400); self.end_headers(); return
+
+        result = query_db_with_nl(question)
+        body   = json.dumps({"result": result}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        log.info(f"API: {fmt % args}")
+
+
+def start_api_server():
+    server = HTTPServer(("0.0.0.0", API_PORT), _QueryHandler)
+    log.info(f"Query-API gestartet auf Port {API_PORT}")
+    server.serve_forever()
 
 # ── Docling ────────────────────────────────────────────────────────────────────
 
@@ -374,41 +580,60 @@ def sanitize_for_ollama(text: str) -> str:
 def classify_with_ollama(md_content: str, categories: dict) -> dict | None:
     cat_desc = build_category_description(categories)
     md_content = sanitize_for_ollama(md_content)
+
+    # Kategorien mit Typ-Details (krankenversicherung, versicherung) bekommen erweiterte Regeln
+    kv_rules = """
+SPEZIALREGELN für Krankenversicherung und Versicherung — lies diese sorgfältig:
+
+A) Absender ist eine Versicherung (Gothaer, Barmenia, HUK, HUK-COBURG):
+   → Enthält das Dokument eine ERSTATTUNGSÜBERSICHT (Liste eingereichter Fremdrechnungen mit Erstattungsbeträgen)?
+     → JA: category_id="krankenversicherung", type_id="leistungsabrechnung_reinhard" (Gothaer/Barmenia) oder "leistungsabrechnung_marion" (HUK/HUK-COBURG)
+     → NEIN: Es ist ein Versicherungsverwaltungsdokument → category_id="versicherung":
+       - Versicherungsschein, Nachtrag, Tarifwechsel → type_id="versicherungsschein"
+       - Beitragsanpassung, Beitragsrechnung → type_id="beitragsanpassung"
+       - Beitragsbescheinigung, Arbeitgeberbescheinigung → type_id="beitragsbescheinigung"
+       - Kostenübernahme, Kostenzusage → type_id="kostenuebernahme"
+       - AVB, AGB, Versicherungsbedingungen → type_id="versicherungsbedingungen"
+       - Angebot, Antrag, Widerspruch, Schreiben → type_id="versicherungskorrespondenz"
+
+B) Absender ist ein Arzt, Krankenhaus, Labor, MVZ, Abrechnungsdienstleister (z.B. unimed, PVS):
+   → category_id="krankenversicherung", type_id="arztrechnung"
+
+C) Sanitätshaus, Optiker, Apotheke, Physiotherapie:
+   → category_id="krankenversicherung", type_id="sonstige_medizinische_leistung"
+
+D) Arzt mit Medikamentenliste:
+   → category_id="krankenversicherung", type_id="rezept"
+
+WICHTIG: Entscheidend ist NICHT die bloße Erwähnung von "Versicherung" im Text, sondern Absender + Dokumenttyp.
+
+Für Krankenversicherung/Versicherung zusätzlich ausfüllen:
+- "rechnungsbetrag": Gesamtbetrag als String (z.B. "33,06 EUR") — bei Leistungsabrechnung: Gesamtrechnungsbetrag, bei Arztrechnung: Endbetrag; sonst null
+- "erstattungsbetrag": Erstatteter Betrag als String — NUR bei Leistungsabrechnung, sonst null
+- "faelligkeitsdatum": Fälligkeitsdatum als String — NUR bei Arztrechnung/Rezept/sonstige, sonst null
+- "positionen": Liste der Erstattungspositionen — NUR bei leistungsabrechnung-Typen, sonst []. Jede Position: {{"leistungserbringer": "Name", "zeitraum": "02.02-19.04.2023", "rechnungsbetrag": 33.06, "erstattungsbetrag": 10.72}}
+"""
+
     prompt = f"""Analysiere das folgende Dokument und klassifiziere es anhand der vorgegebenen Kategorien.
 
 Verfügbare Kategorien und Typen:
 {cat_desc}
-
-KLASSIFIZIERUNGSREGELN — lies diese sorgfältig:
-
-Schritt 1: Wer ist der ABSENDER des Dokuments?
-- Ist der Absender eine Versicherung (Gothaer, Barmenia, HUK, HUK-COBURG)?
-  → Dann und NUR dann: "leistungsabrechnung_reinhard" oder "leistungsabrechnung_marion"
-  → Erkennbar an: Versicherungslogo, Erstattungsübersicht, Auflistung eingereichter Fremdrechnungen, Erstattungsbetrag
-- Ist der Absender ein Arzt, Krankenhaus, Klinik, Labor, Radiologie, MVZ, oder ein Abrechnungsdienstleister der IM AUFTRAG eines Arztes/einer Klinik abrechnet (z.B. unimed GmbH, Doctolib, Mediport)?
-  → Immer: "arztrechnung"
-  → Erkennbar an: GOÄ-Ziffern, Honorar, Liquidation, Diagnose, Fälligkeitsbetrag direkt an den Patienten
-- Ist der Absender ein Sanitätshaus, Optiker, Apotheke (ohne Rezept), Physiotherapie?
-  → "sonstige_medizinische_leistung"
-- Ist es ein Dokument vom Arzt mit Medikamentenliste?
-  → "rezept"
-
-WICHTIG: Die bloße Erwähnung von "Versicherung" im Fließtext (z.B. "reichen Sie bei Ihrer Versicherung ein") macht ein Dokument NICHT zu einer Leistungsabrechnung. Entscheidend ist ausschließlich wer der Absender/Aussteller ist.
-
-Adressat: "Reinhard" wenn Reinhard Janning der Empfänger ist, "Marion" wenn Marion Janning, sonst null.
+{kv_rules}
+Für ALLE Kategorien:
+- Adressat: "Reinhard" wenn Reinhard Janning der Empfänger ist, "Marion" wenn Marion Janning, sonst null.
 
 Antworte NUR mit einem JSON-Objekt mit diesen Feldern:
-- "category_id": ID der erkannten Kategorie (z.B. "krankenversicherung"), oder null wenn keine passt
+- "category_id": ID der erkannten Kategorie (z.B. "krankenversicherung", "finanzen", "fahrzeuge"), oder null
 - "category_label": Bezeichnung der Kategorie, oder null
-- "type_id": ID des erkannten Typs (z.B. "arztrechnung"), oder null
+- "type_id": ID des erkannten Typs (nur bei Kategorien mit definierten Typen), oder null
 - "type_label": Bezeichnung des Typs, oder null
 - "absender": Name des Absenders/Ausstellers (Firma oder Person), oder null
 - "adressat": "Reinhard" | "Marion" | null
-- "rechnungsdatum": Datum des Dokuments als String im Format "DD.MM.YYYY" — bei Arztrechnung das Rechnungsdatum, bei Leistungsabrechnung das Abrechnungsdatum. Suche nach Feldern wie "Datum:", "Re.-Datum:", "Rechnungsdatum:", "Druckdatum:" oder ähnlichem. Muss ausgefüllt sein wenn ein Datum im Dokument erkennbar ist.
-- "rechnungsbetrag": Gesamtbetrag aller eingereichten Rechnungsbelege als String (z.B. "33,06 EUR") — bei Leistungsabrechnung: Gesamtrechnungsbetrag, bei Arztrechnung: Rechnungsendbetrag; sonst null
-- "erstattungsbetrag": Von der Versicherung erstatteter/überwiesener Betrag als String (z.B. "10,72 EUR") — NUR bei Leistungsabrechnung, sonst null
-- "faelligkeitsdatum": Datum bis zu dem die Rechnung bezahlt werden muss als String (z.B. "30.04.2023") — NUR bei Arztrechnung/Rezept/sonstige, null wenn kein konkretes Datum angegeben
-- "positionen": Liste der Erstattungspositionen — NUR bei leistungsabrechnung-Typen, sonst []. Jede Position als Objekt: {{"leistungserbringer": "Name", "zeitraum": "02.02-19.04.2023", "rechnungsbetrag": 33.06, "erstattungsbetrag": 10.72}}
+- "rechnungsdatum": Datum des Dokuments als String "DD.MM.YYYY", oder null
+- "rechnungsbetrag": Gesamtbetrag als String (z.B. "33,06 EUR"), oder null
+- "erstattungsbetrag": Erstatteter Betrag — NUR bei Leistungsabrechnung, sonst null
+- "faelligkeitsdatum": Fälligkeitsdatum — NUR bei Arztrechnung/Rezept, sonst null
+- "positionen": Erstattungspositionen — NUR bei Leistungsabrechnung, sonst []
 - "konfidenz": "hoch" | "mittel" | "niedrig"
 
 Antworte AUSSCHLIESSLICH mit validem JSON, kein Text davor oder danach.
@@ -450,35 +675,103 @@ Dokument:
 
 # ── Verarbeitung ───────────────────────────────────────────────────────────────
 
-def move_to_vault(file_path: Path, temp_md: Path, type_id: str, rechnungsdatum: str | None):
-    """Verschiebt PDF nach Vault/Originale und MD nach Vault/Converted/krankenkasse/{typ}/{jahr}/."""
-    if not VAULT_ORIGINALE or not VAULT_CONVERTED:
-        log.warning("VAULT_ORIGINALE/VAULT_CONVERTED nicht konfiguriert — Dateien bleiben in WATCH_DIR")
+def _sanitize_name_part(s: str) -> str:
+    """Sanitize a string for use in filenames: collapse whitespace, keep alphanumeric + umlauts."""
+    s = re.sub(r"[^\w\s\-äöüÄÖÜß]", "", s)
+    s = re.sub(r"\s+", "_", s.strip())
+    return s
+
+
+def build_clean_filename(result: dict, original_stem: str) -> str:
+    """Build clean filename: YYYYMMDD_Absender_Dokumenttyp.
+
+    Falls Datum oder Absender fehlt, wird der Original-Dateiname als Fallback verwendet.
+    """
+    datum = result.get("rechnungsdatum")  # "DD.MM.YYYY"
+    absender = result.get("absender")
+    type_label = result.get("type_label") or result.get("type_id") or ""
+
+    # Datum → YYYYMMDD
+    if datum and re.match(r"\d{2}\.\d{2}\.\d{4}", datum):
+        parts = datum.split(".")
+        date_str = f"{parts[2]}{parts[1]}{parts[0]}"
+    else:
+        # Fallback: try to extract from original filename
+        m = re.match(r"(\d{8})", original_stem)
+        date_str = m.group(1) if m else datetime.now().strftime("%Y%m%d")
+
+    # Absender kürzen
+    if absender:
+        absender_clean = _sanitize_name_part(absender)
+        # Auf max 30 Zeichen kürzen, am Wortende abschneiden
+        if len(absender_clean) > 30:
+            absender_clean = absender_clean[:30].rsplit("_", 1)[0]
+    else:
+        absender_clean = ""
+
+    # Typ
+    type_clean = _sanitize_name_part(type_label) if type_label else ""
+
+    # Zusammenbauen
+    parts = [date_str]
+    if absender_clean:
+        parts.append(absender_clean)
+    if type_clean:
+        parts.append(type_clean)
+
+    if len(parts) == 1:
+        # Kein Absender, kein Typ → Original-Stem verwenden
+        return _sanitize_name_part(original_stem)
+
+    return "_".join(parts)
+
+
+def move_to_vault(file_path: Path, temp_md: Path, category_id: str, type_id: str, result: dict):
+    """Verschiebt PDF nach pdf-archiv/ und MD nach reinhards-vault/{kategorie}/Converted/{typ}/{jahr}/."""
+    if not VAULT_PDF_ARCHIV or not VAULT_ROOT:
+        log.warning("VAULT_PDF_ARCHIV/VAULT_ROOT nicht konfiguriert — Dateien bleiben in WATCH_DIR")
         return
 
+    rechnungsdatum = result.get("rechnungsdatum") if result else None
     year = rechnungsdatum[-4:] if rechnungsdatum and len(rechnungsdatum) >= 4 else datetime.now().strftime("%Y")
-    typ_folder = TYP_TO_FOLDER.get(type_id, "anderes")
 
-    dest_pdf = VAULT_ORIGINALE / file_path.name
-    dest_md_dir = VAULT_CONVERTED / "krankenkasse" / typ_folder / year
-    dest_md = dest_md_dir / (file_path.stem + ".md")
+    # Vault-Ordner aus categories.yaml, Fallback auf Inbox
+    vault_folder = CATEGORY_TO_VAULT_FOLDER.get(category_id, "00 Inbox")
+
+    # Typ-Unterordner: bei KV/Versicherung aus TYP_TO_FOLDER, sonst type_id direkt
+    if type_id and type_id in TYP_TO_FOLDER:
+        typ_folder = TYP_TO_FOLDER[type_id]
+    elif type_id:
+        typ_folder = type_id
+    else:
+        typ_folder = "allgemein"
+
+    # Sauberen Dateinamen generieren
+    if result:
+        clean_name = build_clean_filename(result, file_path.stem)
+    else:
+        clean_name = _sanitize_name_part(file_path.stem)
+
+    dest_pdf = VAULT_PDF_ARCHIV / f"{clean_name}.pdf"
+    dest_md_dir = VAULT_ROOT / vault_folder / "Converted" / typ_folder / year
+    dest_md = dest_md_dir / f"{clean_name}.md"
+
+    # Kollisionsvermeidung
+    counter = 2
+    while dest_pdf.exists() or dest_md.exists():
+        dest_pdf = VAULT_PDF_ARCHIV / f"{clean_name}_{counter}.pdf"
+        dest_md = dest_md_dir / f"{clean_name}_{counter}.md"
+        counter += 1
 
     # PDF verschieben
-    if dest_pdf.exists():
-        log.warning(f"PDF bereits im Vault: {file_path.name} — wird aus WATCH_DIR entfernt")
-        file_path.unlink()
-    else:
-        shutil.move(str(file_path), str(dest_pdf))
-        log.info(f"PDF → Vault Originale: {dest_pdf.name}")
+    shutil.move(str(file_path), str(dest_pdf))
+    log.info(f"PDF → pdf-archiv: {dest_pdf.name}")
 
     # MD verschieben
     dest_md_dir.mkdir(parents=True, exist_ok=True)
-    if dest_md.exists():
-        log.warning(f"MD bereits im Vault: {dest_md.name} — temp wird gelöscht")
-        temp_md.unlink(missing_ok=True)
-    else:
-        shutil.move(str(temp_md), str(dest_md))
-        log.info(f"MD → Vault Converted: krankenkasse/{typ_folder}/{year}/{dest_md.name}")
+    shutil.move(str(temp_md), str(dest_md))
+    log.info(f"MD → Vault: {vault_folder}/Converted/{typ_folder}/{year}/{dest_md.name}")
+
 
 
 def process_file(file_path: Path):
@@ -487,11 +780,12 @@ def process_file(file_path: Path):
 
     log.info(f"Neue Datei: {file_path.name}")
 
-    # Duplikat-Check gegen Vault
-    if VAULT_ORIGINALE and (VAULT_ORIGINALE / file_path.name).exists():
-        log.info(f"Bereits im Vault: {file_path.name} — überspringe")
-        tg_send(f"ℹ️ Bereits im Vault vorhanden — übersprungen\n<code>{file_path.name}</code>")
+    # Duplikat-Check gegen pdf-archiv
+    if VAULT_PDF_ARCHIV and (VAULT_PDF_ARCHIV / file_path.name).exists():
+        log.info(f"Bereits in pdf-archiv: {file_path.name} — überspringe")
+        tg_send(f"ℹ️ Bereits in pdf-archiv vorhanden — übersprungen\n<code>{file_path.name}</code>")
         file_path.unlink()
+
         return
 
     if not wait_for_file_stable(file_path):
@@ -522,10 +816,12 @@ def process_file(file_path: Path):
 
     if not result or not result.get("category_id"):
         tg_send(
-            f"⚠️ <b>Klassifizierung nicht möglich</b>\n"
+            f"⚠️ <b>Klassifizierung nicht möglich — Datei in Inbox</b>\n"
             f"Datei: <code>{file_path.name}</code>"
         )
-        log.info(f"Klassifizierung fehlgeschlagen für: {file_path.name}")
+        log.info(f"Klassifizierung fehlgeschlagen für: {file_path.name} — verschiebe in Inbox")
+        move_to_vault(file_path, temp_md, "", "", {})
+
         return
 
     # 4. Datenbank
@@ -534,6 +830,7 @@ def process_file(file_path: Path):
     # 5. Telegram-Nachricht
     type_id            = result.get("type_id", "")
     is_la              = type_id in LEISTUNGSABRECHNUNG_TYPES
+    is_versicherung    = type_id in VERSICHERUNG_TYPES
     absender           = result.get("absender") or "–"
     adressat           = result.get("adressat") or "–"
     rechnungsdatum     = result.get("rechnungsdatum")
@@ -580,6 +877,9 @@ def process_file(file_path: Path):
                 pct_str    = f" ({m['prozent']}%)" if m["prozent"] else ""
                 suffix     = "" if m["matched"] else " (nicht in DB)"
                 lines.append(f"   {icon} {m['leistungserbringer']} → {betrag_str}{pct_str}{suffix}")
+    elif is_versicherung:
+        # Versicherungsdokument — keine Rechnungsinfos
+        pass
     else:
         if rechnungsbetrag:
             lines.append(f"💰 Betrag:     {rechnungsbetrag}")
@@ -590,10 +890,14 @@ def process_file(file_path: Path):
 
     lines.append(f"🎯 Konfidenz:  {konfidenz_icon} {konfidenz}")
     tg_send("\n".join(lines))
-    log.info(f"Klassifiziert: {file_path.name} → {type_id}")
+    category_id = result.get("category_id", "")
+    log.info(f"Klassifiziert: {file_path.name} → {category_id}/{type_id}")
 
     # 6. Dateien in Vault verschieben
-    move_to_vault(file_path, temp_md, type_id, result.get("rechnungsdatum"))
+    move_to_vault(file_path, temp_md, category_id, type_id, result)
+
+
+    syncthing_revert()
 
 
 # ── Queue-Worker ───────────────────────────────────────────────────────────────
@@ -647,6 +951,10 @@ def main():
 
     worker = threading.Thread(target=queue_worker, daemon=True)
     worker.start()
+
+    threading.Thread(target=start_api_server, daemon=True).start()
+    # Telegram-Polling deaktiviert — kollidiert mit OpenClaw (getUpdates conflict)
+    # threading.Thread(target=tg_poll, daemon=True).start()
 
     for f in WATCH_DIR.glob("*.pdf"):
         file_queue.put(f)

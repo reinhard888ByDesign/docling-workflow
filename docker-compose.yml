@@ -29,31 +29,6 @@ services:
       - ./docling-cache:/home/docling/.cache
     networks:
       - docling-net
-    # Kein Port nach außen — nur Watcher kommuniziert intern
-
-  watcher:
-    build: ./watcher
-    container_name: docling-watcher
-    restart: unless-stopped
-    environment:
-      - WATCH_DIR=/data/input-docs
-      - OUTPUT_DIR=/data/obsidian-vault/Converted
-      - ORIGINALS_DIR=/data/obsidian-vault/Originale
-      - DOCLING_URL=http://docling-serve:5001
-      - WEBUI_URL=http://open-webui:8080
-      - WEBUI_API_KEY=${WEBUI_API_KEY}
-      - KNOWLEDGE_NAME=Vault
-      - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=qwen2.5:7b
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
-    volumes:
-      - ./syncthing/data:/data
-    networks:
-      - docling-net
-      - ollama-net
-    depends_on:
-      - docling-serve
 
   dispatcher:
     build: ./dispatcher
@@ -68,14 +43,15 @@ services:
       - OLLAMA_MODEL=qwen2.5:7b
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
-      - VAULT_ORIGINALE=/data/vault/Originale
-      - VAULT_CONVERTED=/data/vault/Converted
+      - VAULT_PDF_ARCHIV=/data/pdf-archiv
+      - VAULT_ROOT=/data/reinhards-vault
+      - API_PORT=8765
     volumes:
       - ./syncthing/data/input-dispatcher:/data/input-dispatcher
       - ./dispatcher-temp:/data/dispatcher-temp
       - ./dispatcher-config:/config
-      - ./syncthing/data/obsidian-vault/Originale:/data/vault/Originale
-      - ./syncthing/data/obsidian-vault/Converted:/data/vault/Converted
+      - /home/reinhard/pdf-archiv:/data/pdf-archiv
+      - ./syncthing/data/reinhards-vault:/data/reinhards-vault
     networks:
       - docling-net
       - ollama-net

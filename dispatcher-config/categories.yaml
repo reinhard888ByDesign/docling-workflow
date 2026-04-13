@@ -1,6 +1,7 @@
 categories:
   krankenversicherung:
     label: "Krankenversicherung"
+    vault_folder: "49 Krankenversicherung"
     types:
       - id: leistungsabrechnung_reinhard
         label: "Leistungsabrechnung (Reinhard)"
@@ -17,3 +18,253 @@ categories:
       - id: sonstige_medizinische_leistung
         label: "Sonstige medizinische Leistung"
         hints: ["Sanitätshaus", "Optiker", "Brille", "Einlagen", "Bandage", "Hörgerät", "Orthopädie"]
+
+  versicherung:
+    label: "Versicherungsdokument"
+    vault_folder: "49 Krankenversicherung"
+    types:
+      - id: versicherungsschein
+        label: "Versicherungsschein / Tarifänderung"
+        hints: ["Versicherungsschein", "Nachtrag zum Versicherungsschein", "Tarifwechsel", "Tarifumstellung", "Vertragsänderung"]
+      - id: beitragsanpassung
+        label: "Beitragsanpassung / Beitragsrechnung"
+        hints: ["Beitragsanpassung", "Beitragsrechnung", "Beitragsmitteilung", "Beitragsrückerstattung"]
+      - id: beitragsbescheinigung
+        label: "Beitragsbescheinigung / Arbeitgeberbescheinigung"
+        hints: ["Beitragsbescheinigung", "Arbeitgeberbescheinigung", "Arbeitgeberzuschuss", "Steuernachweis"]
+      - id: kostenuebernahme
+        label: "Kostenübernahme / Kostenzusage"
+        hints: ["Kostenübernahme", "Kostenzusage", "Kostenplan", "Kostenvoranschlag", "Genehmigung"]
+      - id: versicherungsbedingungen
+        label: "Versicherungsbedingungen / AGB"
+        hints: ["Versicherungsbedingungen", "AVB", "AGB", "Allgemeine Bedingungen"]
+      - id: versicherungskorrespondenz
+        label: "Korrespondenz / Antrag / Widerspruch"
+        hints: ["Angebot", "Antrag", "Stellungnahme", "Widerspruch", "Information", "Schreiben"]
+
+  persoenlich:
+    label: "Persönliches"
+    vault_folder: "10 Persönlich"
+    description: "Ausweise, Urkunden, Vollmachten, persönliche Korrespondenz"
+    types:
+      - id: ausweis
+        label: "Ausweis / Führerschein / ID"
+        hints: ["Personalausweis", "Führerschein", "Carta d'Identità", "Clubkarte", "ADAC", "Reisepass"]
+      - id: urkunde
+        label: "Urkunde"
+        hints: ["Geburtsurkunde", "Sterbeurkunde", "Graburkunde", "Heiratsurkunde"]
+      - id: vollmacht
+        label: "Vollmacht / Testament / Erbvertrag"
+        hints: ["Vorsorgevollmacht", "Betreuungsverfügung", "Testament", "Erbvertrag", "Patientenverfügung"]
+      - id: sonstiges
+        label: "Sonstiges"
+        hints: []
+
+  familie:
+    label: "Familie"
+    vault_folder: "20 Familie"
+    description: "Familiendokumente — Berta Hutterer, Max/Markus Hutterer, Josef Janning"
+    types:
+      - id: berta_hutterer
+        label: "Berta Hutterer"
+        hints: ["Berta Hutterer", "Berta"]
+      - id: max_hutterer
+        label: "Max (Markus) Hutterer"
+        hints: ["Max Hutterer", "Markus Hutterer", "Max", "Markus"]
+      - id: josef_janning
+        label: "Josef Janning"
+        hints: ["Josef Janning", "Josef"]
+      - id: sonstiges
+        label: "Sonstiges"
+        hints: []
+
+  fengshui:
+    label: "FengShui"
+    vault_folder: "30 FengShui"
+    description: "Beratung, Einrichtung nach FengShui, Audits"
+
+  finanzen:
+    label: "Finanzen"
+    vault_folder: "40 Finanzen"
+    description: "Versicherungen (nicht Kranken/KFZ/Gebäude), Banken, Steuern, Rechnungen allgemein"
+    types:
+      - id: altersvorsorge
+        label: "Altersvorsorge / Lebensversicherung"
+        hints: ["Lebensversicherung", "Rentenversicherung", "Riester", "Rente", "Pension", "AXA", "Nürnberger Rente"]
+      - id: sachversicherung
+        label: "Sachversicherung"
+        hints: ["Haftpflicht", "Tierversicherung", "D&O", "Rechtsschutz", "Unfallversicherung"]
+      - id: kontoauszug
+        label: "Kontoauszug / Kontoabschluss"
+        hints: ["Kontoauszug", "Kontoabschluss", "Kontostand", "Volksbank", "ING", "Sparkasse", "HypoVereinsbank"]
+      - id: rechnung_energie
+        label: "Rechnung Energie"
+        hints: ["Strom", "Gas", "Heizung", "Wasser", "Vattenfall", "E.ON", "Stadtwerke"]
+      - id: rechnung_telko
+        label: "Rechnung Telekommunikation"
+        hints: ["Telekom", "Vodafone", "T-Mobile", "Mobilfunk", "Telefon", "Internet", "1&1"]
+      - id: steuer
+        label: "Steuerbescheid / Finanzamt"
+        hints: ["Steuerbescheid", "Finanzamt", "Einkommensteuer", "Grundsteuer", "Elster", "Steuererklärung"]
+      - id: rechnung_sonstige
+        label: "Rechnung sonstige"
+        hints: ["Rechnung", "Mahnung", "Zahlungserinnerung", "Lastschrift"]
+      - id: korrespondenz
+        label: "Korrespondenz / Vertrag"
+        hints: ["Vertrag", "Kündigung", "Bescheinigung", "SEPA", "Kontoeröffnung"]
+
+  immobilien_eigen:
+    label: "Immobilien eigen"
+    vault_folder: "50 Immobilien eigen"
+    description: "Eigene Immobilien: Grassauer Straße 64 Übersee (bis 2022), Podere dei venti Seggiano (ab 2022)"
+    types:
+      - id: gebaeudeversicherung
+        label: "Gebäudeversicherung"
+        hints: ["Wohngebäudeversicherung", "Glasversicherung", "Hausratversicherung", "Photovoltaikversicherung", "Gebäudeversicherung"]
+      - id: rechnung
+        label: "Rechnung / Handwerker"
+        hints: ["Rechnung", "Handwerker", "Reparatur", "Nebenkosten", "Heizung"]
+      - id: vertrag
+        label: "Vertrag / Grundbuch / Kataster"
+        hints: ["Kaufvertrag", "Grundbuch", "Kataster", "Visura", "Genehmigung", "Baugenehmigung"]
+      - id: korrespondenz
+        label: "Korrespondenz / Behörden"
+        hints: ["Comune", "Amt", "Behörde", "Schriftverkehr", "Deichverband"]
+
+  immobilien_vermietet:
+    label: "Immobilien vermietet"
+    vault_folder: "51 Immobilien vermietet"
+    description: "Vermietete Immobilien: Lipowskystraße München, Kornstraße Bremen, Kolberger Straße Karlsruhe, Schießhausstraße Neuburg, Bahnhofstraße Schechen, Via dell'ospedale Seggiano"
+    types:
+      - id: gebaeudeversicherung
+        label: "Gebäudeversicherung"
+        hints: ["Wohngebäudeversicherung", "Glasversicherung", "Hausratversicherung"]
+      - id: mietvertrag
+        label: "Mietvertrag"
+        hints: ["Mietvertrag", "Kündigung Mieter", "Mieterhöhung"]
+      - id: nebenkostenabrechnung
+        label: "Nebenkostenabrechnung"
+        hints: ["Nebenkostenabrechnung", "Hausverwaltung", "Betriebskosten"]
+      - id: rechnung
+        label: "Rechnung / Handwerker"
+        hints: ["Rechnung", "Handwerker", "Reparatur", "Makler"]
+      - id: korrespondenz
+        label: "Korrespondenz"
+        hints: ["Schriftverkehr", "Mieter", "Hausverwaltung"]
+
+  garten:
+    label: "Garten"
+    vault_folder: "55 Garten"
+    description: "Gartenbau, Landschaftspflege, Pflanzen, Bewässerung, Hochwasserschutz"
+
+  fahrzeuge:
+    label: "Fahrzeuge"
+    vault_folder: "60 Fahrzeuge"
+    description: "Auto, KFZ, Werkstatt, TÜV, Reparatur"
+    types:
+      - id: kfz_versicherung
+        label: "KFZ-Versicherung"
+        hints: ["KFZ-Versicherung", "Autoversicherung", "HUK24", "Nürnberger KFZ"]
+      - id: werkstatt
+        label: "Werkstatt / Reparatur"
+        hints: ["Werkstatt", "Reparatur", "Räderwechsel", "TÜV", "Wartung", "Inspektion"]
+      - id: kauf_verkauf
+        label: "Kauf / Verkauf / Fahrzeugbrief"
+        hints: ["Kaufvertrag", "Fahrzeugbrief", "Zulassung"]
+      - id: rechnung_sonstige
+        label: "Rechnung sonstige"
+        hints: ["Tankbeleg", "Mietwagen", "Rechnung"]
+
+  italien:
+    label: "Italien"
+    vault_folder: "70 Italien"
+    description: "Italienische Dokumente die nicht Immobilien betreffen: Behörden, Comune, allgemeine Dokumente"
+    types:
+      - id: behoerde
+        label: "Behörde / Comune"
+        hints: ["Comune", "Amt", "Genehmigung", "Protocolo", "Anagrafe"]
+      - id: fahrzeug
+        label: "Fahrzeug Italien"
+        hints: ["Trattore", "Traktor", "Fahrzeugbrief", "Registration"]
+      - id: sonstiges
+        label: "Sonstiges"
+        hints: []
+
+  business:
+    label: "Business"
+    vault_folder: "80 Business"
+    description: "Geschäftliches, Firma, Arbeit, Arbeitgeber, Gehalt"
+    types:
+      - id: gehalt_arbeitgeber
+        label: "Gehalt / Arbeitgeber"
+        hints: ["Gehaltsabrechnung", "Arbeitsvertrag", "Arbeitgeber", "Lohnabrechnung", "Zeugnis"]
+      - id: selbstaendig
+        label: "Selbständig / Beratung"
+        hints: ["Beratung", "Coaching", "Training", "Workshop", "Projekt", "ec4u", "Salesforce", "newlogix"]
+      - id: buchprojekt
+        label: "Buchprojekt / Verlag"
+        hints: ["Books on Demand", "BOD", "Verlag", "Buchprojekt", "Kleinauflage"]
+      - id: rechnung
+        label: "Geschäftliche Rechnung"
+        hints: ["Rechnung", "Einkauf"]
+      - id: korrespondenz
+        label: "Geschäftliche Korrespondenz"
+        hints: ["Vertrag", "Kündigung", "Angebot"]
+
+  digitales:
+    label: "Digitales"
+    vault_folder: "82 Digitales"
+    description: "Home Assistant, IT-Projekte, Netzwerk, Software, Computer, Drucker, Smart Home"
+    types:
+      - id: homeassistant
+        label: "Home Assistant / Smart Home"
+        hints: ["Home Assistant", "Smart Home", "Loxone", "Eve", "HomePod"]
+      - id: hardware
+        label: "Hardware / Netzwerk"
+        hints: ["Computer", "Drucker", "Router", "Switch", "NAS", "Server"]
+      - id: sonstiges
+        label: "Sonstiges"
+        hints: []
+
+  wissen:
+    label: "Wissen"
+    vault_folder: "85 Wissen"
+    description: "Bildung, Kurse, Bücher, Fortbildung"
+    types:
+      - id: buch_notizen
+        label: "Buchnotizen / Kindle"
+        hints: ["Kindle", "Notebook", "Buchnotizen"]
+      - id: kurs
+        label: "Kurs / Fortbildung / Zertifikat"
+        hints: ["Kurs", "Fortbildung", "Zertifikat", "Teilnahmebestätigung", "Seminar"]
+      - id: sonstiges
+        label: "Sonstiges"
+        hints: []
+
+  reisen:
+    label: "Reisen"
+    vault_folder: "90 Reisen"
+    description: "Flüge, Hotels, Buchungen, Urlaub"
+    types:
+      - id: flug
+        label: "Flug / Airline"
+        hints: ["Flug", "Bordkarte", "Lufthansa", "Airline", "Boarding"]
+      - id: hotel
+        label: "Hotel / Unterkunft"
+        hints: ["Hotel", "Reservierung", "Buchungsbestätigung", "Airbnb"]
+      - id: reiseversicherung
+        label: "Reiseversicherung"
+        hints: ["Reiseversicherung", "ERGO Reise", "Reiserücktritt", "Storno"]
+      - id: rechnung_sonstige
+        label: "Rechnung sonstige"
+        hints: ["Mietwagen", "Parkgebühr", "Visum"]
+
+  bedienungsanleitung:
+    label: "Bedienungsanleitungen"
+    vault_folder: "95 Bedienungsanleitungen"
+    description: "Geräte-Handbücher, Produktanleitungen"
+
+  archiv:
+    label: "Archiv"
+    vault_folder: "99 Archiv"
+    description: "Nicht zuordenbar, veraltet, unklar"
