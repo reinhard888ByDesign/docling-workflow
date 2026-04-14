@@ -16,6 +16,9 @@ import yaml
 from json_repair import repair_json
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from langdetect import detect_langs, DetectorFactory, LangDetectException
+
+DetectorFactory.seed = 0
 
 logging.basicConfig(
     level=logging.INFO,
@@ -918,6 +921,64 @@ def sanitize_for_ollama(text: str) -> str:
     return cleaned
 
 
+def detect_document_language(md_content: str) -> tuple[str, float]:
+    """Erkennt die dominante Sprache des Dokuments. Gibt (lang_code, prob) zurück.
+    Bei zu kurzem Text oder Fehler: ('de', 0.0) — wir nehmen Deutsch an, kein Translate-Pass."""
+    text = sanitize_for_ollama(md_content)[:3000].strip()
+    if len(text) < 200:
+        return ("de", 0.0)
+    try:
+        candidates = detect_langs(text)
+        if not candidates:
+            return ("de", 0.0)
+        top = candidates[0]
+        return (top.lang, top.prob)
+    except LangDetectException:
+        return ("de", 0.0)
+
+
+def translate_to_german(md_content: str, source_lang: str) -> str | None:
+    """Übersetzt md_content nach Deutsch via Ollama. Behält Zahlen/Datümer/Eigennamen literal.
+    Gibt None bei Fehler — Aufrufer arbeitet dann mit Original weiter."""
+    text = sanitize_for_ollama(md_content)[:6000]
+    prompt = f"""Du bist ein Fachübersetzer. Übersetze den folgenden Text wörtlich nach Deutsch.
+
+REGELN:
+- Eigennamen, Firmennamen, Adressen, IBANs, E-Mails, URLs: NICHT übersetzen, exakt übernehmen.
+- Zahlen, Datümer, Beträge, Währungen: exakt übernehmen (keine Umrechnung, keine Formatänderung).
+- Tabellen-Struktur und Zeilenumbrüche beibehalten.
+- KEINE Erklärung, KEINE Kommentare, KEIN "Hier ist die Übersetzung". Nur der übersetzte Text.
+
+Quellsprache: {source_lang}
+Zieltext (Deutsch):
+
+---
+{text}
+---"""
+    try:
+        r = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.1, "num_ctx": 8192},
+            },
+            timeout=300,
+        )
+        if r.status_code != 200:
+            log.error(f"Translate Ollama Fehler {r.status_code}: {r.text[:200]}")
+            return None
+        translated = r.json().get("response", "").strip()
+        if not translated or len(translated) < 50:
+            log.warning(f"Translate-Output zu kurz ({len(translated)} chars) — verwerfe")
+            return None
+        return translated
+    except Exception as e:
+        log.error(f"Translate-Fehler: {e}")
+        return None
+
+
 def classify_with_ollama(md_content: str, categories: dict) -> dict | None:
     cat_desc = build_category_description(categories)
     md_content = sanitize_for_ollama(md_content)
@@ -1170,13 +1231,25 @@ def process_file(file_path: Path):
     temp_md.write_text(md_content, encoding="utf-8")
     log.info(f"Markdown gespeichert: {temp_md.name}")
 
-    # 3. Klassifizierung via Ollama
+    # 3. Sprach-Erkennung + ggf. Übersetzungs-Pass (Klassifikation arbeitet auf Deutsch)
+    classify_input = md_content
+    lang, lang_prob = detect_document_language(md_content)
+    if lang != "de" and lang_prob >= 0.85:
+        log.info(f"Nicht-deutsches Dokument erkannt: {lang} (p={lang_prob:.2f}) — übersetze nach DE")
+        translated = translate_to_german(md_content, lang)
+        if translated:
+            classify_input = translated
+            log.info(f"Übersetzung ok ({len(translated)} chars)")
+        else:
+            log.warning("Übersetzung fehlgeschlagen — klassifiziere auf Originaltext")
+
+    # 4. Klassifizierung via Ollama
     categories = load_categories()
     if not categories:
         tg_send(f"❌ Keine Kategorien konfiguriert\n<code>{file_path.name}</code>")
         return
 
-    result = classify_with_ollama(md_content, categories)
+    result = classify_with_ollama(classify_input, categories)
 
     if not result or not result.get("category_id"):
         tg_send(
@@ -1188,10 +1261,10 @@ def process_file(file_path: Path):
 
         return
 
-    # 4. Datenbank
+    # 5. Datenbank
     match_infos = save_to_db(file_path, result)
 
-    # 5. Telegram-Nachricht
+    # 6. Telegram-Nachricht
     type_id            = result.get("type_id", "")
     is_la              = type_id in LEISTUNGSABRECHNUNG_TYPES
     is_versicherung    = type_id in VERSICHERUNG_TYPES
@@ -1264,7 +1337,7 @@ def process_file(file_path: Path):
     tg_send("\n".join(lines))
     log.info(f"Klassifiziert: {file_path.name} → {category_id}/{type_id}")
 
-    # 6. Dateien in Vault verschieben
+    # 7. Dateien in Vault verschieben
     move_to_vault(file_path, temp_md, category_id, type_id, result)
 
 
