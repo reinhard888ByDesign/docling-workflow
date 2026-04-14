@@ -35,6 +35,7 @@ DB_FILE        = TEMP_DIR / "dispatcher.db"
 DOCLING_URL    = os.environ.get("DOCLING_URL",          "http://docling-serve:5001")
 OLLAMA_URL     = os.environ.get("OLLAMA_URL",           "http://ollama:11434")
 OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL",         "qwen2.5:7b")
+OLLAMA_TRANSLATE_MODEL = os.environ.get("OLLAMA_TRANSLATE_MODEL", OLLAMA_MODEL)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT_ID",    "")
 API_PORT       = int(os.environ.get("API_PORT", "8765"))
@@ -955,11 +956,12 @@ Zieltext (Deutsch):
 ---
 {text}
 ---"""
+    log.info(f"Translate-Modell: {OLLAMA_TRANSLATE_MODEL}")
     try:
         r = requests.post(
             f"{OLLAMA_URL}/api/generate",
             json={
-                "model": OLLAMA_MODEL,
+                "model": OLLAMA_TRANSLATE_MODEL,
                 "prompt": prompt,
                 "stream": False,
                 "options": {"temperature": 0.1, "num_ctx": 8192},
@@ -1035,6 +1037,18 @@ Für Krankenversicherung/Versicherung zusätzlich ausfüllen:
 Verfügbare Kategorien und Typen:
 {cat_desc}
 {kv_rules}
+TAXONOMIE-ZWANG: "category_id" und "type_id" MÜSSEN exakt aus der obigen Liste stammen.
+NIEMALS neue Kategorie-IDs erfinden. Wenn keine passt: category_id=null → landet in Inbox.
+
+BRANCHEN-REGELN für Rechnungen (sprachunabhängig, gilt für DE/IT/EN):
+- Absender ist Handwerker / Bausanierung / Abwasser / Kläranlage / Heizung / Elektrik /
+  Sanitär / Dachdecker / Maurer / Gartenbau / Asbest-/Schadstoffsanierung / Ecologia /
+  Bonifica / Fognaria / Servizi Ecologici / Manutenzione edile
+  UND der Leistungsinhalt ist Wartung / Reparatur / Sanierung an einem Gebäude oder Grundstück:
+  → category_id="immobilien_eigen" (oder "immobilien_vermietet" wenn explizit Mietobjekt erwähnt),
+    type_id="rechnung".
+  Entscheidend ist die Absender-BRANCHE + Leistung, NICHT die Empfängeradresse.
+
 Für ALLE Kategorien:
 - Adressat: "Reinhard" wenn Reinhard Janning/R. Janning der Empfänger ist, "Marion" wenn Marion Janning/M. Janning, "Reinhard & Marion" wenn beide adressiert sind.
   - Bei Krankenversicherung gilt IMMER das ABSENDER → ADRESSAT-MAPPING oben (HUK → Marion, Gothaer/Barmenia → Reinhard, Arztrechnung ohne Patient → null).
@@ -1239,7 +1253,12 @@ def process_file(file_path: Path):
         translated = translate_to_german(md_content, lang)
         if translated:
             classify_input = translated
-            log.info(f"Übersetzung ok ({len(translated)} chars)")
+            trans_path = temp_md.with_suffix(f".translation.{OLLAMA_TRANSLATE_MODEL.replace(':', '_').replace('/', '_')}.md")
+            trans_path.write_text(
+                f"<!-- Übersetzung {lang}→de via {OLLAMA_TRANSLATE_MODEL} -->\n\n{translated}",
+                encoding="utf-8",
+            )
+            log.info(f"Übersetzung ok ({len(translated)} chars) → {trans_path.name}")
         else:
             log.warning("Übersetzung fehlgeschlagen — klassifiziere auf Originaltext")
 
@@ -1250,6 +1269,13 @@ def process_file(file_path: Path):
         return
 
     result = classify_with_ollama(classify_input, categories)
+
+    # Taxonomie-Validierung: halluzinierte category_id auf null setzen → Inbox
+    if result and result.get("category_id") and result["category_id"] not in categories:
+        log.warning(f"LLM halluzinierte Kategorie '{result['category_id']}' — auf null zurückgesetzt (Inbox)")
+        result["category_id"] = None
+        result["type_id"] = None
+        result["konfidenz"] = "niedrig"
 
     if not result or not result.get("category_id"):
         tg_send(
