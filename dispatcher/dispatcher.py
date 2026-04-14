@@ -948,6 +948,20 @@ D) Arzt mit Medikamentenliste:
 
 WICHTIG: Entscheidend ist NICHT die bloße Erwähnung von "Versicherung" im Text, sondern Absender + Dokumenttyp.
 
+ABSENDER → ADRESSAT-MAPPING bei Krankenversicherung (überschreibt jeden Default!):
+- HUK / HUK-COBURG (jegliche Schreibweise: HUK, HUK COBURG, HUK-COBURG, HUK-Coburg-Krankenversicherung):
+   → adressat="Marion" — IMMER. Auch wenn im Dokument kein Name lesbar ist.
+- Gothaer / Barmenia:
+   → adressat="Reinhard" — IMMER, außer ein anderer Name (Marion, Linoa, ...) ist explizit als Patient ausgewiesen.
+- Arztrechnung / Rezept ohne klaren Patientennamen:
+   → adressat=null (NICHT raten, NICHT auf Reinhard defaulten)
+
+NEGATIVE BEISPIELE — diese Fehler hat das System in der Vergangenheit gemacht, NICHT wiederholen:
+- ❌ "HUK-COBURG Leistungsabrechnung" mit adressat="Reinhard" → richtig wäre "Marion"
+- ❌ Arztrechnung von "Dr. Schneider" ohne Patientenname → adressat="Reinhard" → richtig ist null
+- ❌ Versicherungs-Anschreiben mit Erstattungsbetrag, aber OHNE Erstattungsübersicht-Tabelle als Leistungsabrechnung klassifiziert → richtig ist versicherungskorrespondenz
+- ❌ Dokument das "Versicherung" im Fließtext erwähnt, aber von einer Bank/Steuerberater/Vermieter stammt, als Krankenversicherung klassifiziert → Absender entscheidet, nicht der Text
+
 Für Krankenversicherung/Versicherung zusätzlich ausfüllen:
 - "rechnungsbetrag": Gesamtbetrag als String (z.B. "33,06 EUR") — bei Leistungsabrechnung: Gesamtrechnungsbetrag, bei Arztrechnung: Endbetrag; sonst null
 - "erstattungsbetrag": Erstatteter Betrag als String — NUR bei Leistungsabrechnung, sonst null
@@ -961,7 +975,9 @@ Verfügbare Kategorien und Typen:
 {cat_desc}
 {kv_rules}
 Für ALLE Kategorien:
-- Adressat: IMMER ausfüllen. "Reinhard" wenn Reinhard Janning/R. Janning der Empfänger ist, "Marion" wenn Marion Janning/M. Janning, "Reinhard & Marion" wenn beide adressiert sind. Wenn keine andere Person erkennbar ist, ist der Adressat "Reinhard" (Standardwert). Nur null wenn eindeutig eine dritte Person adressiert wird.
+- Adressat: "Reinhard" wenn Reinhard Janning/R. Janning der Empfänger ist, "Marion" wenn Marion Janning/M. Janning, "Reinhard & Marion" wenn beide adressiert sind.
+  - Bei Krankenversicherung gilt IMMER das ABSENDER → ADRESSAT-MAPPING oben (HUK → Marion, Gothaer/Barmenia → Reinhard, Arztrechnung ohne Patient → null).
+  - Bei anderen Kategorien: wenn kein Name eindeutig erkennbar ist und das Dokument an den Haushalt gerichtet scheint (Bank, Vermieter, Behörde ohne Namensnennung), darf "Reinhard" als Default gewählt werden — aber nur wenn der Absender typischerweise an Reinhard adressiert. Sonst null. NICHT raten.
 
 Antworte NUR mit einem JSON-Objekt mit diesen Feldern:
 - "category_id": ID der erkannten Kategorie (z.B. "krankenversicherung", "finanzen", "fahrzeuge"), oder null
@@ -976,6 +992,9 @@ Antworte NUR mit einem JSON-Objekt mit diesen Feldern:
 - "faelligkeitsdatum": Fälligkeitsdatum — NUR bei Arztrechnung/Rezept, sonst null
 - "positionen": Erstattungspositionen — NUR bei Leistungsabrechnung, sonst []
 - "konfidenz": "hoch" | "mittel" | "niedrig"
+  - "hoch" NUR wenn category_id, type_id, absender UND adressat alle eindeutig aus dem Dokument ableitbar sind (klarer Briefkopf, klarer Dokumenttyp, klarer Name). Default ist "mittel".
+  - "mittel" bei JEDER Unsicherheit: Typ unklar, Adressat geraten, Absender nur indirekt erkennbar.
+  - "niedrig" wenn die Kategorie selbst unklar ist oder das Dokument mehrere Kategorien plausibel macht.
 
 Antworte AUSSCHLIESSLICH mit validem JSON, kein Text davor oder danach.
 
