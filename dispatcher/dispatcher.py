@@ -56,23 +56,16 @@ VERSICHERUNG_TYPES = {
     "versicherungskorrespondenz",
 }
 
-TYP_TO_FOLDER = {
-    "leistungsabrechnung_reinhard":  "leistungsabrechnung",
-    "leistungsabrechnung_marion":    "leistungsabrechnung",
-    "arztrechnung":                  "arztrechnung",
-    "rezept":                        "rezept",
-    "hilfsmittel":                   "hilfsmittel",
-    "anderes":                       "anderes",
-    "versicherungsschein":           "versicherung",
-    "beitragsanpassung":             "versicherung",
-    "beitragsbescheinigung":         "versicherung",
-    "kostenuebernahme":              "versicherung",
-    "versicherungsbedingungen":      "versicherung",
-    "versicherungskorrespondenz":    "versicherung",
-}
-
 # Wird beim Start aus categories.yaml geladen (vault_folder-Feld)
 CATEGORY_TO_VAULT_FOLDER: dict[str, str] = {}
+
+
+def _build_vault_md_relpath(vault_folder: str, year: str, md_filename: str) -> str:
+    """Vault-Pfad: aktuelles Jahr direkt in Kategorie-Wurzel, Vorjahre im <year>/-Unterordner."""
+    current_year = datetime.now().strftime("%Y")
+    if year == current_year:
+        return f"{vault_folder}/{md_filename}"
+    return f"{vault_folder}/{year}/{md_filename}"
 
 # ── DB-Schema für NL-Abfragen ──────────────────────────────────────────────────
 
@@ -496,10 +489,6 @@ def handle_correction(doc_id: int, new_cat: str, new_type: str) -> str:
 
         # Neuen Vault-Pfad berechnen
         new_vault_folder = CATEGORY_TO_VAULT_FOLDER.get(new_cat, "00 Inbox")
-        if new_type in TYP_TO_FOLDER:
-            new_typ_folder = TYP_TO_FOLDER[new_type]
-        else:
-            new_typ_folder = new_type or "allgemein"
 
         # Jahr aus altem Pfad extrahieren oder aus Dateiname
         year_match = re.search(r"/(\d{4})/", old_vault_pfad or "")
@@ -511,7 +500,7 @@ def handle_correction(doc_id: int, new_cat: str, new_type: str) -> str:
 
         # MD-Dateiname aus vault_pfad extrahieren
         md_filename = Path(old_vault_pfad).name if old_vault_pfad else f"{dateiname}.md"
-        new_vault_pfad = f"{new_vault_folder}/Converted/{new_typ_folder}/{year}/{md_filename}"
+        new_vault_pfad = _build_vault_md_relpath(new_vault_folder, year, md_filename)
 
         # DB updaten
         con.execute(
@@ -1079,7 +1068,7 @@ def build_clean_filename(result: dict, original_stem: str) -> str:
 
 
 def move_to_vault(file_path: Path, temp_md: Path, category_id: str, type_id: str, result: dict):
-    """Verschiebt PDF nach pdf-archiv/ und MD nach reinhards-vault/{kategorie}/Converted/{typ}/{jahr}/."""
+    """Verschiebt PDF nach pdf-archiv/ und MD nach reinhards-vault/{kategorie}/[<jahr>/]."""
     if not VAULT_PDF_ARCHIV or not VAULT_ROOT:
         log.warning("VAULT_PDF_ARCHIV/VAULT_ROOT nicht konfiguriert — Dateien bleiben in WATCH_DIR")
         return
@@ -1090,29 +1079,23 @@ def move_to_vault(file_path: Path, temp_md: Path, category_id: str, type_id: str
     # Vault-Ordner aus categories.yaml, Fallback auf Inbox
     vault_folder = CATEGORY_TO_VAULT_FOLDER.get(category_id, "00 Inbox")
 
-    # Typ-Unterordner: bei KV/Versicherung aus TYP_TO_FOLDER, sonst type_id direkt
-    if type_id and type_id in TYP_TO_FOLDER:
-        typ_folder = TYP_TO_FOLDER[type_id]
-    elif type_id:
-        typ_folder = type_id
-    else:
-        typ_folder = "allgemein"
-
     # Sauberen Dateinamen generieren
     if result:
         clean_name = build_clean_filename(result, file_path.stem)
     else:
         clean_name = _sanitize_name_part(file_path.stem)
 
+    vault_pfad = _build_vault_md_relpath(vault_folder, year, f"{clean_name}.md")
+    dest_md = VAULT_ROOT / vault_pfad
+    dest_md_dir = dest_md.parent
     dest_pdf = VAULT_PDF_ARCHIV / f"{clean_name}.pdf"
-    dest_md_dir = VAULT_ROOT / vault_folder / "Converted" / typ_folder / year
-    dest_md = dest_md_dir / f"{clean_name}.md"
 
     # Kollisionsvermeidung
     counter = 2
     while dest_pdf.exists() or dest_md.exists():
+        vault_pfad = _build_vault_md_relpath(vault_folder, year, f"{clean_name}_{counter}.md")
+        dest_md = VAULT_ROOT / vault_pfad
         dest_pdf = VAULT_PDF_ARCHIV / f"{clean_name}_{counter}.pdf"
-        dest_md = dest_md_dir / f"{clean_name}_{counter}.md"
         counter += 1
 
     # PDF verschieben
@@ -1122,7 +1105,6 @@ def move_to_vault(file_path: Path, temp_md: Path, category_id: str, type_id: str
     # MD verschieben
     dest_md_dir.mkdir(parents=True, exist_ok=True)
     shutil.move(str(temp_md), str(dest_md))
-    vault_pfad = f"{vault_folder}/Converted/{typ_folder}/{year}/{dest_md.name}"
     log.info(f"MD → Vault: {vault_pfad}")
 
     # vault_pfad in DB speichern
