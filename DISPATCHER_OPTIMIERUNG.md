@@ -338,6 +338,75 @@ Pro Iteration:
 6. **Identifier-Test** (nach Iter. 3.7): doc1 (Tierklinik-Rechnung) erneut laufen → `adressat` muss **Marion** sein (via Cod.Fiscale-Match), nicht mehr Reinhard.
 7. **Dokumenttyp-Test** (nach Iter. 3.8): doc2 (LP Pratiche Auto, „Fattura") erneut laufen → `type_id` muss **rechnung** oder `italien/fahrzeug`-Analogon sein, **nicht** `kontoauszug`.
 
+---
+
+## ✅ Dashboard — Workflow-Monitoring (2026-04-16)
+
+Neues Live-Dashboard erreichbar unter `http://<ryzen-ip>:8765/` — direkt im Dispatcher eingebettet, kein eigener Container.
+
+### Architektur
+
+- **Endpunkte:** `GET /` (HTML), `GET /api/health`, `GET /api/events` (SSE), `GET /api/recent` (mit Filtern), `GET /api/pdf/<name>`, `POST /api/enzyme-refresh`
+- **HTTP-Server:** auf `ThreadingMixIn` umgestellt — SSE-Verbindungen blockieren nicht mehr den API-Server
+- **Realtime:** Server-Sent Events (SSE) auf `/api/events`; neue Dokumente erscheinen sofort ohne Reload; Health-Status wird alle 30 s gepollt
+
+### Features
+
+**Dokumenten-Pipeline-Flow-Chart**
+- Horizontaler Streifen direkt unter dem Header: 📱 Telegram → 🥧 Wilson/Pi → 🔄 Syncthing → 🔍 Docling OCR → 🌐 Spracherkennung → 🤖 Ollama LLM → 📄 Dispatcher → 📁 Obsidian Vault → 📱 Telegram
+
+**Service-Karten (8 Services)**
+
+| Service | URL (klickbar) | Metriken |
+|---|---|---|
+| Document Dispatcher | `:8765` | Gesamt-/Tagesdokumente, letztes Dokument |
+| Docling Serve (OCR) | — intern | Status |
+| Ollama (LLM) | `:11434` | Modell-Liste |
+| Syncthing | `:8384` | Uptime, Verbindungen |
+| Open WebUI | `:3000` | Status |
+| Qdrant (Vector DB) | `:6333/dashboard` | Status |
+| enzyme / mcpo | `:11180/docs` | Dokumente, Embeddings, Katalysatoren, Entitäten, **letzte Aktualisierung** |
+| Wilson / OpenClaw (Pi) | `192.168.3.124` | SSH-Alive-Check |
+
+Jede Karte: Statusdot (grün/gelb/rot mit Glüh-Effekt), Badge, Metriken, Kurzbeschreibung.
+Service-Bezeichnungen sind klickbar — öffnen die Web-UI mit aufgelöster Host-IP (`HOST_IP` Env-Var, Default `192.168.86.195`).
+
+**enzyme-Freshness-Logik**
+- Index-Alter < 24 h → grün; 24–48 h → gelb; > 48 h → rot
+- „⟳ Jetzt aktualisieren"-Button: startet `enzyme refresh` als Hintergrund-Thread, Ergebnis kommt per SSE zurück
+- enzyme-Binary wird per Volume-Mount in den Container gereicht (`/usr/local/bin/enzyme`)
+
+**Cron-Fix**
+- Täglicher enzyme-Refresh-Cron war auf `obsidian-vault` (alt) konfiguriert → korrigiert auf `reinhards-vault`
+- Laufzeit: täglich 23:00 Uhr
+
+**Dokumente-Tabelle (Realtime)**
+- Letzte 100 Dokumente, neue Zeilen erscheinen sofort per SSE mit blauem Flash-Effekt
+- Spalten: Datum · Dateiname (klickbar → PDF-Viewer) · Kategorie · Typ · Absender · Adressat · Konfidenz · Verarbeitet
+- **PDF-Serve:** `GET /api/pdf/<name>` liefert PDF direkt aus `/data/reinhards-vault/Anlagen/`; Dateiname wird aus `vault_pfad` (MD-Stem + `.pdf`) abgeleitet
+
+**Filterleiste**
+- Freitext-Suche (Dateiname, Absender) mit 300 ms Debounce
+- Kategorie-Dropdown (aus Taxonomie, automatisch befüllt)
+- Typ-Dropdown (kontextsensitiv — zeigt nur Typen der gewählten Kategorie)
+- Adressat (Reinhard / Marion)
+- Konfidenz (Hoch / Mittel / Niedrig)
+- Von/Bis-Datumsbereich
+- Trefferzähler + Reset-Button
+- Alle Filter werden server-seitig in `/api/recent` ausgewertet (SQL WHERE-Klauseln)
+
+### docker-compose-Änderungen
+
+```yaml
+dispatcher:
+  environment:
+    - HOST_IP=${HOST_IP:-192.168.86.195}   # für klickbare Service-Links im Dashboard
+  volumes:
+    - /home/reinhard/.local/bin/enzyme:/usr/local/bin/enzyme:ro   # enzyme refresh
+```
+
+---
+
 ## Priorisierung
 
 | Iteration | Nutzen | Aufwand | Reihenfolge |

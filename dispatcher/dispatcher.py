@@ -5,12 +5,14 @@ import json
 import time
 import queue
 import shutil
+import socket
 import sqlite3
 import logging
 import requests
 import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 from pathlib import Path
 
 import yaml
@@ -964,6 +966,669 @@ def tg_poll():
 
 from urllib.parse import urlparse, parse_qs
 
+SYNCTHING_API_KEY = os.environ.get("SYNCTHING_API_KEY", "M7iayV5FZMzefpFDwuwJ7ZWgihkqSbo3")
+WILSON_PI_HOST   = os.environ.get("WILSON_PI_HOST", "192.168.3.124")
+
+# ── SSE-Broadcaster ───────────────────────────────────────────────────────────
+_sse_lock    = threading.Lock()
+_sse_clients: list[queue.Queue] = []
+
+def sse_broadcast(event_type: str, data: dict):
+    """Schickt ein SSE-Event an alle verbundenen Clients."""
+    payload = json.dumps({"type": event_type, **data}, ensure_ascii=False, default=str)
+    msg = f"event: {event_type}\ndata: {payload}\n\n".encode()
+    with _sse_lock:
+        dead = []
+        for q in _sse_clients:
+            try:
+                q.put_nowait(msg)
+            except queue.Full:
+                dead.append(q)
+        for q in dead:
+            _sse_clients.remove(q)
+
+def _collect_health() -> dict:
+    """Aggregiert Health-Status aller Workflow-Dienste."""
+    services = {}
+
+    # 1 — Dispatcher selbst (eigene DB)
+    try:
+        with get_db() as con:
+            total  = con.execute("SELECT COUNT(*) FROM dokumente").fetchone()[0]
+            today  = con.execute(
+                "SELECT COUNT(*) FROM dokumente WHERE DATE(erstellt_am) = DATE('now')"
+            ).fetchone()[0]
+            last_r = con.execute(
+                "SELECT dateiname, kategorie, typ, adressat, konfidenz, erstellt_am "
+                "FROM dokumente ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        services["dispatcher"] = {
+            "label": "Document Dispatcher",
+            "status": "ok",
+            "docs_total": total,
+            "docs_today": today,
+            "last_doc": dict(last_r) if last_r else None,
+        }
+    except Exception as e:
+        services["dispatcher"] = {"label": "Document Dispatcher", "status": "error", "error": str(e)}
+
+    # 2 — Docling Serve
+    try:
+        r = requests.get("http://docling-serve:5001/health", timeout=4)
+        services["docling_serve"] = {
+            "label": "Docling Serve (OCR)", "status": "ok" if r.status_code == 200 else "warn"
+        }
+    except Exception as e:
+        services["docling_serve"] = {"label": "Docling Serve (OCR)", "status": "error", "error": str(e)}
+
+    # 3 — Ollama
+    try:
+        r = requests.get("http://ollama:11434/api/tags", timeout=4)
+        models = [m["name"] for m in r.json().get("models", [])]
+        services["ollama"] = {
+            "label": "Ollama (LLM)", "status": "ok",
+            "models": models, "model_count": len(models),
+        }
+    except Exception as e:
+        services["ollama"] = {"label": "Ollama (LLM)", "status": "error", "error": str(e)}
+
+    # 4 — Syncthing
+    try:
+        hdrs = {"X-API-Key": SYNCTHING_API_KEY}
+        rs = requests.get("http://syncthing:8384/rest/system/status", headers=hdrs, timeout=4)
+        uptime_h = round(rs.json().get("uptime", 0) / 3600, 1)
+        rc = requests.get("http://syncthing:8384/rest/system/connections", headers=hdrs, timeout=4)
+        conns = rc.json().get("connections", {})
+        connected = sum(1 for v in conns.values() if v.get("connected"))
+        services["syncthing"] = {
+            "label": "Syncthing", "status": "ok",
+            "uptime_h": uptime_h, "connections": f"{connected}/{len(conns)}",
+        }
+    except Exception as e:
+        services["syncthing"] = {"label": "Syncthing", "status": "error", "error": str(e)}
+
+    # 5 — Open WebUI
+    try:
+        r = requests.get("http://open-webui:8080/health", timeout=4)
+        services["open_webui"] = {
+            "label": "Open WebUI", "status": "ok" if r.status_code == 200 else "warn"
+        }
+    except Exception as e:
+        services["open_webui"] = {"label": "Open WebUI", "status": "error", "error": str(e)}
+
+    # 6 — Qdrant
+    try:
+        r = requests.get("http://qdrant:6333/healthz", timeout=4)
+        services["qdrant"] = {
+            "label": "Qdrant (Vector DB)", "status": "ok" if "passed" in r.text else "warn"
+        }
+    except Exception as e:
+        services["qdrant"] = {"label": "Qdrant (Vector DB)", "status": "error", "error": str(e)}
+
+    # 7 — mcpo / enzyme-Bridge (Host-Port 11180)
+    _enzyme_hosts = ["host.docker.internal", "172.17.0.1", "192.168.3.1"]
+    for _h in _enzyme_hosts:
+        try:
+            r = requests.post(f"http://{_h}:11180/status",
+                              json={}, headers={"Content-Type": "application/json"}, timeout=4)
+            if r.status_code == 200:
+                es = r.json()
+                last_refresh = None
+                # enzyme.db liegt immer im Vault unter .enzyme/enzyme.db
+                _enzyme_db = Path("/data/reinhards-vault/.enzyme/enzyme.db")
+                if not _enzyme_db.exists() and VAULT_ROOT:
+                    _enzyme_db = VAULT_ROOT / ".enzyme" / "enzyme.db"
+                enzyme_status = "ok"
+                try:
+                    mtime = _enzyme_db.stat().st_mtime
+                    last_refresh = datetime.fromtimestamp(mtime).strftime("%d.%m.%Y %H:%M")
+                    age_h = (time.time() - mtime) / 3600
+                    if age_h > 48:
+                        enzyme_status = "error"
+                    elif age_h > 24:
+                        enzyme_status = "warn"
+                except Exception:
+                    pass
+                services["enzyme"] = {
+                    "label":        "enzyme / mcpo (Vault)",
+                    "status":       enzyme_status,
+                    "documents":    es.get("documents"),
+                    "embedded":     es.get("embedded"),
+                    "catalysts":    es.get("catalysts"),
+                    "entities":     es.get("entities"),
+                    "last_refresh": last_refresh,
+                }
+                break
+            elif r.status_code in (405, 404):
+                services["enzyme"] = {"label": "enzyme / mcpo (Vault)", "status": "ok"}
+                break
+        except Exception:
+            continue
+    else:
+        services["enzyme"] = {"label": "enzyme / mcpo (Vault)", "status": "error", "error": "Port 11180 nicht erreichbar"}
+
+    # 8 — Wilson / OpenClaw (Pi reachable via SSH port)
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        result = sock.connect_ex((WILSON_PI_HOST, 22))
+        sock.close()
+        services["wilson_pi"] = {
+            "label": f"Wilson / OpenClaw (Pi {WILSON_PI_HOST})",
+            "status": "ok" if result == 0 else "error",
+        }
+    except Exception as e:
+        services["wilson_pi"] = {"label": f"Wilson / OpenClaw (Pi)", "status": "error", "error": str(e)}
+
+    host_ip = os.environ.get("HOST_IP", "localhost")
+
+    return {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "host_ip":   host_ip,
+        "services":  services,
+        "overall":   "ok" if all(s["status"] == "ok" for s in services.values()) else "warn",
+    }
+
+
+_DASHBOARD_HTML = r"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docling Workflow · Dashboard</title>
+<style>
+  :root {
+    --bg:      #f4f5f7;
+    --surface: #ffffff;
+    --border:  #dde1ea;
+    --text:    #1a1d2e;
+    --muted:   #6b7280;
+    --ok:      #059669;
+    --warn:    #d97706;
+    --err:     #dc2626;
+    --accent:  #4f46e5;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; font-size: 14px; min-height: 100vh; }
+  header { border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; gap: 12px; background: var(--surface); }
+  header h1 { font-size: 16px; font-weight: 700; letter-spacing: .01em; color: var(--accent); }
+  header .ts { margin-left: auto; font-size: 12px; color: var(--muted); }
+  header .overall { font-size: 12px; padding: 3px 10px; border-radius: 999px; font-weight: 600; }
+  header .overall.ok   { background: #d1fae5; color: var(--ok); }
+  header .overall.warn { background: #fef3c7; color: var(--warn); }
+  header .overall.err  { background: #fee2e2; color: var(--err); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; padding: 20px 24px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; transition: box-shadow .2s, border-color .2s; }
+  .card:hover { border-color: var(--accent); box-shadow: 0 4px 16px rgba(79,70,229,.08); }
+  .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .dot.ok    { background: var(--ok);   box-shadow: 0 0 0 3px #d1fae5; }
+  .dot.warn  { background: var(--warn); box-shadow: 0 0 0 3px #fef3c7; }
+  .dot.error { background: var(--err);  box-shadow: 0 0 0 3px #fee2e2; }
+  .card-title { font-weight: 600; font-size: 13px; color: var(--text); }
+  .badge { margin-left: auto; font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+  .badge.ok    { background: #d1fae5; color: var(--ok); }
+  .badge.warn  { background: #fef3c7; color: var(--warn); }
+  .badge.error { background: #fee2e2; color: var(--err); }
+  .metrics { display: flex; flex-direction: column; gap: 6px; }
+  .metric { display: flex; justify-content: space-between; align-items: baseline; }
+  .metric-label { color: var(--muted); font-size: 12px; }
+  .metric-value { font-size: 13px; font-weight: 500; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .error-msg { margin-top: 8px; font-size: 11px; color: var(--err); word-break: break-all; }
+  .model-list { font-size: 11px; color: var(--muted); margin-top: 6px; line-height: 1.7; }
+  .model-tag { display: inline-block; background: #f1f2f6; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; margin: 2px 2px 0 0; }
+  .refresh-bar { text-align: center; padding: 14px; font-size: 11px; color: var(--muted); background: var(--surface); border-top: 1px solid var(--border); }
+  #countdown { color: var(--accent); font-weight: 600; }
+  /* Dokumente-Sektion */
+  .docs-section { margin: 0 24px 24px; }
+  .docs-section h2 { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 10px; }
+  .docs-table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,.04); }
+  .docs-table th { text-align: left; padding: 10px 14px; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--border); background: #f8f9fb; }
+  .docs-table td { padding: 9px 14px; font-size: 12px; border-bottom: 1px solid #f0f1f5; vertical-align: middle; color: var(--text); }
+  .docs-table tr:last-child td { border-bottom: none; }
+  .docs-table tr:hover td { background: #f8f9fb; }
+  .kbadge { font-size: 10px; padding: 2px 7px; border-radius: 999px; font-weight: 600; }
+  .kbadge.hoch    { background: #d1fae5; color: var(--ok); }
+  .kbadge.mittel  { background: #fef3c7; color: var(--warn); }
+  .kbadge.niedrig { background: #fee2e2; color: var(--err); }
+  .kbadge.null    { background: #f1f2f6; color: var(--muted); }
+  .cat-tag { font-size: 11px; color: var(--accent); font-weight: 500; }
+  .adressat-tag { font-size: 11px; padding: 1px 7px; border-radius: 4px; background: #f1f2f6; color: var(--text); }
+  .sse-indicator { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted); margin-left:12px; }
+  .sse-indicator-dot { width:7px; height:7px; border-radius:50%; background:var(--muted); transition: background .4s; }
+  @keyframes flashRow { 0%{background:#e0e7ff} 100%{background:transparent} }
+  /* Flow-Chart */
+  .flow { background: linear-gradient(135deg, #eef2ff 0%, #f0fdf4 100%); border-bottom: 1px solid var(--border); padding: 24px 28px; overflow-x: auto; }
+  .flow-title { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 16px; }
+  .flow-inner { display: flex; align-items: center; gap: 0; min-width: max-content; }
+  .flow-step { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 20px; border-radius: 12px; background: var(--surface); border: 1.5px solid var(--border); min-width: 110px; transition: box-shadow .2s, border-color .2s; cursor: default; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+  .flow-step:hover { border-color: var(--accent); box-shadow: 0 4px 16px rgba(79,70,229,.15); }
+  .flow-step .fs-icon { font-size: 28px; line-height: 1; }
+  .flow-step .fs-label { font-size: 12px; font-weight: 700; color: var(--text); text-align: center; white-space: nowrap; }
+  .flow-step .fs-sub { font-size: 10px; color: var(--muted); text-align: center; white-space: nowrap; }
+  .flow-arrow { color: var(--accent); font-size: 20px; padding: 0 6px; flex-shrink: 0; opacity: .5; }
+  .card-desc { font-size: 11px; color: var(--muted); line-height: 1.6; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+  /* Filter-Leiste */
+  .filter-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin: 0 24px 12px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.04); }
+  .filter-group { display: flex; flex-direction: column; gap: 3px; }
+  .filter-group label { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .filter-group input, .filter-group select { font-size: 12px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); outline: none; height: 30px; }
+  .filter-group input:focus, .filter-group select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(79,70,229,.12); }
+  .filter-group.wide input { width: 200px; }
+  .filter-group.med  input, .filter-group.med select { width: 150px; }
+  .filter-group.sm   input, .filter-group.sm  select { width: 120px; }
+  .filter-results { margin-left: auto; font-size: 11px; color: var(--muted); align-self: center; white-space: nowrap; }
+  .btn-reset { font-size: 11px; padding: 5px 12px; height: 30px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--muted); cursor: pointer; font-weight: 600; align-self: flex-end; }
+  .btn-reset:hover { border-color: var(--err); color: var(--err); }
+</style>
+</head>
+<body>
+<header>
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+  <h1>Docling Workflow · Dashboard</h1>
+  <span class="overall" id="overall-badge">…</span>
+  <span class="sse-indicator"><span class="sse-indicator-dot" id="sse-dot" title="Verbinde…"></span>Live</span>
+  <span class="ts" id="ts">Laden…</span>
+</header>
+<div class="flow">
+  <div class="flow-title">Dokumenten-Pipeline</div>
+  <div class="flow-inner">
+    <div class="flow-step"><span class="fs-icon">📱</span><span class="fs-label">Telegram</span><span class="fs-sub">Foto / PDF senden</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><span class="fs-icon">🥧</span><span class="fs-label">Wilson / Pi</span><span class="fs-sub">OpenClaw empfängt</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><span class="fs-icon">🔄</span><span class="fs-label">Syncthing</span><span class="fs-sub">Pi → Ryzen</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><span class="fs-icon">🔍</span><span class="fs-label">Docling OCR</span><span class="fs-sub">PDF → Markdown</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><span class="fs-icon">🌐</span><span class="fs-label">Spracherkennung</span><span class="fs-sub">DE / IT / EN</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><span class="fs-icon">🤖</span><span class="fs-label">Ollama LLM</span><span class="fs-sub">Klassifikation</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><span class="fs-icon">📄</span><span class="fs-label">Dispatcher</span><span class="fs-sub">Routing + DB</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><span class="fs-icon">📁</span><span class="fs-label">Obsidian Vault</span><span class="fs-sub">MD + PDF ablegen</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><span class="fs-icon">📱</span><span class="fs-label">Telegram</span><span class="fs-sub">Ergebnis-Meldung</span></div>
+  </div>
+</div>
+<div class="grid" id="grid"></div>
+
+<div class="filter-bar">
+  <div class="filter-group wide">
+    <label>Suche</label>
+    <input id="f-q" type="search" placeholder="Dateiname, Absender…" oninput="scheduleFilter()">
+  </div>
+  <div class="filter-group med">
+    <label>Kategorie</label>
+    <select id="f-kat" onchange="onKatChange()"><option value="">Alle</option></select>
+  </div>
+  <div class="filter-group med">
+    <label>Typ</label>
+    <select id="f-typ" onchange="loadDocs()"><option value="">Alle</option></select>
+  </div>
+  <div class="filter-group sm">
+    <label>Adressat</label>
+    <select id="f-adr" onchange="loadDocs()">
+      <option value="">Alle</option>
+      <option>Reinhard</option>
+      <option>Marion</option>
+    </select>
+  </div>
+  <div class="filter-group sm">
+    <label>Konfidenz</label>
+    <select id="f-konfid" onchange="loadDocs()">
+      <option value="">Alle</option>
+      <option value="hoch">Hoch</option>
+      <option value="mittel">Mittel</option>
+      <option value="niedrig">Niedrig</option>
+    </select>
+  </div>
+  <div class="filter-group sm">
+    <label>Von (Datum)</label>
+    <input id="f-von" type="date" onchange="loadDocs()">
+  </div>
+  <div class="filter-group sm">
+    <label>Bis (Datum)</label>
+    <input id="f-bis" type="date" onchange="loadDocs()">
+  </div>
+  <button class="btn-reset" onclick="resetFilter()">✕ Zurücksetzen</button>
+  <span class="filter-results" id="filter-results"></span>
+</div>
+
+<div class="docs-section">
+  <table class="docs-table">
+    <thead>
+      <tr>
+        <th>Datum</th>
+        <th>Dateiname</th>
+        <th>Kategorie</th>
+        <th>Typ</th>
+        <th>Absender</th>
+        <th>Adressat</th>
+        <th>Konfidenz</th>
+        <th>Verarbeitet</th>
+      </tr>
+    </thead>
+    <tbody id="docs-body"><tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">Laden…</td></tr></tbody>
+  </table>
+</div>
+
+<div class="refresh-bar">Auto-Refresh in <span id="countdown">30</span>s &nbsp;·&nbsp; <a href="#" onclick="loadAll();return false;" style="color:var(--accent)">Jetzt aktualisieren</a></div>
+
+<script>
+const ICONS = {
+  dispatcher:   '📄',
+  docling_serve:'🔍',
+  ollama:       '🤖',
+  syncthing:    '🔄',
+  open_webui:   '💬',
+  qdrant:       '🗃️',
+  enzyme:       '🧪',
+  wilson_pi:    '🥧',
+};
+
+let _hostIp = 'localhost';
+
+// port/path pro Service — wird mit _hostIp kombiniert
+const URLS = {
+  dispatcher:   ip => `http://${ip}:8765/`,
+  docling_serve:ip => null,                          // nur intern, kein Browser-UI
+  ollama:       ip => `http://${ip}:11434/`,
+  syncthing:    ip => `http://${ip}:8384/`,
+  open_webui:   ip => `http://${ip}:3000/`,
+  qdrant:       ip => `http://${ip}:6333/dashboard`,
+  enzyme:       ip => `http://${ip}:11180/docs`,
+  wilson_pi:    ip => `http://192.168.3.124/`,       // Pi-eigene IP, kein Ryzen-Port
+};
+
+const DESCS = {
+  dispatcher:    'Herzstück der Pipeline. Überwacht den Eingangsordner, koordiniert OCR und Klassifikation, schreibt Ergebnis-MD in den Obsidian Vault und benachrichtigt via Telegram. Verwaltet Dokumenten-Datenbank und Konfidenz-Historie.',
+  docling_serve: 'Wandelt PDFs mit KI-basierter Texterkennung (OCR) in durchsuchbaren Markdown um. Versteht Tabellen, Spalten und Bilder. Basis für die anschließende LLM-Klassifikation.',
+  ollama:        'Lokales Large Language Model – läuft vollständig auf dem Ryzen, kein Cloud-Zugriff. Übernimmt Sprach­erkennung, Übersetzung (DE/IT → DE) und semantische Klassifikation nach Kategorie, Typ, Absender und Adressat.',
+  syncthing:     'Dezentrale P2P-Synchronisation ohne Cloud. Überträgt neue PDFs vom Raspberry Pi (Scanner/Telegram) auf den Ryzen-Server und hält den Obsidian Vault auf allen Geräten aktuell.',
+  open_webui:    'Browser-Interface für Gespräche mit den lokalen Ollama-Modellen und dem Vault-Assistenten. Ermöglicht natürlichsprachliche Vault-Suche über den enzyme-MCP-Server.',
+  qdrant:        'Hochperformante Vektordatenbank. Speichert Embedding-Vektoren aller Vault-Dokumente und ermöglicht enzyme die semantische Ähnlichkeitssuche – findet Konzepte, nicht nur exakte Keywords.',
+  enzyme:        'Semantische Suchschicht über den Obsidian Vault. Indexiert Notizen als Katalysatoren, stellt Vault-Inhalte als MCP-Tools für Claude Code (CLI) und Open WebUI bereit.',
+  wilson_pi:     'KI-Assistent (OpenClaw) auf dem Raspberry Pi. Empfängt Dokumente und Sprachnachrichten via Telegram, legt PDFs im Eingangsordner ab und leitet Korrekturen an den Dispatcher weiter.',
+};
+
+function statusLabel(s) {
+  return s === 'ok' ? 'OK' : s === 'warn' ? 'WARN' : 'FEHLER';
+}
+
+function renderCard(key, svc) {
+  const st = svc.status;
+  let metrics = '';
+
+  if (key === 'dispatcher') {
+    const last = svc.last_doc;
+    const lastLabel = last
+      ? `${last.dateiname || '—'} (${last.adressat || '?'}, ${last.erstellt_am?.slice(0,16) || ''})`
+      : '—';
+    metrics = `
+      <div class="metric"><span class="metric-label">Dokumente gesamt</span><span class="metric-value">${svc.docs_total ?? '—'}</span></div>
+      <div class="metric"><span class="metric-label">Heute verarbeitet</span><span class="metric-value">${svc.docs_today ?? '—'}</span></div>
+      <div class="metric"><span class="metric-label">Letztes Dokument</span><span class="metric-value" title="${lastLabel}">${lastLabel}</span></div>
+    `;
+  } else if (key === 'ollama') {
+    const tags = (svc.models || []).map(m => `<span class="model-tag">${m}</span>`).join('');
+    metrics = `
+      <div class="metric"><span class="metric-label">Geladene Modelle</span><span class="metric-value">${svc.model_count ?? 0}</span></div>
+      <div class="model-list">${tags}</div>
+    `;
+  } else if (key === 'syncthing') {
+    metrics = `
+      <div class="metric"><span class="metric-label">Uptime</span><span class="metric-value">${svc.uptime_h ?? '—'} h</span></div>
+      <div class="metric"><span class="metric-label">Verbindungen</span><span class="metric-value">${svc.connections ?? '—'}</span></div>
+    `;
+  } else if (key === 'enzyme') {
+    if (svc.documents != null) {
+      metrics = `
+        <div class="metric"><span class="metric-label">Dokumente indexiert</span><span class="metric-value">${svc.documents}</span></div>
+        <div class="metric"><span class="metric-label">Embeddings</span><span class="metric-value">${svc.embedded ?? '—'}</span></div>
+        <div class="metric"><span class="metric-label">Katalysatoren</span><span class="metric-value">${svc.catalysts ?? '—'}</span></div>
+        <div class="metric"><span class="metric-label">Entitäten</span><span class="metric-value">${svc.entities ?? '—'}</span></div>
+        <div class="metric"><span class="metric-label">Letzte Aktualisierung</span><span class="metric-value" style="color:var(--accent)">${svc.last_refresh ?? '—'}</span></div>
+        <div style="margin-top:10px">
+          <button id="enzyme-refresh-btn" onclick="triggerEnzymeRefresh()" style="font-size:11px;padding:4px 12px;border-radius:6px;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;font-weight:600">⟳ Jetzt aktualisieren</button>
+          <span id="enzyme-refresh-status" style="font-size:11px;color:var(--muted);margin-left:8px"></span>
+        </div>
+      `;
+    }
+  }
+
+  const errHtml = svc.error
+    ? `<div class="error-msg">⚠ ${svc.error}</div>`
+    : '';
+
+  const desc = DESCS[key] ? `<div class="card-desc">${DESCS[key]}</div>` : '';
+
+  const url = URLS[key] ? URLS[key](_hostIp) : null;
+  const titleHtml = url
+    ? `<a href="${url}" target="_blank" title="${url}"
+          style="color:inherit;text-decoration:none;border-bottom:1px dashed var(--accent)"
+          onmouseover="this.style.color='var(--accent)'"
+          onmouseout="this.style.color='inherit'"
+        >${ICONS[key] || '⚙️'} ${svc.label}</a>`
+    : `${ICONS[key] || '⚙️'} ${svc.label}`;
+
+  return `
+    <div class="card">
+      <div class="card-header">
+        <span class="dot ${st}"></span>
+        <span class="card-title">${titleHtml}</span>
+        <span class="badge ${st}">${statusLabel(st)}</span>
+      </div>
+      <div class="metrics">${metrics}</div>
+      ${errHtml}
+      ${desc}
+    </div>
+  `;
+}
+
+async function loadData() {
+  try {
+    const res = await fetch('/api/health');
+    const data = await res.json();
+    document.getElementById('ts').textContent = 'Stand: ' + data.timestamp?.replace('T', ' ');
+    if (data.host_ip) _hostIp = data.host_ip;
+    const badge = document.getElementById('overall-badge');
+    badge.textContent = data.overall === 'ok' ? '✓ Alle Dienste aktiv' : '⚠ Probleme erkannt';
+    badge.className = 'overall ' + (data.overall === 'ok' ? 'ok' : 'warn');
+
+    const order = ['dispatcher','docling_serve','ollama','syncthing','open_webui','qdrant','enzyme','wilson_pi'];
+    const html = order
+      .filter(k => data.services[k])
+      .map(k => renderCard(k, data.services[k]))
+      .join('');
+    document.getElementById('grid').innerHTML = html;
+  } catch(e) {
+    document.getElementById('ts').textContent = 'Fehler beim Laden';
+  }
+}
+
+// ── Kategorien + Typen für Dropdowns laden ──
+let _allCats = {};
+async function loadCategories() {
+  try {
+    const res = await fetch('/api/categories');
+    _allCats = await res.json();
+    const sel = document.getElementById('f-kat');
+    if (!sel) return;
+    Object.entries(_allCats).forEach(([id, c]) => {
+      const o = document.createElement('option');
+      o.value = id; o.textContent = c.label || id;
+      sel.appendChild(o);
+    });
+  } catch(_) {}
+}
+
+function onKatChange() {
+  const kat = document.getElementById('f-kat')?.value;
+  const typSel = document.getElementById('f-typ');
+  if (!typSel) return;
+  typSel.innerHTML = '<option value="">Alle</option>';
+  if (kat && _allCats[kat]?.types?.length) {
+    _allCats[kat].types.forEach(t => {
+      const o = document.createElement('option');
+      o.value = t.id; o.textContent = t.label || t.id;
+      typSel.appendChild(o);
+    });
+  }
+  loadDocs();
+}
+
+let _filterTimer = null;
+function scheduleFilter() {
+  clearTimeout(_filterTimer);
+  _filterTimer = setTimeout(loadDocs, 300);
+}
+
+function resetFilter() {
+  ['f-q','f-kat','f-typ','f-adr','f-konfid','f-von','f-bis'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  loadDocs();
+}
+
+async function loadDocs() {
+  const p = new URLSearchParams({ limit: 100 });
+  const q      = document.getElementById('f-q')?.value.trim();
+  const kat    = document.getElementById('f-kat')?.value;
+  const typ    = document.getElementById('f-typ')?.value;
+  const adr    = document.getElementById('f-adr')?.value;
+  const konfid = document.getElementById('f-konfid')?.value;
+  const von    = document.getElementById('f-von')?.value;
+  const bis    = document.getElementById('f-bis')?.value;
+  if (q)      p.set('q', q);
+  if (kat)    p.set('kategorie', kat);
+  if (typ)    p.set('typ', typ);
+  if (adr)    p.set('adressat', adr);
+  if (konfid) p.set('konfidenz', konfid);
+  if (von)    p.set('von', von);
+  if (bis)    p.set('bis', bis);
+
+  try {
+    const res = await fetch('/api/recent?' + p.toString());
+    const docs = await res.json();
+    const konfLabel = { hoch: 'hoch', mittel: 'mittel', niedrig: 'niedrig' };
+    const fr = document.getElementById('filter-results');
+    if (fr) fr.textContent = docs.length === 100 ? '100+ Treffer' : `${docs.length} Treffer`;
+    const rows = docs.map(d => {
+      const k = (d.konfidenz || '').toLowerCase();
+      const kClass = konfLabel[k] ? k : 'null';
+      const kText  = konfLabel[k] ? k : (d.konfidenz || '—');
+      const cat = d.kategorie || '—';
+      const typ = d.typ || '—';
+      const ts = (d.erstellt_am || '').slice(0, 16).replace('T', ' ');
+      const absender = (d.absender || '—').length > 35
+        ? (d.absender || '').slice(0, 35) + '…'
+        : (d.absender || '—');
+      return `<tr>
+        <td>${d.rechnungsdatum || '—'}</td>
+        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.dateiname||''}"><a href="/api/pdf/${encodeURIComponent(d.pdf_name||d.dateiname||'')}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:500" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${d.dateiname||'—'}</a></td>
+        <td><span class="cat-tag">${cat}</span></td>
+        <td><span class="cat-tag" style="color:var(--muted)">${typ}</span></td>
+        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.absender||''}">${absender}</td>
+        <td><span class="adressat-tag">${d.adressat || '—'}</span></td>
+        <td><span class="kbadge ${kClass}">${kText}</span></td>
+        <td style="color:var(--muted)">${ts}</td>
+      </tr>`;
+    }).join('');
+    document.getElementById('docs-body').innerHTML = rows || '<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">Keine Dokumente gefunden</td></tr>';
+  } catch(e) {
+    document.getElementById('docs-body').innerHTML = '<tr><td colspan="8" style="color:var(--err);text-align:center">Fehler beim Laden</td></tr>';
+  }
+}
+
+async function loadAll() { await Promise.all([loadData(), loadDocs()]); }
+
+async function triggerEnzymeRefresh() {
+  const btn = document.getElementById('enzyme-refresh-btn');
+  const st  = document.getElementById('enzyme-refresh-status');
+  if (btn) { btn.disabled = true; btn.textContent = '⟳ Läuft…'; }
+  if (st)  st.textContent = 'Refresh gestartet…';
+  try {
+    const r = await fetch('/api/enzyme-refresh', {method:'POST'});
+    const d = await r.json();
+    if (st) st.textContent = d.status === 'running' ? 'Läuft im Hintergrund…' : (d.error || '');
+  } catch(e) {
+    if (st) st.textContent = 'Fehler beim Starten';
+    if (btn) { btn.disabled = false; btn.textContent = '⟳ Jetzt aktualisieren'; }
+  }
+}
+
+// ── SSE für Echtzeit-Dokument-Updates ──
+function prependDoc(d) {
+  const k = (d.konfidenz || '').toLowerCase();
+  const kClass = ['hoch','mittel','niedrig'].includes(k) ? k : 'null';
+  const kText  = ['hoch','mittel','niedrig'].includes(k) ? k : (d.konfidenz || '—');
+  const cat = [d.kategorie, d.typ].filter(Boolean).join(' / ');
+  const ts = (d.erstellt_am || '').slice(0,16).replace('T',' ');
+  const absender = (d.absender || '—').length > 35 ? (d.absender||'').slice(0,35)+'…' : (d.absender||'—');
+  const row = document.createElement('tr');
+  row.style.animation = 'flashRow 1.5s ease-out';
+  row.innerHTML = `
+    <td>${d.rechnungsdatum||'—'}</td>
+    <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.dateiname||''}">${d.dateiname||'—'}</td>
+    <td><span class="cat-tag">${cat}</span></td>
+    <td><span class="cat-tag" style="color:var(--muted)">${typ}</span></td>
+    <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.absender||''}">${absender}</td>
+    <td><span class="adressat-tag">${d.adressat||'—'}</span></td>
+    <td><span class="kbadge ${kClass}">${kText}</span></td>
+    <td style="color:var(--muted)">${ts}</td>
+  `;
+  const tbody = document.getElementById('docs-body');
+  // Placeholder-Zeile entfernen
+  if (tbody.firstChild && tbody.firstChild.querySelector && tbody.firstChild.querySelector('[colspan]')) {
+    tbody.innerHTML = '';
+  }
+  tbody.insertBefore(row, tbody.firstChild);
+  // Maximal 20 Zeilen behalten
+  while (tbody.children.length > 20) tbody.removeChild(tbody.lastChild);
+}
+
+function connectSSE() {
+  const es = new EventSource('/api/events');
+  const dot = document.getElementById('sse-dot');
+  es.onopen = () => { if(dot) { dot.style.background='var(--ok)'; dot.title='Live verbunden'; } };
+  es.addEventListener('doc_processed', e => {
+    try { prependDoc(JSON.parse(e.data)); } catch(_) {}
+  });
+  es.addEventListener('enzyme_refresh_done', e => {
+    try {
+      const d = JSON.parse(e.data);
+      const st = document.getElementById('enzyme-refresh-status');
+      const btn = document.getElementById('enzyme-refresh-btn');
+      if (st) st.textContent = d.success ? '✓ Fertig' : '✗ Fehler: ' + d.msg;
+      if (btn) { btn.disabled = false; btn.textContent = '⟳ Jetzt aktualisieren'; }
+      if (d.success) loadData(); // Health neu laden → neue last_refresh
+    } catch(_) {}
+  });
+  es.onerror = () => {
+    if(dot) { dot.style.background='var(--err)'; dot.title='Verbindung unterbrochen – reconnect…'; }
+  };
+}
+
+// ── Health-Refresh alle 30s ──
+let secs = 30;
+function tick() {
+  secs--;
+  document.getElementById('countdown').textContent = secs;
+  if (secs <= 0) { secs = 30; loadData(); }
+}
+
+loadAll();
+loadCategories();
+connectSSE();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>"""
+
+
 class _ApiHandler(BaseHTTPRequestHandler):
 
     def _json_response(self, data, status=200):
@@ -978,13 +1643,69 @@ class _ApiHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         return json.loads(self.rfile.read(length)) if length else {}
 
+    def _html_response(self, html: str, status: int = 200):
+        body = html.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
         params = parse_qs(parsed.query)
 
+        # GET / — Dashboard HTML
+        if path in ("/", "/dashboard"):
+            self._html_response(_DASHBOARD_HTML)
+            return
+
+        # GET /api/health — aggregierter Service-Status
+        elif path == "/api/health":
+            self._json_response(_collect_health())
+            return
+
+        # GET /api/events — Server-Sent Events stream
+        elif path == "/api/events":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            client_q: queue.Queue = queue.Queue(maxsize=50)
+            with _sse_lock:
+                _sse_clients.append(client_q)
+            # Sofort Ping senden damit der Browser die Verbindung bestätigt
+            try:
+                self.wfile.write(b": ping\n\n")
+                self.wfile.flush()
+            except Exception:
+                with _sse_lock:
+                    if client_q in _sse_clients:
+                        _sse_clients.remove(client_q)
+                return
+            try:
+                while True:
+                    try:
+                        msg = client_q.get(timeout=25)
+                        self.wfile.write(msg)
+                        self.wfile.flush()
+                    except queue.Empty:
+                        # Keep-alive comment
+                        self.wfile.write(b": ka\n\n")
+                        self.wfile.flush()
+            except Exception:
+                pass
+            finally:
+                with _sse_lock:
+                    if client_q in _sse_clients:
+                        _sse_clients.remove(client_q)
+            return
+
         # GET /api/categories — alle Kategorien + Typen
-        if path == "/api/categories":
+        elif path == "/api/categories":
             cats = load_categories()
             result = {}
             for cat_id, cat in cats.items():
@@ -995,15 +1716,51 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 }
             self._json_response(result)
 
-        # GET /api/recent?limit=10 — letzte Dokumente
+        # GET /api/recent — letzte Dokumente (mit optionalen Filtern)
         elif path == "/api/recent":
-            limit = int(params.get("limit", [10])[0])
+            limit  = int(params.get("limit",  [50])[0])
+            q      = params.get("q",        [""])[0].strip()
+            kat    = params.get("kategorie", [""])[0].strip()
+            typ    = params.get("typ",       [""])[0].strip()
+            adr    = params.get("adressat",  [""])[0].strip()
+            von    = params.get("von",       [""])[0].strip()
+            bis    = params.get("bis",       [""])[0].strip()
+            konfid = params.get("konfidenz", [""])[0].strip()
+
+            where, args = [], []
+            if q:
+                where.append("(dateiname LIKE ? OR absender LIKE ?)")
+                args += [f"%{q}%", f"%{q}%"]
+            if kat:
+                where.append("kategorie = ?"); args.append(kat)
+            if typ:
+                where.append("typ = ?"); args.append(typ)
+            if adr:
+                where.append("adressat = ?");  args.append(adr)
+            if konfid:
+                where.append("konfidenz = ?"); args.append(konfid)
+            if von:
+                where.append("rechnungsdatum >= ?"); args.append(von)
+            if bis:
+                where.append("rechnungsdatum <= ?"); args.append(bis)
+
+            sql = ("SELECT id, dateiname, rechnungsdatum, kategorie, typ, "
+                   "absender, adressat, konfidenz, vault_pfad, erstellt_am "
+                   "FROM dokumente")
+            if where:
+                sql += " WHERE " + " AND ".join(where)
+            sql += " ORDER BY id DESC LIMIT ?"
+            args.append(limit)
+
             with get_db() as con:
-                rows = con.execute(
-                    "SELECT id, dateiname, rechnungsdatum, kategorie, typ, absender, adressat, konfidenz, vault_pfad, erstellt_am "
-                    "FROM dokumente ORDER BY id DESC LIMIT ?", (limit,)
-                ).fetchall()
-            self._json_response([dict(r) for r in rows])
+                rows = con.execute(sql, args).fetchall()
+            docs = []
+            for r in rows:
+                d = dict(r)
+                d["pdf_name"] = (Path(d["vault_pfad"]).stem + ".pdf"
+                                 if d.get("vault_pfad") else d.get("dateiname", ""))
+                docs.append(d)
+            self._json_response(docs)
 
         # GET /api/document/<id> — Dokument-Details + MD-Inhalt
         elif path.startswith("/api/document/"):
@@ -1044,6 +1801,26 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 ).fetchall()
             self._json_response([dict(r) for r in rows])
 
+        # GET /api/pdf/<dateiname> — PDF aus Anlagen ausliefern
+        elif path.startswith("/api/pdf/"):
+            from urllib.parse import unquote
+            filename = unquote(path[len("/api/pdf/"):])
+            # Sicherheit: kein Path-Traversal
+            if "/" in filename or "\\" in filename or ".." in filename:
+                self._json_response({"error": "Ungültiger Dateiname"}, 400); return
+            pdf_path = Path("/data/reinhards-vault/Anlagen") / filename
+            if not pdf_path.exists() and VAULT_ROOT:
+                pdf_path = VAULT_ROOT / "Anlagen" / filename
+            if not pdf_path.exists() or pdf_path.suffix.lower() != ".pdf":
+                self._json_response({"error": "PDF nicht gefunden"}, 404); return
+            data = pdf_path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", len(data))
+            self.send_header("Content-Disposition", f'inline; filename="{filename}"')
+            self.end_headers()
+            self.wfile.write(data)
+
         else:
             self._json_response({"error": "Unbekannter Endpunkt"}, 404)
 
@@ -1074,9 +1851,33 @@ class _ApiHandler(BaseHTTPRequestHandler):
             if not doc_id or not category:
                 self._json_response({"error": "doc_id und category sind Pflicht"}, 400); return
             result = handle_correction(int(doc_id), category, type_id)
-            # Auch Telegram benachrichtigen
             tg_send(result)
             self._json_response({"result": result})
+
+        # POST /api/enzyme-refresh — enzyme-Index manuell aktualisieren
+        elif path == "/api/enzyme-refresh":
+            import subprocess
+            enzyme_bin = "/usr/local/bin/enzyme"
+            vault_path = "/data/reinhards-vault"
+            if not os.path.exists(enzyme_bin):
+                self._json_response({"status": "error", "error": "enzyme-Binary nicht gefunden"}, 500)
+                return
+            def _run_refresh():
+                try:
+                    r = subprocess.run(
+                        [enzyme_bin, "refresh", "--vault", vault_path],
+                        capture_output=True, text=True, timeout=300
+                    )
+                    log.info(f"enzyme refresh: exit={r.returncode} stdout={r.stdout[:200]}")
+                    sse_broadcast("enzyme_refresh_done", {
+                        "success": r.returncode == 0,
+                        "msg": (r.stdout or r.stderr or "").strip()[:200],
+                    })
+                except Exception as e:
+                    log.warning(f"enzyme refresh Fehler: {e}")
+                    sse_broadcast("enzyme_refresh_done", {"success": False, "msg": str(e)})
+            threading.Thread(target=_run_refresh, daemon=True).start()
+            self._json_response({"status": "running", "msg": "enzyme refresh gestartet – dauert ca. 1–2 Min."})
 
         else:
             self._json_response({"error": "Unbekannter Endpunkt"}, 404)
@@ -1085,8 +1886,11 @@ class _ApiHandler(BaseHTTPRequestHandler):
         pass  # Kein Access-Log-Spam
 
 
+class _ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
 def start_api_server():
-    server = HTTPServer(("0.0.0.0", API_PORT), _ApiHandler)
+    server = _ThreadedHTTPServer(("0.0.0.0", API_PORT), _ApiHandler)
     log.info(f"API gestartet auf Port {API_PORT}")
     server.serve_forever()
 
@@ -2444,6 +3248,19 @@ def process_file(file_path: Path):
     category_id = result.get("category_id", "")
     tg_send("\n".join(lines))
     log.info(f"Klassifiziert: {file_path.name} → {category_id}/{type_id}")
+
+    # SSE — Live-Update ans Dashboard
+    sse_broadcast("doc_processed", {
+        "dateiname":      file_path.name,
+        "rechnungsdatum": rechnungsdatum,
+        "kategorie":      category_id,
+        "typ":            type_id,
+        "absender":       absender,
+        "adressat":       adressat,
+        "konfidenz":      result.get("konfidenz"),
+        "vault_pfad":     result.get("vault_pfad", ""),
+        "erstellt_am":    datetime.now().strftime("%Y-%m-%d %H:%M"),
+    })
 
     # 7. Dateien in Vault verschieben
     move_to_vault(file_path, temp_md, category_id, type_id, result)
