@@ -2078,11 +2078,12 @@ def move_to_vault(file_path: Path, temp_md: Path, category_id: str, type_id: str
     shutil.move(str(file_path), str(dest_pdf))
     log.info(f"PDF → Anlagen: {pdf_filename}")
 
-    # Frontmatter vor MD-Inhalt prependen
+    # Frontmatter vor MD-Inhalt prependen + PDF-Link als erste Body-Zeile
     try:
         ocr_content = temp_md.read_text(encoding="utf-8")
         frontmatter = _build_frontmatter(result or {}, pdf_filename, category_id, type_id)
-        temp_md.write_text(frontmatter + ocr_content, encoding="utf-8")
+        pdf_link_line = f"📎 [[Anlagen/{pdf_filename}]]\n\n"
+        temp_md.write_text(frontmatter + pdf_link_line + ocr_content, encoding="utf-8")
     except Exception as e:
         log.warning(f"Frontmatter konnte nicht geschrieben werden: {e}")
 
