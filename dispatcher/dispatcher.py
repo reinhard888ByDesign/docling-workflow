@@ -2250,12 +2250,22 @@ def process_file(file_path: Path):
                 f"'{result.get('adressat')}' → '{forced}' (via {adressat_match.get('via')})"
             )
             result["adressat"] = forced
-    elif result and absender_match and absender_match.get("adressat_default") and not result.get("adressat"):
+    elif result and absender_match and absender_match.get("adressat_default"):
+        # adressat_default ist ein harter Fakt (z. B. Gothaer → Reinhard, HUK → Marion).
+        # Überschreibt auch LLM-Werte wie "Reinhard & Marion", da der Absender eindeutig
+        # einem Adressaten zugeordnet ist.
+        old = result.get("adressat")
         result["adressat"] = absender_match["adressat_default"]
-        log.info(
-            f"Adressat aus Absender-Default gesetzt: {result['adressat']} "
-            f"(absender={absender_match['id']})"
-        )
+        if old != result["adressat"]:
+            log.info(
+                f"Adressat durch Absender-Default überschrieben: '{old}' → '{result['adressat']}' "
+                f"(absender={absender_match['id']})"
+            )
+        else:
+            log.info(
+                f"Adressat aus Absender-Default gesetzt: {result['adressat']} "
+                f"(absender={absender_match['id']})"
+            )
 
     # Taxonomie-Validierung: halluzinierte category_id auf null setzen → Inbox
     if result and result.get("category_id") and result["category_id"] not in categories:
@@ -2491,7 +2501,9 @@ def main():
     worker.start()
 
     threading.Thread(target=start_api_server, daemon=True).start()
-    threading.Thread(target=tg_poll, daemon=True).start()
+    # Telegram-Polling deaktiviert — Wilson/OpenClaw pollt (selber Bot-Token!).
+    # Dispatcher ist send-only. Korrekturen laufen über REST-API (/api/correct).
+    # threading.Thread(target=tg_poll, daemon=True).start()
 
     for f in WATCH_DIR.glob("*.pdf"):
         file_queue.put(f)
