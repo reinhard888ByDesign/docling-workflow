@@ -1,0 +1,44 @@
+# Personen-DB für Empfänger-Identifikation (Iter. 3.7.2)
+#
+# Zweck: Der Identifier-Extraktor sucht im OCR-Text nach Cod. Fiscale (IT, 16 Zeichen)
+# und Steuer-ID (DE, 11 Ziffern). Bei einem Match in dieser Liste wird der
+# Adressat *deterministisch* gesetzt — kein LLM-Raten mehr.
+#
+# Hinweis zu cod_fiscale-Listen:
+# - Mehrere Werte pro Person erlaubt, weil OCR gelegentlich Zeichen verwechselt
+#   (z. B. 6 → G, 0 → O). Jede bestätigte OCR-Variante wird als zusätzlicher
+#   String aufgenommen, um robuste Matches zu erhalten.
+# - Exakter String-Vergleich (case-insensitive), keine Decodierung.
+
+persons:
+  reinhard:
+    name: "Reinhard Josef Janning"
+    cod_fiscale:
+      - "JNNRHRG2TO8Z112E"   # OCR aus doc2 LP_PRATICHE_AUTO (geboren 08.12.1962); OCR liest O statt 0
+      - "JNNRHRG2T08Z112E"   # OCR-Variante (0 statt O)
+    steuer_id_de: []         # vom User zu ergänzen
+
+  marion:
+    name: "Marion Micaela Janning"
+    cod_fiscale:
+      - "JNNMNMG1T5121121"   # OCR aus doc1 CLINICA VETERINARIA
+    steuer_id_de: []
+
+  linoa:
+    name: "Linoa Janning"
+    cod_fiscale: []          # vom User zu ergänzen
+    steuer_id_de: []
+
+# ── Haustiere ──────────────────────────────────────────────────────────────
+# Tier→Besitzer-Mapping für familie/haustier-Dokumente.
+# Bidirektional:
+#   - Tiername im Text → adressat = besitzer (Sekundär-Match, nach Cod. Fiscale)
+#   - adressat bekannt + kategorie=familie/tierarztrechnung → tier abgeleitet
+# aliases: Schreibvarianten für Substring-Match (case-insensitive)
+tiere:
+  - name: Linoa
+    besitzer: reinhard
+    aliases: ["Linoa"]
+  - name: Molly
+    besitzer: marion
+    aliases: ["Molly"]

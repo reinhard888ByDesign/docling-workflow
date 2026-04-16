@@ -3,21 +3,42 @@ categories:
     label: "Krankenversicherung"
     vault_folder: "49 Krankenversicherung"
     types:
-      - id: leistungsabrechnung_reinhard
-        label: "Leistungsabrechnung (Reinhard)"
-        hints: ["Gothaer", "Barmenia", "Reinhard Janning", "Reinhard"]
-      - id: leistungsabrechnung_marion
-        label: "Leistungsabrechnung (Marion)"
-        hints: ["HUK", "HUK-COBURG", "Marion"]
+      - id: leistungsabrechnung
+        label: "Leistungsabrechnung"
+        vault_subfolder: "Leistungsabrechnung"
+        person_subfolder: true
+        adressat_fallback: "Sonstiges"
+        telegram_template: leistungsabrechnung
+        hints: ["Gothaer", "HUK", "HUK-COBURG", "Barmenia", "vigo", "Vigo",
+                "Leistungsabrechnung", "haben abgerechnet", "Erstattung",
+                "Reinhard Janning", "Marion Janning"]
+
       - id: arztrechnung
         label: "Arztrechnung"
-        hints: ["Arztrechnung", "Honorarrechnung", "GOÄ", "Liquidation", "Labor", "Pathologie", "Radiologie", "MVZ", "Krankenhaus"]
+        vault_subfolder: "Arztrechnung"
+        person_subfolder: true
+        adressat_fallback: "Sonstiges"
+        telegram_template: standard
+        hints: ["Arztrechnung", "Honorarrechnung", "GOÄ", "Liquidation", "Labor",
+                "Pathologie", "Radiologie", "MVZ", "Krankenhaus", "Dr. med.",
+                "Zahnarzt", "Praxis", "PVS", "Verrechnungsstelle", "amedes",
+                "Privatliquidation", "Pronto Soccorso"]
+
       - id: rezept
         label: "Rezept"
-        hints: ["Rezept", "Privatrezept", "Arzneimittel", "Verschreibung", "Apotheke", "Medikament"]
+        vault_subfolder: "Sonstiges"
+        person_subfolder: false
+        telegram_template: standard
+        hints: ["Rezept", "Privatrezept", "Arzneimittel", "Verschreibung",
+                "Apotheke", "Medikament"]
+
       - id: sonstige_medizinische_leistung
         label: "Sonstige medizinische Leistung"
-        hints: ["Sanitätshaus", "Optiker", "Brille", "Einlagen", "Bandage", "Hörgerät", "Orthopädie"]
+        vault_subfolder: "Sonstiges"
+        person_subfolder: false
+        telegram_template: standard
+        hints: ["Sanitätshaus", "Optiker", "Brille", "Einlagen", "Bandage",
+                "Hörgerät", "Orthopädie", "Physiotherapie", "Heilpraktiker"]
 
   versicherung:
     label: "Versicherungsdokument"
@@ -25,22 +46,60 @@ categories:
     types:
       - id: versicherungsschein
         label: "Versicherungsschein / Tarifänderung"
-        hints: ["Versicherungsschein", "Nachtrag zum Versicherungsschein", "Tarifwechsel", "Tarifumstellung", "Vertragsänderung"]
+        vault_subfolder: "Beitragsinformation"
+        person_subfolder: true
+        adressat_fallback: "Sonstiges"
+        telegram_template: standard
+        hints: ["Versicherungsschein", "Nachtrag zum Versicherungsschein",
+                "Tarifwechsel", "Tarifumstellung", "Vertragsänderung",
+                "Versicherungsnummer", "Tarif"]
+
       - id: beitragsanpassung
         label: "Beitragsanpassung / Beitragsrechnung"
-        hints: ["Beitragsanpassung", "Beitragsrechnung", "Beitragsmitteilung", "Beitragsrückerstattung"]
+        vault_subfolder: "Beitragsinformation"
+        person_subfolder: true
+        adressat_fallback: "Sonstiges"
+        telegram_template: standard
+        hints: ["Beitragsanpassung", "Beitragsrechnung", "Beitragsmitteilung",
+                "Beitragsrückerstattung", "Beitragshöhe", "Beitragsänderung",
+                "Beitragsübermittlung", "Versicherungsbeitrag"]
+
       - id: beitragsbescheinigung
-        label: "Beitragsbescheinigung / Arbeitgeberbescheinigung"
-        hints: ["Beitragsbescheinigung", "Arbeitgeberbescheinigung", "Arbeitgeberzuschuss", "Steuernachweis"]
+        label: "Beitragsbescheinigung / Steuerbescheinigung"
+        vault_subfolder: "Beitragsinformation"
+        person_subfolder: true
+        adressat_fallback: "Sonstiges"
+        telegram_template: standard
+        hints: ["Beitragsbescheinigung", "Arbeitgeberbescheinigung",
+                "Arbeitgeberzuschuss", "Steuernachweis", "Steuerbescheinigung",
+                "§10 EStG", "Anlage Vorsorgeaufwand"]
+
       - id: kostenuebernahme
         label: "Kostenübernahme / Kostenzusage"
-        hints: ["Kostenübernahme", "Kostenzusage", "Kostenplan", "Kostenvoranschlag", "Genehmigung"]
+        vault_subfolder: "Arztrechnung"
+        person_subfolder: true
+        adressat_fallback: "Sonstiges"
+        telegram_template: standard
+        hints: ["Kostenübernahme", "Kostenzusage", "Kostenplan",
+                "Kostenvoranschlag", "Genehmigung", "Kostenbescheid"]
+
       - id: versicherungsbedingungen
         label: "Versicherungsbedingungen / AGB"
-        hints: ["Versicherungsbedingungen", "AVB", "AGB", "Allgemeine Bedingungen"]
+        vault_subfolder: "Sonstiges"
+        person_subfolder: false
+        telegram_template: standard
+        hints: ["Versicherungsbedingungen", "AVB", "AGB",
+                "Allgemeine Bedingungen", "Tarifbedingungen",
+                "Bedingungsänderung", "Pflegeversicherung Bedingungen"]
+
       - id: versicherungskorrespondenz
         label: "Korrespondenz / Antrag / Widerspruch"
-        hints: ["Angebot", "Antrag", "Stellungnahme", "Widerspruch", "Information", "Schreiben"]
+        vault_subfolder: "Sonstiges"
+        person_subfolder: false
+        telegram_template: standard
+        hints: ["Angebot", "Antrag", "Stellungnahme", "Widerspruch",
+                "Information", "Schreiben", "Kundenservice", "Gothaer Card",
+                "Kartenangebot"]
 
   persoenlich:
     label: "Persönliches"
@@ -49,13 +108,19 @@ categories:
     types:
       - id: ausweis
         label: "Ausweis / Führerschein / ID"
-        hints: ["Personalausweis", "Führerschein", "Carta d'Identità", "Clubkarte", "ADAC", "Reisepass"]
+        hints: ["Personalausweis", "Führerschein", "Carta d'Identità",
+                "Clubkarte", "ADAC", "Reisepass"]
       - id: urkunde
         label: "Urkunde"
         hints: ["Geburtsurkunde", "Sterbeurkunde", "Graburkunde", "Heiratsurkunde"]
       - id: vollmacht
         label: "Vollmacht / Testament / Erbvertrag"
-        hints: ["Vorsorgevollmacht", "Betreuungsverfügung", "Testament", "Erbvertrag", "Patientenverfügung"]
+        hints: ["Vorsorgevollmacht", "Betreuungsverfügung", "Testament",
+                "Erbvertrag", "Patientenverfügung"]
+      - id: wohnung
+        label: "Wohnen / Meldung / Bescheinigung"
+        hints: ["Wohnungsgeberbestätigung", "Anmeldung", "Abmeldung",
+                "Meldebescheinigung", "Einwohnermeldeamt"]
       - id: sonstiges
         label: "Sonstiges"
         hints: []
@@ -63,7 +128,7 @@ categories:
   familie:
     label: "Familie"
     vault_folder: "20 Familie"
-    description: "Familiendokumente — Berta Hutterer, Max/Markus Hutterer, Josef Janning"
+    description: "Familiendokumente — Berta Hutterer, Max/Markus Hutterer, Josef Janning, Haustiere"
     types:
       - id: berta_hutterer
         label: "Berta Hutterer"
@@ -74,6 +139,28 @@ categories:
       - id: josef_janning
         label: "Josef Janning"
         hints: ["Josef Janning", "Josef"]
+      - id: tierarztrechnung
+        label: "Tierarzt / Tierklinik"
+        vault_subfolder: "Haustiere"
+        person_subfolder: true
+        adressat_fallback: "Sonstiges"
+        telegram_template: standard
+        hints: ["Tierarzt", "Tierklinik", "Veterinär", "Veterinaria",
+                "Clinica Veterinaria", "Impfung", "Impfpass", "Tierheilkunde"]
+      - id: tierfutter
+        label: "Tierfutter / Zubehör"
+        vault_subfolder: "Haustiere"
+        person_subfolder: true
+        adressat_fallback: "Sonstiges"
+        telegram_template: standard
+        hints: ["Tierfutter", "Futter", "Tierbedarf", "Zoohandlung", "Fressnapf"]
+      - id: tierversicherung
+        label: "Tierversicherung"
+        vault_subfolder: "Haustiere"
+        person_subfolder: true
+        adressat_fallback: "Sonstiges"
+        telegram_template: standard
+        hints: ["Tierversicherung", "Tierhalterhaftpflicht", "Agila", "Petplan"]
       - id: sonstiges
         label: "Sonstiges"
         hints: []
@@ -90,22 +177,29 @@ categories:
     types:
       - id: altersvorsorge
         label: "Altersvorsorge / Lebensversicherung"
-        hints: ["Lebensversicherung", "Rentenversicherung", "Riester", "Rente", "Pension", "AXA", "Nürnberger Rente"]
+        hints: ["Lebensversicherung", "Rentenversicherung", "Riester", "Rente",
+                "Pension", "AXA", "Nürnberger Rente"]
       - id: sachversicherung
         label: "Sachversicherung"
-        hints: ["Haftpflicht", "Tierversicherung", "D&O", "Rechtsschutz", "Unfallversicherung"]
+        hints: ["Haftpflicht", "Tierversicherung", "D&O", "Rechtsschutz",
+                "Unfallversicherung"]
       - id: kontoauszug
         label: "Kontoauszug / Kontoabschluss"
-        hints: ["Kontoauszug", "Kontoabschluss", "Kontostand", "Volksbank", "ING", "Sparkasse", "HypoVereinsbank"]
+        hints: ["Kontoauszug", "Kontoabschluss", "Kontostand", "Volksbank",
+                "ING", "Sparkasse", "HypoVereinsbank"]
       - id: rechnung_energie
         label: "Rechnung Energie"
-        hints: ["Strom", "Gas", "Heizung", "Wasser", "Vattenfall", "E.ON", "Stadtwerke"]
+        hints: ["Strom", "Gas", "Heizung", "Wasser", "Vattenfall",
+                "E.ON", "Stadtwerke", "Enel"]
       - id: rechnung_telko
         label: "Rechnung Telekommunikation"
-        hints: ["Telekom", "Vodafone", "T-Mobile", "Mobilfunk", "Telefon", "Internet", "1&1"]
+        hints: ["Telekom", "Vodafone", "T-Mobile", "Mobilfunk", "Telefon",
+                "Internet", "1&1"]
       - id: steuer
         label: "Steuerbescheid / Finanzamt"
-        hints: ["Steuerbescheid", "Finanzamt", "Einkommensteuer", "Grundsteuer", "Elster", "Steuererklärung"]
+        hints: ["Steuerbescheid", "Finanzamt", "Einkommensteuer", "Grundsteuer",
+                "Elster", "Steuererklärung", "Agenzia delle Entrate", "IMU",
+                "TARI", "Stadtkämmerei"]
       - id: rechnung_sonstige
         label: "Rechnung sonstige"
         hints: ["Rechnung", "Mahnung", "Zahlungserinnerung", "Lastschrift"]
@@ -120,16 +214,22 @@ categories:
     types:
       - id: gebaeudeversicherung
         label: "Gebäudeversicherung"
-        hints: ["Wohngebäudeversicherung", "Glasversicherung", "Hausratversicherung", "Photovoltaikversicherung", "Gebäudeversicherung"]
+        hints: ["Wohngebäudeversicherung", "Glasversicherung",
+                "Hausratversicherung", "Photovoltaikversicherung",
+                "Gebäudeversicherung"]
       - id: rechnung
         label: "Rechnung / Handwerker"
-        hints: ["Rechnung", "Handwerker", "Reparatur", "Nebenkosten", "Heizung"]
+        hints: ["Rechnung", "Handwerker", "Reparatur", "Nebenkosten",
+                "Heizung", "Acquedotto", "Wasserrechnung", "Acqua",
+                "Energia", "Luce"]
       - id: vertrag
         label: "Vertrag / Grundbuch / Kataster"
-        hints: ["Kaufvertrag", "Grundbuch", "Kataster", "Visura", "Genehmigung", "Baugenehmigung"]
+        hints: ["Kaufvertrag", "Grundbuch", "Kataster", "Visura",
+                "Genehmigung", "Baugenehmigung", "Rogito"]
       - id: korrespondenz
         label: "Korrespondenz / Behörden"
-        hints: ["Comune", "Amt", "Behörde", "Schriftverkehr", "Deichverband"]
+        hints: ["Comune", "Amt", "Behörde", "Schriftverkehr", "Deichverband",
+                "Condominio"]
 
   immobilien_vermietet:
     label: "Immobilien vermietet"
@@ -138,13 +238,17 @@ categories:
     types:
       - id: gebaeudeversicherung
         label: "Gebäudeversicherung"
-        hints: ["Wohngebäudeversicherung", "Glasversicherung", "Hausratversicherung"]
+        hints: ["Wohngebäudeversicherung", "Glasversicherung",
+                "Hausratversicherung"]
       - id: mietvertrag
         label: "Mietvertrag"
-        hints: ["Mietvertrag", "Kündigung Mieter", "Mieterhöhung"]
+        hints: ["Mietvertrag", "Kündigung Mieter", "Mieterhöhung",
+                "Wohnungsgeberbestätigung"]
       - id: nebenkostenabrechnung
         label: "Nebenkostenabrechnung"
-        hints: ["Nebenkostenabrechnung", "Hausverwaltung", "Betriebskosten"]
+        hints: ["Nebenkostenabrechnung", "Hausverwaltung", "Betriebskosten",
+                "Stadtentwässerung", "Niederschlagswasser", "Grundsteuer München",
+                "Lipowskystraße", "Kornstraße", "Kolberger", "Schießhausstraße"]
       - id: rechnung
         label: "Rechnung / Handwerker"
         hints: ["Rechnung", "Handwerker", "Reparatur", "Makler"]
@@ -164,13 +268,16 @@ categories:
     types:
       - id: kfz_versicherung
         label: "KFZ-Versicherung"
-        hints: ["KFZ-Versicherung", "Autoversicherung", "HUK24", "Nürnberger KFZ"]
+        hints: ["KFZ-Versicherung", "Autoversicherung", "HUK24",
+                "Nürnberger KFZ"]
       - id: werkstatt
         label: "Werkstatt / Reparatur"
-        hints: ["Werkstatt", "Reparatur", "Räderwechsel", "TÜV", "Wartung", "Inspektion"]
+        hints: ["Werkstatt", "Reparatur", "Räderwechsel", "TÜV",
+                "Wartung", "Inspektion"]
       - id: kauf_verkauf
         label: "Kauf / Verkauf / Fahrzeugbrief"
-        hints: ["Kaufvertrag", "Fahrzeugbrief", "Zulassung"]
+        hints: ["Kaufvertrag", "Fahrzeugbrief", "Zulassung",
+                "Kfz-Ummeldung", "Fahrzeugummeldung"]
       - id: rechnung_sonstige
         label: "Rechnung sonstige"
         hints: ["Tankbeleg", "Mietwagen", "Rechnung"]
@@ -182,10 +289,17 @@ categories:
     types:
       - id: behoerde
         label: "Behörde / Comune"
-        hints: ["Comune", "Amt", "Genehmigung", "Protocolo", "Anagrafe"]
+        hints: ["Comune", "Amt", "Genehmigung", "Protocolo", "Anagrafe",
+                "Motorizzazione", "Ufficio Motorizzazione", "Prefettura",
+                "Agenzia delle Entrate", "Questura", "Tributi",
+                "Codice Fiscale", "Residenza"]
       - id: fahrzeug
         label: "Fahrzeug Italien"
-        hints: ["Trattore", "Traktor", "Fahrzeugbrief", "Registration"]
+        hints: ["Trattore", "Traktor", "Fahrzeugbrief", "Registration",
+                "Carta di Circolazione", "Libretto di Circolazione",
+                "REPUBBLICA ITALIANA", "Ministero delle Infrastrutture",
+                "Ministero dei Trasporti", "Collaudo", "Immatricolazione",
+                "LP Pratiche Auto", "Pratiche Auto", "bollo auto"]
       - id: sonstiges
         label: "Sonstiges"
         hints: []
@@ -197,13 +311,16 @@ categories:
     types:
       - id: gehalt_arbeitgeber
         label: "Gehalt / Arbeitgeber"
-        hints: ["Gehaltsabrechnung", "Arbeitsvertrag", "Arbeitgeber", "Lohnabrechnung", "Zeugnis"]
+        hints: ["Gehaltsabrechnung", "Arbeitsvertrag", "Arbeitgeber",
+                "Lohnabrechnung", "Zeugnis"]
       - id: selbstaendig
         label: "Selbständig / Beratung"
-        hints: ["Beratung", "Coaching", "Training", "Workshop", "Projekt", "ec4u", "Salesforce", "newlogix"]
+        hints: ["Beratung", "Coaching", "Training", "Workshop", "Projekt",
+                "ec4u", "Salesforce", "newlogix"]
       - id: buchprojekt
         label: "Buchprojekt / Verlag"
-        hints: ["Books on Demand", "BOD", "Verlag", "Buchprojekt", "Kleinauflage"]
+        hints: ["Books on Demand", "BOD", "Verlag", "Buchprojekt",
+                "Kleinauflage"]
       - id: rechnung
         label: "Geschäftliche Rechnung"
         hints: ["Rechnung", "Einkauf"]
@@ -236,7 +353,8 @@ categories:
         hints: ["Kindle", "Notebook", "Buchnotizen"]
       - id: kurs
         label: "Kurs / Fortbildung / Zertifikat"
-        hints: ["Kurs", "Fortbildung", "Zertifikat", "Teilnahmebestätigung", "Seminar"]
+        hints: ["Kurs", "Fortbildung", "Zertifikat", "Teilnahmebestätigung",
+                "Seminar"]
       - id: sonstiges
         label: "Sonstiges"
         hints: []
@@ -268,3 +386,49 @@ categories:
     label: "Archiv"
     vault_folder: "99 Archiv"
     description: "Nicht zuordenbar, veraltet, unklar"
+
+# ── Special Groups ────────────────────────────────────────────────────────────
+# Gruppen von type_ids die im Dispatcher-Code besondere Behandlung erfahren.
+# telegram_template: leistungsabrechnung → zeigt Rechnungsmatching-Tabelle
+# telegram_template: standard           → normaler Telegram-Output
+# Diese Gruppen werden beim Start aus dem YAML geladen (ersetzt LEISTUNGSABRECHNUNG_TYPES
+# und VERSICHERUNG_TYPES als Python-Hardcodes).
+special_groups:
+  leistungsabrechnung:
+    - leistungsabrechnung
+  versicherung_dokument:
+    - versicherungsschein
+    - beitragsanpassung
+    - beitragsbescheinigung
+    - kostenuebernahme
+    - versicherungsbedingungen
+    - versicherungskorrespondenz
+
+# ── Branchen-Regeln ───────────────────────────────────────────────────────────
+branchen_regeln:
+  - beschreibung: >
+      Handwerker, Bausanierung, Abwasser, Kläranlage, Heizung, Elektrik, Sanitär,
+      Dachdecker, Maurer, Gartenbau, Asbest-/Schadstoffsanierung (IT: Ecologia, Bonifica,
+      Fognaria, Servizi Ecologici, Manutenzione edile) — Leistung ist Wartung/Reparatur/
+      Sanierung an einem Gebäude oder Grundstück.
+    absender_keywords:
+      - Handwerker
+      - Sanitär
+      - Heizung
+      - Elektrik
+      - Dachdecker
+      - Maurer
+      - Gartenbau
+      - Schadstoffsanierung
+      - Ecologia
+      - Bonifica
+      - Fognaria
+      - Manutenzione edile
+      - Servizi Ecologici
+      - Bausanierung
+      - Abwasser
+    category_id: immobilien_eigen
+    type_id: rechnung
+    hinweis: >
+      Bei expliziter Erwähnung eines Mietobjekts (z.B. Bremen, Schechen, Karlsruhe,
+      Neuburg, München) stattdessen category_id="immobilien_vermietet".
