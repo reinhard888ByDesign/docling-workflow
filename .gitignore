@@ -19,8 +19,8 @@ __pycache__/
 
 # macOS
 .DS_Store
+._*
 
 # Document Dispatcher runtime data
 dispatcher-temp/
-._.DS_Store
 *.bak

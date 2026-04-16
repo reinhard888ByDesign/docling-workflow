@@ -1,0 +1,185 @@
+# Dokumenttyp-Wörterbuch (Iter. 3.8)
+#
+# Zweck: Keyword-basierte Erkennung des Dokumenttyps aus dem Kopfbereich des Dokuments.
+# Der Extraktor prüft die ersten ~20 Zeilen des (Original-)Markdowns auf diese Keywords.
+#
+# Felder:
+#   keywords:          Liste von Schlüsselwörtern (case-insensitive Substring-Match).
+#                      Großschreibung (z.B. "FATTURA") matcht auch gemischte Schreibweise.
+#   typ:               Dokumenttyp-ID (intern, unabhängig von categories.yaml-Typen)
+#   label:             Menschenlesbarer Bezeichner (für Prompt und Artefakt)
+#   kategorie_hint:    Optionaler category_id-Hint — nur wenn der Dokumenttyp eindeutig
+#                      eine Kategorie impliziert (z.B. Carta di Circolazione → italien)
+#   nur_bei_absender:  Klasse von Absendern, die diesen Typ erst sinnvoll machen.
+#                      "bank" = Volksbank, ING, Sparkasse, Banca, Banco, IBAN-lastiger Header.
+#                      Fehlt diese Klasse, wird der Typ trotzdem als Hint geliefert, aber
+#                      der Prompt bekommt einen Hinweis, ihn kritisch zu prüfen.
+#   prioritaet:        1 (hoch) = scharfes Signal, 2 (normal) = Standard, 3 (schwach) = nur Hint.
+#                      Bei mehreren Treffern gewinnt die niedrigste Zahl.
+#
+# Matching-Reihenfolge: Erste 20 Zeilen des Original-MDs; bei Gleichstand gewinnt
+# der erste Treffer in der Datei (Reihenfolge hier ist bewusst gewählt).
+
+doc_types:
+
+  # ── Rechnungen ──────────────────────────────────────────────────────────────
+  - keywords:
+      - "FATTURA"
+      - "Rechnung"
+      - "Invoice"
+      - "RECHNUNG"
+    typ: rechnung
+    label: "Rechnung / Fattura"
+    prioritaet: 1
+
+  - keywords:
+      - "PREVENTIVO"
+      - "Angebot"
+      - "Offerta"
+      - "Quotation"
+      - "ANGEBOT"
+    typ: angebot
+    label: "Angebot / Preventivo"
+    prioritaet: 2
+
+  - keywords:
+      - "NOTA DI CREDITO"
+      - "Gutschrift"
+      - "Credit note"
+      - "Nota Credito"
+    typ: gutschrift
+    label: "Gutschrift / Nota di Credito"
+    prioritaet: 1
+
+  - keywords:
+      - "RICEVUTA"
+      - "Quittung"
+      - "Receipt"
+    typ: quittung
+    label: "Quittung / Ricevuta"
+    prioritaet: 2
+
+  - keywords:
+      - "MAHNUNG"
+      - "Zahlungserinnerung"
+      - "Sollecito"
+      - "Reminder"
+    typ: mahnung
+    label: "Mahnung / Sollecito"
+    prioritaet: 1
+
+  # ── Finanzen / Bank ─────────────────────────────────────────────────────────
+  - keywords:
+      - "KONTOAUSZUG"
+      - "Estratto conto"
+      - "Bank statement"
+      - "Kontoabschluss"
+    typ: kontoauszug
+    label: "Kontoauszug / Estratto conto"
+    nur_bei_absender: bank
+    prioritaet: 2
+
+  - keywords:
+      - "ÜBERWEISUNGSBELEG"
+      - "Zahlungsbestätigung"
+      - "Bonifico"
+      - "Ricevuta di Bonifico"
+    typ: ueberweisung
+    label: "Überweisung / Bonifico"
+    prioritaet: 2
+
+  # ── Versicherung ─────────────────────────────────────────────────────────────
+  - keywords:
+      - "VERSICHERUNGSSCHEIN"
+      - "POLIZZA"
+      - "Polizza Assicurativa"
+      - "Insurance Policy"
+    typ: versicherungsschein
+    label: "Versicherungsschein / Polizza"
+    prioritaet: 1
+
+  - keywords:
+      - "BEITRAGSANPASSUNG"
+      - "BEITRAGSRECHNUNG"
+      - "Prämienanpassung"
+    typ: beitragsanpassung
+    label: "Beitragsanpassung"
+    prioritaet: 1
+
+  - keywords:
+      - "LEISTUNGSABRECHNUNG"
+      - "ERSTATTUNGSÜBERSICHT"
+      - "Kostenerstattung"
+    typ: leistungsabrechnung
+    label: "Leistungsabrechnung / Erstattung"
+    prioritaet: 1
+
+  # ── Fahrzeug / Behörde ───────────────────────────────────────────────────────
+  - keywords:
+      - "CARTA DI CIRCOLAZIONE"
+      - "LIBRETTO DI CIRCOLAZIONE"
+      - "Fahrzeugbrief"
+      - "Zulassungsbescheinigung"
+    typ: fahrzeugbrief
+    label: "Fahrzeugbrief / Carta di Circolazione"
+    kategorie_hint: italien
+    prioritaet: 1
+
+  - keywords:
+      - "COLLAUDO"
+      - "Hauptuntersuchung"
+      - "TÜV"
+      - "Inspection technique"
+    typ: fahrzeugpruefung
+    label: "Fahrzeugprüfung / Collaudo"
+    kategorie_hint: italien
+    prioritaet: 1
+
+  - keywords:
+      - "IMMATRICOLAZIONE"
+      - "Fahrzeuganmeldung"
+      - "Zulassung"
+      - "Nazionalizzazione"
+    typ: fahrzeuganmeldung
+    label: "Fahrzeuganmeldung / Immatricolazione"
+    kategorie_hint: italien
+    prioritaet: 1
+
+  # ── Behörden / Verwaltung ────────────────────────────────────────────────────
+  - keywords:
+      - "PRENOTAZIONE"
+      - "Terminbestätigung"
+      - "Buchungsbestätigung"
+    typ: terminbestaetigung
+    label: "Terminbestätigung / Prenotazione"
+    prioritaet: 2
+
+  - keywords:
+      - "VERBALE"
+      - "DECRETO"
+      - "ORDINANZA"
+      - "Bescheid"
+      - "Beschluss"
+    typ: bescheid
+    label: "Bescheid / Verbale"
+    prioritaet: 1
+
+  # ── Lieferung / Logistik ─────────────────────────────────────────────────────
+  - keywords:
+      - "BOLLA DI CONSEGNA"
+      - "Lieferschein"
+      - "Delivery note"
+    typ: lieferschein
+    label: "Lieferschein / Bolla di Consegna"
+    prioritaet: 2
+
+  # ── Verträge / Sonstiges ─────────────────────────────────────────────────────
+  - keywords:
+      - "CONTRATTO"
+      - "Vertrag"
+      - "Contract"
+      - "Mietvertrag"
+      - "Contratto di Locazione"
+    typ: vertrag
+    label: "Vertrag / Contratto"
+    prioritaet: 1

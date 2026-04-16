@@ -1,0 +1,117 @@
+# Absender-DB (Iter. 3.7.3)
+#
+# Zweck: Ein erkannter Absender (über Part.Iva / USt-IdNr oder Alias-Match auf
+# die erkannte Firma im Header) liefert deterministisch einen Kategorie-Hint
+# und ggf. einen Adressat-Default.
+#
+# Matching-Reihenfolge beim Lookup:
+#   1. Part.Iva / USt-IdNr (aus Identifier-Extraktor) — strikter Primär-Match
+#   2. Alias (case-insensitive substring) auf header.absender.firma
+#
+# Felder:
+#   id:               stabiler Bezeichner (snake_case), dient als Key
+#   aliases:          Schreibvarianten (inkl. Übersetzungen) — substring-Match
+#   part_iva:         Liste von IT-Part.Iva (11 Ziffern). Mehrere Werte erlaubt (OCR-Varianten)
+#   ust_id:           Liste von DE-USt-IdNr (DE + 9 Ziffern)
+#   iban:             Liste von IBANs (nur zur Identifikation des Absenders, NICHT als Kategorie-Signal)
+#   land:             DE | IT | null
+#   kategorie_hint:   vorgeschlagene category_id — wird dem LLM als starker Hint gegeben
+#   typ_hint:         vorgeschlagene type_id (optional) — muss in categories.yaml existieren
+#   adressat_default: Reinhard | Marion | Linoa | null — starkes Mapping, überschreibt den LLM-Eindruck
+
+absender:
+
+  # ── Gesundheit / Tier ────────────────────────────────────────────────────
+  - id: clinica_veterinaria_amiatina
+    aliases:
+      - "CLINICA VETERINARIA AMIATINA"
+      - "KLINIK VETERINARIA AMIATINA"
+      - "Clinica Veterinaria Amiatina"
+    part_iva:
+      - "02145060501"
+    land: IT
+    kategorie_hint: familie
+    typ_hint: tierarztrechnung
+
+  # ── Italien: Fahrzeuge & Behörden ────────────────────────────────────────
+  - id: lp_pratiche_auto_srl
+    aliases:
+      - "LP PRATICHE AUTO SRL"
+      - "LP Pratiche Auto"
+      - "L.P. PRATICHE AUTO"
+    part_iva:
+      - "01718620535"
+    land: IT
+    kategorie_hint: italien
+    typ_hint: fahrzeug
+
+  - id: motorizzazione_civile_grosseto
+    aliases:
+      - "Motorizzazione Civile"
+      - "Ufficio della Motorizzazione Civile"
+      - "UFFICIO DELLA MOTORIZZAZIONE CIVILE DI GROSSETO"
+      - "BÜRO FÜR ZIVILE MOTORISIERUNG"
+    land: IT
+    kategorie_hint: italien
+    typ_hint: behoerde        # existiert bereits in categories.yaml
+
+  - id: ministero_infrastrutture_trasporti
+    aliases:
+      - "Ministero delle Infrastrutture"
+      - "Ministero delle Infrastrutture e dei Trasporti"
+      - "REPUBBLICA ITALIANA"
+    land: IT
+    kategorie_hint: italien
+    typ_hint: fahrzeug
+
+  # ── Italien: Versorger ───────────────────────────────────────────────────
+  - id: butangas
+    aliases:
+      - "ButanGas"
+      - "BUTANGAS"
+      - "ButanGas S.p.A."
+    part_iva:
+      - "00443130588"
+    land: IT
+    kategorie_hint: immobilien_eigen
+    typ_hint: rechnung
+
+  # ── Deutschland: Krankenversicherung ─────────────────────────────────────
+  - id: huk_coburg
+    aliases:
+      - "HUK"
+      - "HUK-COBURG"
+      - "HUK COBURG"
+      - "HUK-Coburg"
+      - "HUK-Coburg-Krankenversicherung"
+    land: DE
+    kategorie_hint: krankenversicherung
+    adressat_default: Marion
+
+  - id: gothaer
+    aliases:
+      - "Gothaer"
+      - "Gothaer Krankenversicherung"
+    land: DE
+    kategorie_hint: krankenversicherung
+    adressat_default: Reinhard
+
+  - id: vigo
+    aliases:
+      - "vigo"
+      - "Vigo"
+      - "vigo Krankenversicherung"
+      - "vigo Pflegeversicherung"
+      - "vigo Pflegezusatzversicherung"
+    land: DE
+    kategorie_hint: krankenversicherung
+    adressat_default: Marion
+    hinweis: "Pflegezusatzversicherung für Marion Janning"
+
+  - id: barmenia
+    aliases:
+      - "Barmenia"
+      - "Barmenia Krankenversicherung"
+    land: DE
+    kategorie_hint: krankenversicherung
+    adressat_default: Reinhard
