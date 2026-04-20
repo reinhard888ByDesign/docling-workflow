@@ -1,7 +1,14 @@
-# Docling-Workflow — Projektdokumentation
+# Docling-Workflow — Projektdokumentation (Historisch)
 
 **Stand:** 2026-03-27
 **Server:** Ryzen (192.168.86.195)
+
+> ⚠️ **Veraltet seit 2026-04.** Dieses Dokument beschreibt die ursprüngliche `watcher.py`-Architektur mit Open-WebUI-Knowledge-Ingest. Die aktuelle Pipeline läuft über `document-dispatcher` (mit eigenem Klassifikations-LLM, Telegram-Korrektur, Cache-Reader und Batch-Modus). Aktuelle Referenzen:
+> - `PROJEKTDOKUMENTATION.md` — Stand der Live-Architektur
+> - `ARCHITEKTUR.md` — flaches Archiv + On-Demand-Verarbeitung
+> - `PHASE2_PLAN.md` — laufender Umsetzungsstand (Schritte 2.0-2.4 abgeschlossen 2026-04-19)
+>
+> Inhalte unten sind nur noch als historische Referenz erhalten.
 
 ---
 

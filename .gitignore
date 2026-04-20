@@ -24,3 +24,9 @@ __pycache__/
 # Document Dispatcher runtime data
 dispatcher-temp/
 *.bak
+
+# SQLite-DB-Artefakt im Root (produktive DB liegt in dispatcher-temp/)
+/dispatcher.db
+
+# Cache-Reader-Laufzeitdaten (FTS5-Index etc.)
+cache-reader/data/

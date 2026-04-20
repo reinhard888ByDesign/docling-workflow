@@ -199,7 +199,14 @@ categories:
         label: "Steuerbescheid / Finanzamt"
         hints: ["Steuerbescheid", "Finanzamt", "Einkommensteuer", "Grundsteuer",
                 "Elster", "Steuererklärung", "Agenzia delle Entrate", "IMU",
-                "TARI", "Stadtkämmerei"]
+                "TARI", "Stadtkämmerei", "Bescheid", "Festsetzung",
+                "Steuerliche Feststellung"]
+      - id: darlehensvertrag
+        label: "Darlehensvertrag / Kredit"
+        hints: ["Darlehensvertrag", "Kreditvertrag", "Darlehen", "Hypothek",
+                "Annuitätendarlehen", "Tilgungsplan", "Kreditangebot",
+                "Darlehensnehmer", "Baufinanzierung", "Immobilienkredit",
+                "Rückzahlungsplan", "Nettokreditbetrag", "Effektivzinssatz"]
       - id: rechnung_sonstige
         label: "Rechnung sonstige"
         hints: ["Rechnung", "Mahnung", "Zahlungserinnerung", "Lastschrift"]
@@ -292,7 +299,8 @@ categories:
         hints: ["Comune", "Amt", "Genehmigung", "Protocolo", "Anagrafe",
                 "Motorizzazione", "Ufficio Motorizzazione", "Prefettura",
                 "Agenzia delle Entrate", "Questura", "Tributi",
-                "Codice Fiscale", "Residenza"]
+                "Codice Fiscale", "Residenza", "Residenza Anagrafica",
+                "TASI", "IMU"]
       - id: fahrzeug
         label: "Fahrzeug Italien"
         hints: ["Trattore", "Traktor", "Fahrzeugbrief", "Registration",
@@ -366,16 +374,26 @@ categories:
     types:
       - id: flug
         label: "Flug / Airline"
-        hints: ["Flug", "Bordkarte", "Lufthansa", "Airline", "Boarding"]
+        hints: ["Flug", "Bordkarte", "Lufthansa", "Ryanair", "EasyJet",
+                "Qatar", "Emirates", "Airline", "Boarding", "Flight",
+                "Buchungsbestätigung Flug", "E-Ticket"]
       - id: hotel
         label: "Hotel / Unterkunft"
-        hints: ["Hotel", "Reservierung", "Buchungsbestätigung", "Airbnb"]
+        hints: ["Hotel", "Reservierung", "Buchungsbestätigung", "Airbnb",
+                "Booking.com", "Check-in", "Check-out", "Übernachtung",
+                "Resort", "Albergo", "Agriturismo", "B&B", "Pension",
+                "Unterkunft", "Accommodation", "Confirmation", "sembo"]
+      - id: hotel_rechnung
+        label: "Hotelrechnung"
+        hints: ["Hotelrechnung", "Beherbergung", "Folio", "Zimmerrechnung",
+                "Hotel.*Rechnung", "Rechnung.*Hotel"]
       - id: reiseversicherung
         label: "Reiseversicherung"
         hints: ["Reiseversicherung", "ERGO Reise", "Reiserücktritt", "Storno"]
       - id: rechnung_sonstige
         label: "Rechnung sonstige"
-        hints: ["Mietwagen", "Parkgebühr", "Visum"]
+        hints: ["Mietwagen", "Parkgebühr", "Visum", "Fähre", "Bahn", "Zug",
+                "Trenitalia", "Frecciarossa", "Autovermietung"]
 
   bedienungsanleitung:
     label: "Bedienungsanleitungen"
@@ -432,3 +450,62 @@ branchen_regeln:
     hinweis: >
       Bei expliziter Erwähnung eines Mietobjekts (z.B. Bremen, Schechen, Karlsruhe,
       Neuburg, München) stattdessen category_id="immobilien_vermietet".
+
+# ── Keyword-Override-Regeln ───────────────────────────────────────────────────
+# Laufen NACH dem LLM. Wenn ANY keyword im Dokumenttext gefunden wird, wird
+# die Klassifikation überschrieben. Konfidenz wird auf "hoch" gesetzt.
+# keywords: Liste von Strings (case-insensitiv, Teilstring-Match)
+# alle_keywords: falls true, müssen ALLE keywords vorhanden sein (AND)
+keyword_rules:
+  - keywords: ["Darlehensvertrag", "Kreditvertrag", "Annuitätendarlehen",
+               "Darlehensnehmer", "Nettokreditbetrag", "Tilgungsplan",
+               "Baufinanzierung", "Immobilienkredit"]
+    category_id: finanzen
+    type_id: darlehensvertrag
+    beschreibung: "Darlehen / Kredit"
+
+  - keywords: ["Reservierungsbestätigung", "Buchungsbestätigung", "Booking Confirmation",
+               "Reservation Confirmation", "sembo", "Booking.com", "hotels.com",
+               "Expedia", "HRS ", "Check-in", "Check-out", "Agriturismo",
+               "Albergo", "nights stay", "Übernachtungen"]
+    category_id: reisen
+    type_id: hotel
+    beschreibung: "Hotel-Reservierung / Buchungsbestätigung"
+
+  - keywords: ["Bordkarte", "Boarding Pass", "E-Ticket Flug", "Flugschein",
+               "Qatar Airways", "Lufthansa", "Ryanair", "EasyJet", "Emirates",
+               "Condor", "TUIfly", "Gate ", "Flight Number", "Flugnummer"]
+    category_id: reisen
+    type_id: flug
+    beschreibung: "Flug / Bordkarte"
+
+  - keywords: ["Mietvertrag", "Mietzins", "Kaltmiete", "Warmmiete",
+               "Mieter", "Vermieter", "Mietbeginn", "Mietzeit"]
+    category_id: immobilien_vermietet
+    type_id: mietvertrag
+    beschreibung: "Mietvertrag"
+
+  - keywords: ["Gehaltsabrechnung", "Lohnabrechnung", "Bruttolohn", "Nettolohn",
+               "Sozialversicherung", "Lohnsteuer", "Arbeitnehmerin", "Arbeitnehmer"]
+    category_id: business
+    type_id: gehalt_arbeitgeber
+    beschreibung: "Gehaltsabrechnung"
+
+  - keywords: ["Steuerbescheid", "Einkommensteuerbescheid", "Grundsteuerbescheid",
+               "Finanzamt", "Festsetzung", "zu zahlende Steuer", "Steuererstattung",
+               "Agenzia delle Entrate", "IMU ", "TARI "]
+    category_id: finanzen
+    type_id: steuer
+    beschreibung: "Steuerbescheid"
+
+  - keywords: ["Kaufvertrag", "Grundbuchauszug", "Katasterauszug", "Notariell",
+               "Notar", "Rogito", "Visura Catastale", "Baugenehmigung"]
+    category_id: immobilien_eigen
+    type_id: vertrag
+    beschreibung: "Immobilien Kaufvertrag / Grundbuch"
+
+  - keywords: ["Kontoauszug", "Kontoabschluss", "Umsatzübersicht",
+               "Estratto conto", "Girokonto", "Bankabschluss"]
+    category_id: finanzen
+    type_id: kontoauszug
+    beschreibung: "Kontoauszug"

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """
+DEPRECATED seit 2026-04-19 (flache Archiv-Architektur).
+Nachfolger: `dispatcher.py --batch <liste>` und Dashboard `/batch`.
+Datei bleibt lauffähig für Einzelfälle, wird aber nicht mehr gepflegt.
+
 Batch-Reimport: Leistungsabrechnungen ohne Erstattungspositionen
 nachträglich durch Docling + Ollama schicken und Positionen in DB eintragen.
 

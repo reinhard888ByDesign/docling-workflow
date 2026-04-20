@@ -40,7 +40,7 @@ services:
       - CONFIG_FILE=/config/categories.yaml
       - DOCLING_URL=http://docling-serve:5001
       - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=qwen2.5:7b
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma4:e4b}
       - OLLAMA_TRANSLATE_MODEL=${OLLAMA_TRANSLATE_MODEL:-qwen2.5:7b}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
@@ -48,6 +48,8 @@ services:
       - VAULT_ROOT=/data/reinhards-vault
       - API_PORT=8765
       - HOST_IP=${HOST_IP:-192.168.86.195}
+      - CACHE_READER_URL=http://cache-reader:8501
+      - TZ=Europe/Rome
     ports:
       - "8765:8765"
     volumes:
@@ -56,11 +58,30 @@ services:
       - ./dispatcher-config:/config
       - ./syncthing/data/reinhards-vault:/data/reinhards-vault
       - /home/reinhard/.local/bin/enzyme:/usr/local/bin/enzyme:ro
+      - /home/reinhard/.ssh/id_ed25519:/ssh/id_ed25519:ro
     networks:
       - docling-net
       - ollama-net
     depends_on:
       - docling-serve
+
+  cache-reader:
+    build: ./cache-reader
+    container_name: cache-reader
+    restart: unless-stopped
+    environment:
+      - CACHE_DIR=/vault-cache
+      - INDEX_DB=/data/index.db
+      - HTTP_PORT=8501
+      - LOG_LEVEL=info
+      - TZ=Europe/Rome
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./syncthing/data/reinhards-vault/.obsidian/plugins/text-extractor/cache:/vault-cache:ro
+      - ./cache-reader/data:/data
+    networks:
+      - docling-net
 
 networks:
   docling-net:
