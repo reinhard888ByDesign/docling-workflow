@@ -38,7 +38,7 @@ DEEPSEEK_KEY    = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_MODEL  = os.environ.get("DEEPSEEK_MODEL",   "deepseek-chat")
 DEEPSEEK_URL    = "https://api.deepseek.com/v1/chat/completions"
 
-TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN", "8382100394:AAE8SWmXbzxqiJpAESnYYWJeNzVfLrokQhA")
+TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT   = os.environ.get("TELEGRAM_CHAT_ID",   "8620231031")
 DISABLE_TG_POLL = os.environ.get("DISABLE_TELEGRAM_POLL", "0") == "1"
 PENDING_MINUTES = int(os.environ.get("PENDING_MINUTES", "60"))

@@ -1,0 +1,17 @@
+[Unit]
+Description=Lärmbär — Home Assistant Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/reinhard/.openclaw/scripts/laerenbaer.py
+Restart=on-failure
+RestartSec=30
+EnvironmentFile=/home/reinhard/.openclaw/secrets.env
+Environment=TELEGRAM_CHAT_ID=8620231031
+Environment=HA_URL=http://192.168.86.183:8123
+Environment=HA_TOKEN_FILE=/home/reinhard/.config/homeassistant/token
+Environment=POLL_TIMEOUT=30
+
+[Install]
+WantedBy=default.target

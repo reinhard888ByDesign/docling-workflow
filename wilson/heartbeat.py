@@ -24,7 +24,7 @@ CACHE_URL      = os.environ.get("CACHE_URL",      "http://192.168.86.195:8765/ap
 DOCLING_URL    = os.environ.get("DOCLING_URL",     "http://192.168.86.195:8765/api/proxy/docling")
 OLLAMA_URL     = os.environ.get("OLLAMA_URL",      "http://192.168.86.195:11434")
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8621101278:AAHI9CkevPBpZ2uxZQIFyxjGP2m4VUXislE")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT_ID",   "8620231031")
 
 POLL_INTERVAL   = int(os.environ.get("HEARTBEAT_INTERVAL",     "90"))   # Sekunden

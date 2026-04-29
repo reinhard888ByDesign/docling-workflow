@@ -7,7 +7,7 @@ import os, time, logging, sqlite3, requests, html, subprocess
 from pathlib import Path
 
 # ── Config ───────────────────────────────────────────────────────────────────
-BOT_TOKEN      = os.environ.get("TELEGRAM_BOT_TOKEN", "8621101278:AAHI9CkevPBpZ2uxZQIFyxjGP2m4VUXislE")
+BOT_TOKEN      = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID        = int(os.environ.get("TELEGRAM_CHAT_ID", "8620231031"))
 DEEPSEEK_KEY   = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")

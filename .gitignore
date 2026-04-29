@@ -14,8 +14,9 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Secrets (falls .env verwendet wird)
+# Secrets — niemals committen
 .env
+wilson/secrets.env
 
 # macOS
 .DS_Store

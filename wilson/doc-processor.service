@@ -11,12 +11,11 @@ RestartSec=30
 StandardOutput=journal
 StandardError=journal
 Environment=PYTHONUNBUFFERED=1
-Environment=TELEGRAM_BOT_TOKEN=8382100394:AAE8SWmXbzxqiJpAESnYYWJeNzVfLrokQhA
+EnvironmentFile=/home/reinhard/.openclaw/secrets.env
 Environment=TELEGRAM_CHAT_ID=8620231031
 Environment=DISPATCHER_URL=http://192.168.86.195:8765
 Environment=OLLAMA_URL=http://192.168.86.195:11434
 Environment=OLLAMA_MODEL=gemma4:e4b
-Environment=DEEPSEEK_API_KEY=sk-265644cbc2454215bc903dd32acc129a
 Environment=DEEPSEEK_MODEL=deepseek-chat
 Environment=PENDING_MINUTES=60
 Environment=POLL_INTERVAL=15
