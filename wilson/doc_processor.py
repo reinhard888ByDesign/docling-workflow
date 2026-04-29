@@ -6,6 +6,7 @@ manages 60-min pending queue, handles Telegram corrections.
 """
 
 import hashlib
+import html
 import json
 import logging
 import os
@@ -936,7 +937,42 @@ def _handle_tg_pdf_upload(doc: dict):
 def handle_text_message(msg: dict):
     """Verarbeitet eingehende Textnachrichten als Korrektureingaben."""
     text = msg.get("text", "").strip()
-    if not text or text.startswith("/"):
+    if not text:
+        return
+
+    if text.startswith("/"):
+        _handle_command(text)
+        return
+
+def _handle_command(text: str):
+    cmd = text.split()[0].lower()
+
+    if cmd in ("/start", "/hilfe", "/help"):
+        tg_send(
+            "📄 <b>Dispatcher-Bot</b>\n\n"
+            "Schick ein PDF → automatische OCR, Kategorisierung und Ablage in Reinhards Vault.\n\n"
+            "<b>Befehle:</b>\n"
+            "/status — ausstehende Dokumente anzeigen\n"
+            "/hilfe — diese Hilfe"
+        )
+        return
+
+    if cmd == "/status":
+        with get_db() as con:
+            rows = con.execute(
+                "SELECT orig_name, status, created_at FROM pending "
+                "WHERE status NOT IN ('transferred','rejected') ORDER BY created_at DESC LIMIT 10"
+            ).fetchall()
+        if not rows:
+            tg_send("✅ Keine ausstehenden Dokumente.")
+            return
+        lines = [f"📋 <b>Ausstehende Dokumente ({len(rows)})</b>"]
+        status_icon = {"pending": "⏳", "correcting": "✏️", "guided_kat": "🗂️",
+                       "guided_adr": "👤", "guided_abs": "🏢", "guided_fin": "✅"}
+        for r in rows:
+            icon = status_icon.get(r["status"], "❓")
+            lines.append(f"{icon} <b>{html.escape(r['orig_name'])}</b>\n   {r['status']} · {r['created_at']}")
+        tg_send("\n\n".join(lines))
         return
 
     with get_db() as con:
