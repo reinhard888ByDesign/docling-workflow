@@ -11,6 +11,8 @@ RestartSec=30
 StandardOutput=journal
 StandardError=journal
 Environment=PYTHONUNBUFFERED=1
+Environment=TELEGRAM_BOT_TOKEN=8382100394:AAE8SWmXbzxqiJpAESnYYWJeNzVfLrokQhA
+Environment=TELEGRAM_CHAT_ID=8620231031
 Environment=DISPATCHER_URL=http://192.168.86.195:8765
 Environment=OLLAMA_URL=http://192.168.86.195:11434
 Environment=OLLAMA_MODEL=gemma4:e4b
