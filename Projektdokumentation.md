@@ -1,6 +1,6 @@
 # Persönliches KI-gestütztes Dokumentenmanagement — Projektdokumentation
 
-**Stand: 2026-04-27 — Phase 2.5 abgeschlossen: 1.188 Duplikate bereinigt, Anlagen/ von 3.073 auf 1.885 PDFs**
+**Stand: 2026-04-29 — AI-Assistent-Bot eingeführt, zwei getrennte Telegram-Bots, DeepSeek-Integration auf Wilson**
 
 > Dieses Dokument ist das konsolidierte Referenzdokument des Projekts. Es ersetzt:
 > - `projekt_beschreibung_expertenberatung.md` — Strategiedokument (war führend)
@@ -72,11 +72,19 @@ input-dispatcher/
 
 **Wilson-Dienste (systemd user services auf Pi 5, 192.168.3.124):**
 
-| Service | Datei | Funktion |
-|---|---|---|
-| `doc-processor` | `wilson/doc_processor.py` | Dokument-Eingang, OCR via Ryzen, Sidecar-JSON, Telegram |
-| `heartbeat` | `wilson/heartbeat.py` | Service-Monitor: pollt Dispatcher/Cache-Reader/Docling/Ollama alle 90s, Telegram-Alert bei 2 Fehlern |
-| `openclaw-gateway` | (OpenClaw intern) | Telegram-Bot-Gateway, LLM-Konversation, Skills |
+| Service | Datei | Bot-Token | Funktion |
+|---|---|---|---|
+| `doc-processor` | `wilson/doc_processor.py` | `8382100394` (Dispatcher-Bot) | Dokument-Eingang, OCR via Ryzen, Sidecar-JSON, Telegram-Benachrichtigung |
+| `ai-assistant` | `wilson/ai_assistant.py` | `8621101278` (AI-Assistent-Bot) | DeepSeek-Chat, Projekte Vault direkt, Reinhards Vault via enzyme |
+| `heartbeat` | `wilson/heartbeat.py` | — | Service-Monitor: pollt Dispatcher/Cache-Reader/Docling/Ollama alle 90s, Telegram-Alert bei 2 Fehlern |
+| `openclaw-gateway` | (OpenClaw intern) | — (Telegram deaktiviert) | WebSocket-Gateway für Crestodian (CLI), Telegram-Polling deaktiviert (war 409-Konflikt) |
+
+**Zwei getrennte Telegram-Bots (Stand 2026-04-29):**
+
+| Bot | Token-Prefix | Pollt | Befehle |
+|---|---|---|---|
+| **Dispatcher-Bot** | `8382100394` | `doc-processor` | `/status` (ausstehende Docs), `/hilfe` |
+| **AI-Assistent** | `8621101278` | `ai-assistant` | `/suche /lese /aufgaben /vault /dokumente /themen /reset /hilfe` |
 
 **Wilson OpenClaw Skills** (`~/.openclaw/skills/` auf Wilson):
 
@@ -365,7 +373,64 @@ Aus dem bereits vorhandenen Text-Extractor-Cache könnten **ca. 200–250 Dokume
 
 ---
 
-## 6. Vault-Abfragen via Telegram und OpenClaw
+## 6. Zwei Vaults — Zwei Bots
+
+### Vault-Übersicht
+
+Das System nutzt zwei getrennte Obsidian-Vaults mit unterschiedlichen Zwecken:
+
+| Vault | Ort | Inhalt | Zugang |
+|---|---|---|---|
+| **Reinhards Vault** | Ryzen `/home/reinhard/docker/RYZEN - docling-workflow/syncthing/data/reinhards-vault` | Dokumentenarchiv — 1.885 PDFs, 1.923 MDs, alle Kategorien | enzyme (Port 11180), Dispatcher-Dashboard (Port 8765) |
+| **Projekte Vault** | Wilson `/home/reinhard/Vaults` | Projektmanagement — AUFGABEN, Themen, Memory, Business, Garten, Pool, FengShui | Direktes Lesen (ai_assistant.py), OpenClaw-Workspace |
+
+### AI-Assistent-Bot (Port 8621101278, Service: ai-assistant)
+
+Eigenständiger Telegram-Bot auf Wilson. Trennt AI-Chat vollständig vom Dokumenten-Workflow.
+
+**Projekte Vault (Wilson, direkt — kein enzyme nötig):**
+
+| Befehl | Funktion |
+|---|---|
+| `/suche <Begriff>` | Volltextsuche (grep) in allen .md-Dateien |
+| `/lese <Dateiname>` | Datei lesen per Teilstring-Match |
+| `/aufgaben` | AUFGABEN.md direkt anzeigen |
+| `/vault` | Vault-Struktur-Übersicht |
+
+**Reinhards Vault (Ryzen, via enzyme):**
+
+| Befehl | Funktion |
+|---|---|
+| `/dokumente <Begriff>` | Semantische Suche via enzyme `/catalyze` |
+| `/themen` | Aktive Vault-Themen via enzyme `/petri` |
+
+**AI-Chat:**
+- Freier Text → DeepSeek API mit Gesprächsgedächtnis (SQLite, max. 20 Nachrichten)
+- AUFGABEN.md + MEMORY.md + USER.md werden **bei jedem Chat automatisch als Kontext** mitgegeben
+- `/reset` — Gesprächsverlauf löschen
+
+**Technisch:**
+- `wilson/ai_assistant.py` — polling auf eigenem Bot-Token, keine Abhängigkeit von OpenClaw-Gateway
+- SQLite: `~/.openclaw/ai_assistant.db` (history + tg_offset)
+- DeepSeek-Key aus env (`DEEPSEEK_API_KEY`)
+- enzyme URL: `http://192.168.86.195:11180` (Ryzen)
+
+### Dispatcher-Bot (Token 8382100394, Service: doc-processor)
+
+Fokussiert auf Dokumentenverarbeitung. Befehle:
+
+| Befehl | Funktion |
+|---|---|
+| `/status` | Ausstehende Dokumente mit Status-Icons (⏳✏️🗂️) |
+| `/hilfe` | Kurzanleitung |
+
+PDF senden → automatische OCR + Kategorisierung + Vault-Ablage.
+
+### Warum getrennte Bots
+
+Telegram erlaubt nur einen aktiven `getUpdates`-Poller pro Bot-Token (409 Conflict). Der OpenClaw-Gateway und der doc_processor konkurrierten früher um denselben Token → Gateway crashte. Lösung: eigenständiger Token pro Dienst.
+
+**OpenClaw-Gateway:** Telegram dauerhaft deaktiviert (`channels.telegram.enabled: false`). Weiterhin nutzbar via WebSocket (Crestodian CLI: `ws://127.0.0.1:18789`).
 
 ### OmniSearch / cache-reader als Basis
 
@@ -376,50 +441,15 @@ GET http://cache-reader:8501/search?q=<suchbegriff>&limit=<n>
 → [{"path": "...", "score": 0.92, "excerpt": "...", "langs": "de"}, ...]
 ```
 
-Kein Obsidian läuft dabei. Kein LLM wird aufgerufen. Antwort kommt in <100 ms.
-
-### Telegram-Workflow (Smartphone-Display)
-
-**Schritt 1: Suchanfrage**
-```
-User → /suche Handwerker Seggiano 2025
-
-Bot: 📂 12 Treffer
-
-1. Ferroli Rechnung (03/25) .94
-   …Heizungswartung Podere…
-2. Bonifica Amiata (06/25) .88
-3. Elettricista Russo (07/25) .85
-
-[Mehr] [Alle verarbeiten] [Abbrechen]
-```
-
-**Schritt 2: Batch-Auswertung**
-```
-Bot: ✅ Fertig. Gesamt: 8.420 EUR
-     [CSV herunterladen] [Details]
-```
-
-### Sinnvolle Telegram-Befehle (geplant Phase 3)
+### Sinnvolle Dispatcher-Bot-Befehle (geplant Phase 3)
 
 | Befehl | Funktion |
 |---|---|
-| `/suche <Begriff>` | Volltextsuche im Vault, kompakte Liste |
 | `/kategorie <Name>` | Alle Dokumente einer Kategorie |
 | `/auswertung <Begriff> <Jahr>` | Suchen + Beträge summieren |
-| `/status` | Pipeline-Status, letzte Verarbeitungen |
 | `/inbox` | Aktueller Inhalt der Inbox |
 | `/verarbeite <ids>` | Ausgewählte Dokumente on demand klassifizieren |
 | `/reocr <id>` | Re-OCR-Fallback für Stub |
-
-### OpenClaw als Gateway auf dem Pi
-
-OpenClaw läuft auf dem Raspberry Pi ("Wilson") und dient als Relay-Punkt: nimmt Telegram-Befehle entgegen, leitet Suchanfragen an den Ryzen weiter (HTTP via LAN), puffert Ergebnisse bei schlechter Verbindung.
-
-**Einschränkungen Telegram-Display:**
-- Nachrichten begrenzt auf 4.096 Zeichen
-- Tabellen schlecht auf Smartphone → bevorzugt nummerierte Listen
-- Für längere Auswertungen: Ergebnis als Datei senden (CSV/PDF)
 
 ---
 
@@ -895,11 +925,26 @@ Bekannte KV-Absender (HUK, Gothaer, Barmenia, vigo) werden deterministisch auf `
 |---|---|---|
 | Heartbeat Agent | `wilson/heartbeat.py` | Pollt Dispatcher/Cache-Reader/Docling/Ollama alle 90s. Telegram-Alert nach 2 Fehlern, Recovery-Meldung, Tages-Report 08:00. State in `~/.openclaw/heartbeat_state.json`. |
 | Heartbeat Service | `wilson/heartbeat.service` | systemd user service, alle Intervalle via Env-Vars konfigurierbar |
-| Deploy-Skript | `wilson/deploy-wilson.sh` | Deployt `doc_processor.py`, `heartbeat.py`, beide `.service`-Dateien in einem Schritt |
-| Ollama-Modell | `wilson/doc-processor.service` | `OLLAMA_MODEL=gemma4:e4b` → **`qwen2.5:7b`** (folgt Instruktionen zuverlässiger) |
+| Deploy-Skript | `wilson/deploy-wilson.sh` | Deployt alle Wilson-Scripts + Services in einem Schritt |
 | Vault-Suche Skill | `~/.openclaw/skills/enzyme/SKILL.md` | Semantische Suche im Vault via `POST http://192.168.86.195:11180/catalyze` — **Port-Fix: war 8080 (tot), jetzt 11180** |
 | PDF-Download Skill | `~/.openclaw/skills/dispatcher/SKILL.md` | Neuer Abschnitt: `/api/vault-pdf` — Wilson lädt PDF und sendet via Telegram `sendDocument` |
 | PDF-Endpunkt | `dispatcher/dispatcher.py` `/api/vault-pdf` | Liest MD, löst `original:`-Link auf, liefert PDF als Download-Attachment |
+
+**Ergänzungen 2026-04-29:**
+
+| Komponente | Datei | Beschreibung |
+|---|---|---|
+| DeepSeek-Integration | `wilson/doc_processor.py` | Primäres LLM: DeepSeek API (`deepseek-chat`). Fallback: Ollama `gemma4:e4b`. Key via `DEEPSEEK_API_KEY` in Service-Env. |
+| HTML-Entity-Fix | `wilson/doc_processor.py` | `html.unescape()` für `absender`, `kurzbezeichnung`, `beschreibung` nach LLM-Extraktion |
+| Keyword-Override immobilien_eigen | `wilson/doc_processor.py` | Bei `kategorie=archiv` + Seggiano/Podere/Grassauer/Bonifica → deterministisch `immobilien_eigen` |
+| PDF-Upload via Telegram | `wilson/doc_processor.py` | `_handle_tg_pdf_upload()` — PDF aus Dispatcher-Bot-Chat empfangen, OCR, Sidecar, Weiterleitung |
+| Getrennter Bot-Token | `wilson/doc-processor.service` | Dispatcher-Bot: `8382100394`. Verhindert 409-Konflikt mit AI-Assistenten. |
+| Dispatcher-Bot Befehle | `wilson/doc_processor.py` | `/hilfe`, `/status` (ausstehende Dokumente mit Icons) |
+| AI-Assistent-Bot | `wilson/ai_assistant.py` | Eigenständiger Bot (Token `8621101278`): DeepSeek-Chat + Projekte Vault direkt + enzyme für Reinhards Vault |
+| AI-Assistent Service | `wilson/ai-assistant.service` | systemd user service, läuft parallel zu doc-processor |
+| POLIZIA-Keyword-Regel | `dispatcher-config/categories.yaml` | Polizia Stradale / POLIZIA DI STATO → `fahrzeuge` (zuvor LLM-Fehler → fengshui) |
+| Mac Syncthing Tile | `dispatcher/dispatcher.py` | URL-Extraktion aus `svc.address` ohne `tcp://`-Prefix (Regex-Fix) |
+| Telegram-Menü | Telegram API `setMyCommands` | Beide Bots haben `/`-Befehlsmenü in Telegram |
 
 **Vault-Suche + PDF-Download — Telegram-Flow:**
 ```
