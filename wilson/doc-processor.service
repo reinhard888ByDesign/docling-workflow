@@ -1,0 +1,23 @@
+[Unit]
+Description=Wilson Document Processor
+After=network.target openclaw-gateway.service
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/reinhard/.openclaw/scripts/doc_processor.py
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+Environment=DISPATCHER_URL=http://192.168.86.195:8765
+Environment=OLLAMA_URL=http://192.168.86.195:11434
+Environment=OLLAMA_MODEL=gemma4:e4b
+Environment=DEEPSEEK_API_KEY=sk-265644cbc2454215bc903dd32acc129a
+Environment=DEEPSEEK_MODEL=deepseek-chat
+Environment=PENDING_MINUTES=60
+Environment=POLL_INTERVAL=15
+
+[Install]
+WantedBy=default.target

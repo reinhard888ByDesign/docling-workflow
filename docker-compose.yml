@@ -25,6 +25,8 @@ services:
     environment:
       - DOCLING_SERVE_NUM_WORKERS=2
       - DOCLING_SERVE_MAX_SYNC_WAIT=600
+    ports:
+      - "5001:5001"            # OCR API (Wilson + externe Zugriffe)
     volumes:
       - ./docling-cache:/home/docling/.cache
     networks:
@@ -44,6 +46,7 @@ services:
       - OLLAMA_TRANSLATE_MODEL=${OLLAMA_TRANSLATE_MODEL:-qwen2.5:7b}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - DISABLE_TELEGRAM_POLL=1
       - VAULT_PDF_ARCHIV=/data/reinhards-vault/Anlagen
       - VAULT_ROOT=/data/reinhards-vault
       - API_PORT=8765

@@ -1,0 +1,24 @@
+[Unit]
+Description=Wilson Heartbeat — Ryzen Service Monitor
+After=network.target openclaw-gateway.service
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/reinhard/.openclaw/scripts/heartbeat.py
+Restart=on-failure
+RestartSec=60
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+Environment=DISPATCHER_URL=http://192.168.86.195:8765
+Environment=CACHE_URL=http://192.168.86.195:8765/api/proxy/cache-reader
+Environment=DOCLING_URL=http://192.168.86.195:8765/api/proxy/docling
+Environment=OLLAMA_URL=http://192.168.86.195:11434
+Environment=HEARTBEAT_INTERVAL=90
+Environment=HEARTBEAT_THRESHOLD=2
+Environment=HEARTBEAT_TIMEOUT=8
+Environment=HEARTBEAT_DAILY_HOUR=8
+
+[Install]
+WantedBy=default.target

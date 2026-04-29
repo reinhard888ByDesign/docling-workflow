@@ -365,6 +365,41 @@ def init_db():
             if col not in cols_items:
                 con.execute(f"ALTER TABLE batch_items ADD COLUMN {col} {ddl}")
                 log.info(f"Migration: batch_items.{col} ({ddl}) hinzugefügt")
+        # Duplikat-Erkennung Tabellen
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS duplikat_scans (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                status       TEXT DEFAULT 'running',
+                total_pdfs   INTEGER DEFAULT 0,
+                byte_gruppen INTEGER DEFAULT 0,
+                sem_gruppen  INTEGER DEFAULT 0,
+                started_at   TEXT DEFAULT (datetime('now','localtime')),
+                finished_at  TEXT
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS duplikat_gruppen (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id    INTEGER REFERENCES duplikat_scans(id),
+                typ        TEXT,
+                pdf_hash   TEXT,
+                datum      TEXT,
+                absender   TEXT,
+                status     TEXT DEFAULT 'offen',
+                created_at TEXT DEFAULT (datetime('now','localtime'))
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS duplikat_eintraege (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                gruppe_id    INTEGER NOT NULL REFERENCES duplikat_gruppen(id),
+                pdf_pfad     TEXT,
+                md_pfad      TEXT,
+                ist_original INTEGER DEFAULT 0,
+                verschoben   INTEGER DEFAULT 0,
+                created_at   TEXT DEFAULT (datetime('now','localtime'))
+            )
+        """)
     log.info(f"Datenbank initialisiert: {DB_FILE}")
 
 
@@ -991,6 +1026,9 @@ def tg_poll():
     """Empfängt Telegram-Updates: /frage-Befehle + Callback Queries für Korrekturen."""
     if not TELEGRAM_TOKEN:
         return
+    if os.environ.get("DISABLE_TELEGRAM_POLL", "0") == "1":
+        log.info("Telegram-Polling deaktiviert (DISABLE_TELEGRAM_POLL=1)")
+        return
     offset = 0
     log.info("Telegram-Polling gestartet.")
     while True:
@@ -1064,6 +1102,26 @@ def tg_poll():
                                             cb_msg.get("text", "") + "\n\n❌ Abgebrochen",
                                             reply_markup={"inline_keyboard": []})
 
+                        elif cb_data.startswith(("gkat:", "gadr:", "gabs:", "gabsneu:", "gfin:", "gedit:", "reject:", "confirm:", "correct:", "back:", "field:", "setcat:", "setadr:")):
+                            # Wilson-Callbacks — an Wilson-Relay weiterleiten
+                            try:
+                                r = requests.post(
+                                    f"http://{WILSON_PI_HOST}:8770/tg/callback",
+                                    json={
+                                        "callback_id": cb_id,
+                                        "data": cb_data,
+                                        "chat_id": cb_chat,
+                                        "msg_id": cb_msg_id,
+                                        "msg_text": cb_msg.get("text", ""),
+                                    },
+                                    timeout=10,
+                                )
+                                if not r.ok:
+                                    tg_answer_callback(cb_id, f"❌ Wilson: {r.status_code}")
+                            except Exception as we:
+                                log.warning(f"Wilson-Relay Fehler: {we}")
+                                tg_answer_callback(cb_id, "❌ Wilson nicht erreichbar")
+
                     except Exception as e:
                         log.warning(f"Callback-Fehler: {e}")
                         tg_answer_callback(cb_id, f"❌ Fehler: {str(e)[:100]}")
@@ -1078,6 +1136,38 @@ def tg_poll():
 
                 if chat_id != TELEGRAM_CHAT:
                     log.warning(f"TG-Poll: chat_id-Mismatch — ignoriere Nachricht")
+                    continue
+
+                # ── PDF-Datei direkt an Bot geschickt ──
+                doc = msg.get("document", {})
+                if doc.get("mime_type") == "application/pdf":
+                    file_id   = doc["file_id"]
+                    file_name = doc.get("file_name") or f"telegram_{file_id[:8]}.pdf"
+                    if not file_name.lower().endswith(".pdf"):
+                        file_name += ".pdf"
+                    log.info(f"TG-Upload PDF: {file_name}")
+                    try:
+                        r_file = requests.get(
+                            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile",
+                            params={"file_id": file_id}, timeout=10,
+                        )
+                        file_path_tg = r_file.json()["result"]["file_path"]
+                        r_dl = requests.get(
+                            f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path_tg}",
+                            timeout=60,
+                        )
+                        dest = WATCH_DIR / file_name
+                        # Dateiname-Konflikt vermeiden
+                        counter = 1
+                        while dest.exists():
+                            dest = WATCH_DIR / f"{dest.stem}_{counter}.pdf"
+                            counter += 1
+                        dest.write_bytes(r_dl.content)
+                        tg_send(f"📥 <b>Dokument empfangen</b>\n<code>{file_name}</code>\nWird verarbeitet…")
+                        log.info(f"TG-Upload gespeichert: {dest.name}")
+                    except Exception as e:
+                        log.warning(f"TG-Upload Fehler: {e}")
+                        tg_send(f"❌ Fehler beim Empfangen der Datei: {e}")
                     continue
 
                 if text.lower().startswith("/frage"):
@@ -1190,10 +1280,12 @@ try:
         result["gateway"].get("version_installed") != result["gateway"].get("version_available"))
 except: pass
 
-# --- Health Port 18792 ---
+# --- Health: Gateway antwortet auf 18789 (jede HTTP-Antwort = up) ---
 try:
-    urllib.request.urlopen("http://localhost:18792/", timeout=2)
+    urllib.request.urlopen("http://localhost:18789/", timeout=2)
     result["gateway"]["health_ok"] = True
+except urllib.error.HTTPError:
+    result["gateway"]["health_ok"] = True   # HTTP-Fehler = Port offen = Gateway läuft
 except:
     result["gateway"]["health_ok"] = False
 
@@ -1301,6 +1393,71 @@ def _collect_wilson_status() -> dict:
         return {"error": str(e), "ts": datetime.now().isoformat(timespec="seconds")}
 
 
+_WILSON_TUI_PORT = int(os.environ.get("WILSON_TUI_PORT", "7681"))
+
+
+def _fetch_wilson_tui_info() -> dict:
+    """Liefert Host/Port/URL für die ttyd-TUI. Kein Auth — LAN-interne Nutzung."""
+    return {
+        "host": _WILSON_HOST,
+        "port": _WILSON_TUI_PORT,
+        "url":  f"http://{_WILSON_HOST}:{_WILSON_TUI_PORT}/",
+    }
+
+
+def _collect_wilson_logs(lines: int = 200) -> dict:
+    """Holt die letzten N Zeilen des *aktuellen* openclaw-Logs vom Pi.
+    Das Gateway benennt die Logdatei nach dem Startdatum, nicht nach dem heutigen
+    Datum — wir wählen daher die zuletzt geänderte Datei unter /tmp/openclaw/."""
+    lines = max(10, min(int(lines), 2000))
+    try:
+        import paramiko
+        key = paramiko.Ed25519Key.from_private_key_file("/ssh/id_ed25519")
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(_WILSON_HOST, username="reinhard", pkey=key, timeout=5, banner_timeout=10)
+        cmd = (
+            "F=$(ls -1t /tmp/openclaw/openclaw-*.log 2>/dev/null | head -n 1); "
+            "if [ -n \"$F\" ] && [ -f \"$F\" ]; then "
+            "  echo __FILE__$F; echo __SIZE__$(stat -c%%s \"$F\"); "
+            "  echo __MTIME__$(stat -c%%Y \"$F\"); "
+            "  echo __LINES__; tail -n %d \"$F\"; "
+            "else echo __MISSING__; fi"
+        ) % lines
+        stdin, stdout, stderr = client.exec_command(cmd, timeout=10)
+        out = stdout.read().decode(errors="replace")
+        client.close()
+        file_path, size, mtime, raw_lines, missing = None, None, None, [], False
+        in_lines = False
+        for ln in out.splitlines():
+            if ln.startswith("__FILE__"):
+                file_path = ln[len("__FILE__"):]
+            elif ln.startswith("__SIZE__"):
+                try: size = int(ln[len("__SIZE__"):])
+                except: pass
+            elif ln.startswith("__MTIME__"):
+                try: mtime = int(ln[len("__MTIME__"):])
+                except: pass
+            elif ln.startswith("__MISSING__"):
+                missing = True
+            elif ln == "__LINES__":
+                in_lines = True
+            elif in_lines:
+                raw_lines.append(ln)
+        return {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "file": file_path,
+            "missing": missing,
+            "size_bytes": size,
+            "mtime": mtime,
+            "requested_lines": lines,
+            "returned_lines": len(raw_lines),
+            "lines": raw_lines,
+        }
+    except Exception as e:
+        return {"error": str(e), "ts": datetime.now().isoformat(timespec="seconds")}
+
+
 def _collect_health() -> dict:
     """Aggregiert Health-Status aller Workflow-Dienste."""
     services = {}
@@ -1354,12 +1511,72 @@ def _collect_health() -> dict:
         rc = requests.get("http://syncthing:8384/rest/system/connections", headers=hdrs, timeout=4)
         conns = rc.json().get("connections", {})
         connected = sum(1 for v in conns.values() if v.get("connected"))
+        # Folder statuses
+        rf = requests.get("http://syncthing:8384/rest/config/folders", headers=hdrs, timeout=4)
+        folders_info = []
+        overall_st = "ok"
+        for folder in rf.json():
+            fid = folder["id"]
+            flabel = folder.get("label") or fid
+            fs = requests.get(f"http://syncthing:8384/rest/db/status?folder={fid}", headers=hdrs, timeout=4).json()
+            fe = requests.get(f"http://syncthing:8384/rest/folder/errors?folder={fid}", headers=hdrs, timeout=4).json()
+            state = fs.get("state", "unknown")
+            need = fs.get("needFiles", 0)
+            errors = fs.get("errors", 0)
+            file_errors = [e["error"] for e in (fe.get("errors") or [])[:3]]
+            fstatus = "ok"
+            if state == "error" or errors > 0:
+                fstatus = "error"
+                overall_st = "warn"
+            elif need > 0:
+                fstatus = "warn"
+                if overall_st == "ok":
+                    overall_st = "warn"
+            folders_info.append({
+                "id": fid, "label": flabel, "state": state,
+                "need": need, "errors": errors,
+                "file_errors": file_errors, "status": fstatus,
+            })
         services["syncthing"] = {
-            "label": "Syncthing", "status": "ok",
+            "label": "Syncthing", "status": overall_st,
             "uptime_h": uptime_h, "connections": f"{connected}/{len(conns)}",
+            "folders": folders_info,
         }
     except Exception as e:
         services["syncthing"] = {"label": "Syncthing", "status": "error", "error": str(e)}
+
+    # 4b — Syncthing Mac
+    _MAC_DEVICE_ID = "GBO2KI7-XYW4XSL-X7YH7RR-42NXUG6-3G366HT-6SWV2WG-76BD7DA-YCUO7AP"
+    try:
+        hdrs = {"X-API-Key": SYNCTHING_API_KEY}
+        rc = requests.get("http://syncthing:8384/rest/system/connections", headers=hdrs, timeout=4)
+        mac_conn = rc.json().get("connections", {}).get(_MAC_DEVICE_ID, {})
+        connected = mac_conn.get("connected", False)
+        address   = mac_conn.get("address", "")
+        # Geteilte Ordner mit Mac + Sync-Fortschritt
+        rf = requests.get("http://syncthing:8384/rest/config/folders", headers=hdrs, timeout=4)
+        mac_folders = []
+        for folder in rf.json():
+            dev_ids = [d["deviceID"] for d in folder.get("devices", [])]
+            if _MAC_DEVICE_ID not in dev_ids:
+                continue
+            fid    = folder["id"]
+            flabel = folder.get("label") or fid
+            try:
+                rcomp = requests.get(
+                    f"http://syncthing:8384/rest/db/completion?device={_MAC_DEVICE_ID}&folder={fid}",
+                    headers=hdrs, timeout=4,
+                )
+                comp = round(rcomp.json().get("completion", 100), 1)
+            except Exception:
+                comp = None
+            mac_folders.append({"id": fid, "label": flabel, "completion": comp})
+        services["syncthing_mac"] = {
+            "label": "Mac Sync", "status": "ok" if connected else "warn",
+            "connected": connected, "address": address, "folders": mac_folders,
+        }
+    except Exception as e:
+        services["syncthing_mac"] = {"label": "Mac Sync", "status": "error", "error": str(e)}
 
     # 5 — Open WebUI
     try:
@@ -1370,14 +1587,6 @@ def _collect_health() -> dict:
     except Exception as e:
         services["open_webui"] = {"label": "Open WebUI", "status": "error", "error": str(e)}
 
-    # 6 — Qdrant
-    try:
-        r = requests.get("http://qdrant:6333/healthz", timeout=4)
-        services["qdrant"] = {
-            "label": "Qdrant (Vector DB)", "status": "ok" if "passed" in r.text else "warn"
-        }
-    except Exception as e:
-        services["qdrant"] = {"label": "Qdrant (Vector DB)", "status": "error", "error": str(e)}
 
     # 7 — mcpo / enzyme-Bridge (Host-Port 11180)
     _enzyme_hosts = ["host.docker.internal", "172.17.0.1", "192.168.3.1"]
@@ -1387,6 +1596,11 @@ def _collect_health() -> dict:
                               json={}, headers={"Content-Type": "application/json"}, timeout=4)
             if r.status_code == 200:
                 es = r.json()
+                if not isinstance(es, dict):
+                    # enzyme noch nicht initialisiert oder falsche Vault-Konfiguration
+                    services["enzyme"] = {"label": "enzyme / mcpo (Vault)", "status": "warn",
+                                          "error": str(es)[:120] if es else "Keine Daten"}
+                    break
                 last_refresh = None
                 # enzyme.db liegt immer im Vault unter .enzyme/enzyme.db
                 _enzyme_db = Path("/data/reinhards-vault/.enzyme/enzyme.db")
@@ -1442,6 +1656,276 @@ def _collect_health() -> dict:
         "services":  services,
         "overall":   "ok" if all(s["status"] == "ok" for s in services.values()) else "warn",
     }
+
+
+# ── Frontmatter-Upgrade Helpers ────────────────────────────────────────────
+
+def _fm_classify(keys: set) -> str:
+    if "kategorie_id" in keys and "adressat" in keys:
+        return "Dispatcher v2"
+    if "kategorie_id" in keys:
+        return "Dispatcher v2 (teilw.)"
+    if "kategorie" in keys and "original" in keys:
+        return "Dispatcher v1"
+    if "todos" in keys:
+        return "OCR-Stub"
+    if "imported" in keys and "created" in keys:
+        return "Apple Notes"
+    if "date created" in keys and "imported" in keys:
+        return "Evernote+Import"
+    if "date created" in keys:
+        return "Evernote"
+    if "category" in keys and "source" in keys:
+        return "Legacy"
+    return "Sonstige"
+
+
+def _fm_parse_date(val) -> str:
+    if val is None:
+        return None
+    if hasattr(val, "strftime"):
+        return val.strftime("%Y-%m-%d")
+    s = str(val).strip()
+    s = re.sub(r"(\d{4}-\d{2})-00\b", r"\1-01", s)  # fix invalid day=00
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})", s)
+    if m:
+        return m.group(1)
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})T", s)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})", s)
+    if m:
+        return f"{m.group(3)}-{m.group(2).zfill(2)}-{m.group(1).zfill(2)}"
+    # Obsidian: "Wednesday, February 11th 2026, 8:34:58 am"
+    m = re.search(r"(\w+)\s+(\d{1,2})(?:st|nd|rd|th)\s+(\d{4})", s)
+    if m:
+        try:
+            from datetime import datetime as _dt
+            return _dt.strptime(f"{m.group(1)} {m.group(2)} {m.group(3)}", "%B %d %Y").strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    return None
+
+
+_FM_SKIP_NAMES = {"CLAUDE.md", "ENZYME_GUIDE.md", "VAULT_GUIDE.md"}
+
+
+def _fm_mtime_date(md_path: Path) -> str:
+    return datetime.fromtimestamp(md_path.stat().st_mtime).strftime("%Y-%m-%d")
+
+
+def _fm_probe(md_path: Path) -> dict:
+    if md_path.name in _FM_SKIP_NAMES or "Anlagen" in md_path.parts:
+        return {"schema": "übersprungen", "changes": [], "can_upgrade": False,
+                "current": {}, "upgraded": {}}
+    try:
+        text = md_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        return {"error": str(e), "can_upgrade": False}
+
+    # No frontmatter at all → insert minimal block
+    if not text.startswith("---"):
+        mdate = _fm_mtime_date(md_path)
+        m2 = re.match(r"^(\d{8})", md_path.stem)
+        if m2:
+            d = m2.group(1)
+            mdate = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+            src_note = "Dateiname"
+        else:
+            src_note = "Datei-Änderungsdatum"
+        return {"schema": "kein Frontmatter", "can_upgrade": True, "current": {},
+                "upgraded": {"erstellt_am": mdate, "tags": [], "datumUnsicher": src_note == "Datei-Änderungsdatum"},
+                "changes": [f'Frontmatter eingefügt — erstellt_am: "{mdate}" ← {src_note}',
+                            "tags: []  ← hinzugefügt"]}
+
+    m = re.match(r"^---\n(.*?)\n---\n?", text, re.DOTALL)
+    if not m:
+        return {"schema": "kein Frontmatter", "changes": [], "can_upgrade": False,
+                "current": {}, "upgraded": {}}
+
+    # Pre-process raw YAML: fix invalid day=00
+    fm_raw = re.sub(r"(\d{4}-\d{2})-00\b", r"\1-01", m.group(1))
+    try:
+        fm = yaml.safe_load(fm_raw) or {}
+    except Exception:
+        # Invalid YAML: try raw regex extraction for date
+        fm = {}
+        dm = re.search(r"(?:date created|created|erstellt|date):\s*['\"]?(\d{4}-\d{2}-\d{2})", fm_raw)
+        if dm:
+            fm["_raw_date"] = dm.group(1)
+
+    keys = set(fm.keys())
+    schema = _fm_classify(keys) if "_raw_date" not in keys else "Ungültiges YAML (reparierbar)"
+    changes = []
+    new_fm = dict(fm)
+
+    if "erstellt_am" not in fm:
+        val = None
+        for src in ("date created", "created", "erstellt", "_raw_date"):
+            if src in fm:
+                val = _fm_parse_date(fm[src])
+                if val:
+                    changes.append(f'erstellt_am: "{val}"  ← aus \'{src}\'')
+                    break
+        if val is None:
+            m2 = re.match(r"^(\d{8})", md_path.stem)
+            if m2:
+                d = m2.group(1)
+                val = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+                changes.append(f'erstellt_am: "{val}"  ← Dateiname')
+        if val is None:
+            val = _fm_mtime_date(md_path)
+            changes.append(f'erstellt_am: "{val}"  ← Datei-Änderungsdatum')
+            new_fm["datumUnsicher"] = True
+        if val is not None:
+            new_fm["erstellt_am"] = val
+        new_fm.pop("_raw_date", None)
+
+    if "tags" not in fm:
+        new_fm["tags"] = []
+        changes.append("tags: []  ← hinzugefügt")
+
+    new_fm.pop("_raw_date", None)
+    return {
+        "schema": schema,
+        "current": fm,
+        "upgraded": new_fm if changes else fm,
+        "changes": changes,
+        "can_upgrade": len(changes) > 0,
+    }
+
+
+def _fm_apply_upgrade(md_path: Path) -> dict:
+    probe = _fm_probe(md_path)
+    if not probe.get("can_upgrade"):
+        return {"ok": False, "reason": "Keine Änderungen notwendig", "changes": []}
+    try:
+        text = md_path.read_text(encoding="utf-8", errors="replace")
+
+        # No frontmatter: prepend block
+        if not text.startswith("---"):
+            new_yaml = yaml.dump(probe["upgraded"], allow_unicode=True,
+                                 default_flow_style=False, sort_keys=False)
+            md_path.write_text(f"---\n{new_yaml}---\n{text}", encoding="utf-8")
+            return {"ok": True, "changes": probe["changes"]}
+
+        m = re.match(r"^---\n(.*?)\n---\n?(.*)", text, re.DOTALL)
+        if not m:
+            return {"ok": False, "reason": "Frontmatter-Block nicht gefunden"}
+        body = m.group(2)
+        new_yaml = yaml.dump(probe["upgraded"], allow_unicode=True,
+                             default_flow_style=False, sort_keys=False)
+        md_path.write_text(f"---\n{new_yaml}---\n{body}", encoding="utf-8")
+        return {"ok": True, "changes": probe["changes"]}
+    except Exception as e:
+        return {"ok": False, "reason": str(e)}
+
+
+_FM_STATS_CACHE: dict = {}
+_FM_STATS_CACHE_TS: float = 0.0
+_FM_STATS_LOCK = threading.Lock()
+
+
+def _fm_stats(force: bool = False) -> dict:
+    global _FM_STATS_CACHE, _FM_STATS_CACHE_TS
+    with _FM_STATS_LOCK:
+        if not force and _FM_STATS_CACHE and (time.time() - _FM_STATS_CACHE_TS) < 300:
+            return _FM_STATS_CACHE
+    if VAULT_ROOT is None:
+        return {"error": "VAULT_ROOT nicht konfiguriert"}
+    schema_counts: dict = {}
+    upgradeable = 0
+    already_unified = 0
+    no_fm = 0
+    total = 0
+    for md_path in VAULT_ROOT.rglob("*.md"):
+        if any(p.startswith(".") for p in md_path.parts):
+            continue
+        total += 1
+        try:
+            text = md_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        if not text.startswith("---"):
+            no_fm += 1
+            schema_counts["kein Frontmatter"] = schema_counts.get("kein Frontmatter", 0) + 1
+            continue
+        match = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
+        if not match:
+            no_fm += 1
+            schema_counts["kein Frontmatter"] = schema_counts.get("kein Frontmatter", 0) + 1
+            continue
+        try:
+            fm = yaml.safe_load(match.group(1)) or {}
+        except Exception:
+            schema_counts["Ungültiges YAML"] = schema_counts.get("Ungültiges YAML", 0) + 1
+            continue
+        keys = set(fm.keys())
+        schema = _fm_classify(keys)
+        schema_counts[schema] = schema_counts.get(schema, 0) + 1
+        has_unified = "erstellt_am" in keys and "tags" in keys
+        if has_unified:
+            already_unified += 1
+        else:
+            can_upg = False
+            if "erstellt_am" not in keys:
+                for src in ("date created", "created", "erstellt"):
+                    if src in keys and _fm_parse_date(fm.get(src)):
+                        can_upg = True
+                        break
+                if not can_upg:
+                    if re.match(r"^\d{8}", md_path.stem):
+                        can_upg = True
+            if not can_upg and "tags" not in keys:
+                can_upg = True
+            if can_upg:
+                upgradeable += 1
+    result = {
+        "total": total,
+        "no_frontmatter": no_fm,
+        "unified": already_unified,
+        "upgradeable": upgradeable,
+        "schemas": dict(sorted(schema_counts.items(), key=lambda x: -x[1])),
+        "unified_pct": round(already_unified / total * 100, 1) if total else 0,
+        "scanned_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    with _FM_STATS_LOCK:
+        _FM_STATS_CACHE = result
+        _FM_STATS_CACHE_TS = time.time()
+    return result
+
+
+_FM_BATCH_STATE: dict = {"running": False, "done": 0, "total": 0, "errors": 0, "finished": False}
+_FM_BATCH_LOCK = threading.Lock()
+
+
+def _fm_batch_upgrade_all():
+    global _FM_BATCH_STATE, _FM_STATS_CACHE_TS
+    if VAULT_ROOT is None:
+        return
+    paths = [p for p in VAULT_ROOT.rglob("*.md")
+             if not any(part.startswith(".") for part in p.parts)]
+    with _FM_BATCH_LOCK:
+        _FM_BATCH_STATE = {"running": True, "done": 0, "total": len(paths),
+                           "errors": 0, "finished": False}
+    done = 0
+    errors = 0
+    for md_path in paths:
+        try:
+            result = _fm_apply_upgrade(md_path)
+            if not result.get("ok") and result.get("reason") != "Keine Änderungen notwendig":
+                errors += 1
+        except Exception:
+            errors += 1
+        done += 1
+        if done % 50 == 0:
+            with _FM_BATCH_LOCK:
+                _FM_BATCH_STATE["done"] = done
+                _FM_BATCH_STATE["errors"] = errors
+    with _FM_BATCH_LOCK:
+        _FM_BATCH_STATE = {"running": False, "done": done, "total": len(paths),
+                           "errors": errors, "finished": True}
+    _FM_STATS_CACHE_TS = 0.0  # invalidate stats cache
 
 
 _DASHBOARD_HTML = r"""<!DOCTYPE html>
@@ -1553,16 +2037,18 @@ a.fstep:hover{border-color:var(--accent);box-shadow:0 4px 16px rgba(79,70,229,.1
     <a href="/pipeline" class="hl" id="nav-pipeline">⚡ Pipeline <span id="nav-queue-badge" style="display:none;background:var(--warn);color:#fff;border-radius:999px;padding:1px 7px;font-size:10px;font-weight:700;margin-left:4px">0</span></a>
     <a href="/review" target="_blank" rel="noopener">📋 Review</a>
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
-    <a href="/vault/anlagen" target="_blank" rel="noopener">📊 Anlagen</a>
     <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
     <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
+    <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
+    <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
   </nav>
   <div class="sse-wrap">
     <span class="sse-dot" id="sse-dot"></span>Live
   </div>
   <span class="overall" id="overall-badge">…</span>
   <span class="ts" id="ts">Laden…</span>
+  <button class="help-btn" onclick="openHelp()">❓ Hilfe</button>
 </header>
 
 <!-- Pipeline flow -->
@@ -1649,7 +2135,6 @@ a.fstep:hover{border-color:var(--accent);box-shadow:0 4px 16px rgba(79,70,229,.1
 <div class="filter-bar">
   <div class="fg wide"><label>Suche</label><input id="f-q" type="search" placeholder="Dateiname, Absender…" oninput="scheduleFilter()"></div>
   <div class="fg med"><label>Kategorie</label><select id="f-kat" onchange="onKatChange()"><option value="">Alle</option></select></div>
-  <div class="fg med"><label>Typ</label><select id="f-typ" onchange="loadDocs()"><option value="">Alle</option></select></div>
   <div class="fg sm"><label>Adressat</label><select id="f-adr" onchange="loadDocs()"><option value="">Alle</option><option>Reinhard</option><option>Marion</option></select></div>
   <div class="fg sm"><label>Konfidenz</label><select id="f-konfid" onchange="loadDocs()"><option value="">Alle</option><option value="hoch">Hoch</option><option value="mittel">Mittel</option><option value="niedrig">Niedrig</option></select></div>
   <div class="fg sm"><label>Von</label><input id="f-von" type="date" onchange="loadDocs()"></div>
@@ -1662,9 +2147,9 @@ a.fstep:hover{border-color:var(--accent);box-shadow:0 4px 16px rgba(79,70,229,.1
 <div class="docs-section">
   <table class="docs-table">
     <thead>
-      <tr><th>Datum</th><th>Dateiname</th><th>Kategorie</th><th>Typ</th><th>Absender</th><th>Adressat</th><th>Konfidenz</th><th>Verarbeitet</th></tr>
+      <tr><th>Datum</th><th>Dateiname</th><th>Kategorie</th><th>Absender</th><th>Adressat</th><th>Konfidenz</th><th>Verarbeitet</th></tr>
     </thead>
-    <tbody id="docs-body"><tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">Laden…</td></tr></tbody>
+    <tbody id="docs-body"><tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">Laden…</td></tr></tbody>
   </table>
 </div>
 <div class="footer">Auto-Refresh in <span id="countdown">30</span>s &nbsp;·&nbsp; <a href="#" onclick="loadAll();return false;" style="color:var(--accent)">Jetzt aktualisieren</a></div>
@@ -1673,25 +2158,25 @@ a.fstep:hover{border-color:var(--accent);box-shadow:0 4px 16px rgba(79,70,229,.1
 // Service metadata: icon, link-fn, description
 const SVC = {
   wilson_pi:    { icon:'🥧', label:'Wilson / Pi',      urlFn: _ => `/wilson`,
-    desc: 'KI-Assistent (OpenClaw) auf dem Raspberry Pi. Empfängt Dokumente und Sprachnachrichten via Telegram, legt PDFs im Eingangsordner ab und leitet Korrekturen an den Dispatcher weiter.' },
+    desc: 'Raspberry Pi 5 als Vorverarbeitungs-Station. Empfängt Scan-PDFs, führt OCR (via Ryzen-Proxy) und LLM-Klassifikation durch, erstellt Sidecar-Metadaten (.meta.json) und überträgt beides per Syncthing. Der Dispatcher übernimmt das Dokument dann im Bypass-Modus – ohne erneutes OCR oder LLM.' },
   syncthing:    { icon:'🔄', label:'Syncthing',         urlFn: ip => `http://${ip}:8384/`,
     desc: 'Dezentrale P2P-Synchronisation ohne Cloud. Überträgt neue PDFs vom Raspberry Pi auf den Ryzen-Server und hält den Obsidian Vault auf allen Geräten aktuell.' },
+  syncthing_mac:{ icon:'💻', label:'Mac Sync',          urlFn: _ => null,
+    desc: 'Syncthing-Verbindung zum Mac. Überträgt gescannte PDFs via smb://192.168.3.124/incoming (Wilson) und hält den Obsidian Vault (Reinhards Vault) auf dem Mac aktuell.' },
   docling_serve:{ icon:'🔍', label:'Docling OCR',       urlFn: _ => null,
     desc: 'Wandelt PDFs mit KI-basierter Texterkennung (OCR) in durchsuchbaren Markdown um. Versteht Tabellen, Spalten und Bilder. Basis für die anschließende LLM-Klassifikation.' },
   ollama:       { icon:'🤖', label:'Ollama LLM',        urlFn: ip => `http://${ip}:11434/`,
-    desc: 'Lokales Large Language Model – läuft vollständig auf dem Ryzen, kein Cloud-Zugriff. Übernimmt Spracherkennung, Übersetzung (DE/IT→DE) und semantische Klassifikation nach Kategorie, Typ, Absender und Adressat.' },
+    desc: 'Lokales Large Language Model – läuft vollständig auf dem Ryzen, kein Cloud-Zugriff. Übernimmt Spracherkennung, Übersetzung (DE/IT→DE) und semantische Klassifikation nach Kategorie, Absender und Adressat (Fallback-Pfad ohne Wilson-Sidecar).' },
   dispatcher:   { icon:'📄', label:'Dispatcher',        urlFn: _ => `/pipeline`,
     desc: 'Herzstück der Pipeline. Überwacht den Eingangsordner, koordiniert OCR und Klassifikation, schreibt Ergebnis-MD in den Obsidian Vault und benachrichtigt via Telegram. Verwaltet Dokumenten-Datenbank und Konfidenz-Historie.' },
   enzyme:       { icon:'🧪', label:'enzyme MCP',        urlFn: ip => `http://${ip}:11180/docs`,
     desc: 'Semantische Suchschicht über den Obsidian Vault. Indexiert alle Vault-MD-Dateien als Katalysatoren und Entitäten, stellt Vault-Inhalte als MCP-Tools für Claude Code (CLI) und Open WebUI bereit. Ermöglicht natürlichsprachliche Suche über 1.000+ Dokumente.' },
   open_webui:   { icon:'💬', label:'Open WebUI',        urlFn: ip => `http://${ip}:3000/`,
     desc: 'Browser-Interface für Gespräche mit den lokalen Ollama-Modellen und dem Vault-Assistenten. Ermöglicht natürlichsprachliche Vault-Suche über den enzyme-MCP-Server.' },
-  qdrant:       { icon:'🗃️', label:'Qdrant (Vector DB)', urlFn: ip => `http://${ip}:6333/dashboard`,
-    desc: 'Hochperformante Vektordatenbank. Speichert Embedding-Vektoren aller Vault-Dokumente und ermöglicht enzyme die semantische Ähnlichkeitssuche – findet Konzepte, nicht nur exakte Keywords.' },
 };
 
 // Card render order = same as flow
-const CARD_ORDER = ['wilson_pi','syncthing','docling_serve','ollama','dispatcher','enzyme','open_webui','qdrant'];
+const CARD_ORDER = ['wilson_pi','syncthing','syncthing_mac','docling_serve','ollama','dispatcher','enzyme','open_webui'];
 
 let _hostIp = 'localhost';
 
@@ -1717,9 +2202,32 @@ function renderCard(key, svc) {
       <div class="metric"><span class="metric-label">Geladene Modelle</span><span class="metric-value">${svc.model_count??0}</span></div>
       <div class="model-tags">${tags||'<span style="color:var(--muted);font-size:12px">Keine Modelle geladen</span>'}</div>`;
   } else if (key === 'syncthing') {
+    const folderRows = (svc.folders||[]).map(f => {
+      const icon = f.status==='ok' ? '✅' : f.status==='warn' ? '⚠️' : '❌';
+      const detail = f.errors > 0 ? ` · ${f.errors} Fehler` : f.need > 0 ? ` · ${f.need} fehlend` : '';
+      const errLines = (f.file_errors||[]).map(e=>`<div style="font-size:10px;color:var(--err);padding-left:16px;word-break:break-all">${e}</div>`).join('');
+      return `<div class="metric" style="flex-direction:column;align-items:flex-start;gap:2px">
+        <span style="font-size:12px">${icon} <b>${f.label}</b><span style="color:var(--muted);font-size:11px">${detail}</span></span>
+        ${errLines}
+      </div>`;
+    }).join('');
     body = `
       <div class="metric"><span class="metric-label">Uptime</span><span class="metric-value">${svc.uptime_h??'—'} h</span></div>
-      <div class="metric"><span class="metric-label">Verbindungen</span><span class="metric-value">${svc.connections??'—'}</span></div>`;
+      <div class="metric"><span class="metric-label">Verbindungen</span><span class="metric-value">${svc.connections??'—'}</span></div>
+      ${folderRows}`;
+  } else if (key === 'syncthing_mac') {
+    const connTxt = svc.connected ? '🟢 Verbunden' : '🔴 Getrennt';
+    const addrTxt = svc.address ? `<div class="metric"><span class="metric-label">Adresse</span><span class="metric-value" style="font-size:11px">${svc.address}</span></div>` : '';
+    const folderRows = (svc.folders||[]).map(f => {
+      const pct = f.completion;
+      const icon = pct === null ? '⚙️' : pct >= 100 ? '✅' : '⚠️';
+      const pctTxt = pct === null ? '…' : pct + '%';
+      return `<div class="metric"><span class="metric-label">${icon} ${f.label}</span><span class="metric-value">${pctTxt}</span></div>`;
+    }).join('');
+    body = `
+      <div class="metric"><span class="metric-label">Verbindung</span><span class="metric-value">${connTxt}</span></div>
+      ${addrTxt}
+      ${folderRows||'<div class="metric" style="color:var(--muted);font-size:12px">Keine gemeinsamen Ordner</div>'}`;
   } else if (key === 'enzyme') {
     const pct = svc.documents > 0 ? Math.round((svc.embedded||0)/svc.documents*100) : 0;
     const enzymeUrl = SVC.enzyme.urlFn(_hostIp);
@@ -1739,7 +2247,11 @@ function renderCard(key, svc) {
   }
 
   const errHtml = svc.error ? `<div class="err-msg">⚠ ${svc.error}</div>` : '';
-  const url = meta.urlFn ? meta.urlFn(_hostIp) : null;
+  let url = meta.urlFn ? meta.urlFn(_hostIp) : null;
+  if (key === 'syncthing_mac' && svc.address) {
+    const m = svc.address.match(/(?:tcp:\/\/)?([\d.]+):\d+/);
+    if (m) url = `http://${m[1]}:8384/`;
+  }
   const target = (key==='dispatcher'||key==='wilson_pi') ? '' : 'target="_blank"';
   const titleHtml = url
     ? `<a href="${url}" ${target} style="color:inherit;text-decoration:none;border-bottom:1px dashed #c7d2fe"
@@ -1834,18 +2346,12 @@ async function loadCategories() {
   } catch(_){}
 }
 function onKatChange() {
-  const kat=document.getElementById('f-kat')?.value;
-  const ts=document.getElementById('f-typ');
-  ts.innerHTML='<option value="">Alle</option>';
-  if(kat&&_allCats[kat]?.types) _allCats[kat].types.forEach(t=>{
-    const o=document.createElement('option'); o.value=t.id; o.textContent=t.label||t.id; ts.appendChild(o);
-  });
   loadDocs();
 }
 let _ft=null;
 function scheduleFilter(){clearTimeout(_ft);_ft=setTimeout(loadDocs,300);}
 function resetFilter(){
-  ['f-q','f-kat','f-typ','f-adr','f-konfid','f-von','f-bis'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['f-q','f-kat','f-adr','f-konfid','f-von','f-bis'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   loadDocs();
 }
 
@@ -1853,8 +2359,8 @@ function resetFilter(){
 async function loadDocs() {
   const p = new URLSearchParams({limit:100});
   const get=id=>document.getElementById(id)?.value||'';
-  const q=get('f-q').trim(),kat=get('f-kat'),typ=get('f-typ'),adr=get('f-adr'),konfid=get('f-konfid'),von=get('f-von'),bis=get('f-bis');
-  if(q)p.set('q',q); if(kat)p.set('kategorie',kat); if(typ)p.set('typ',typ);
+  const q=get('f-q').trim(),kat=get('f-kat'),adr=get('f-adr'),konfid=get('f-konfid'),von=get('f-von'),bis=get('f-bis');
+  if(q)p.set('q',q); if(kat)p.set('kategorie',kat);
   if(adr)p.set('adressat',adr); if(konfid)p.set('konfidenz',konfid);
   if(von)p.set('von',von); if(bis)p.set('bis',bis);
   try {
@@ -1874,16 +2380,15 @@ async function loadDocs() {
              onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${pdfName||'—'}</a>
         </td>
         <td><span class="cat-tag">${d.kategorie||'—'}</span></td>
-        <td><span class="cat-tag" style="color:var(--muted)">${d.typ||'—'}</span></td>
         <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.absender||''}">${abs}</td>
         <td><span class="adressat-tag">${d.adressat||'—'}</span></td>
         <td><span class="kbadge ${kc}">${k||'—'}</span></td>
         <td style="color:var(--muted)">${ts}</td>
       </tr>`;
     }).join('');
-    document.getElementById('docs-body').innerHTML = rows||'<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">Keine Dokumente gefunden</td></tr>';
+    document.getElementById('docs-body').innerHTML = rows||'<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">Keine Dokumente gefunden</td></tr>';
   } catch(e) {
-    document.getElementById('docs-body').innerHTML='<tr><td colspan="8" style="color:var(--err);text-align:center">Fehler</td></tr>';
+    document.getElementById('docs-body').innerHTML='<tr><td colspan="7" style="color:var(--err);text-align:center">Fehler</td></tr>';
   }
 }
 
@@ -1903,7 +2408,6 @@ function prependDoc(d) {
       <a href="/api/pdf/${encodeURIComponent(pdfName)}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:500">${pdfName||'—'}</a>
     </td>
     <td><span class="cat-tag">${d.kategorie||'—'}</span></td>
-    <td><span class="cat-tag" style="color:var(--muted)">${d.typ||'—'}</span></td>
     <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(d.absender||'—').slice(0,30)}</td>
     <td><span class="adressat-tag">${d.adressat||'—'}</span></td>
     <td><span class="kbadge ${kc}">${k||'—'}</span></td>
@@ -1961,6 +2465,25 @@ async function updateQueueBadge(){
 }
 updateQueueBadge();
 setInterval(updateQueueBadge, 3000);
+</script>
+<style>.help-btn{font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;transition:all .15s;white-space:nowrap}.help-btn:hover{border-color:var(--accent);color:var(--accent)}.help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center}.help-overlay.open{display:flex}.help-box{background:#23263a;border-radius:14px;padding:28px 32px;max-width:520px;width:90%;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.4);color:#e8eaf0}.help-box h2{font-size:15px;font-weight:700;color:#7c6af7;margin-bottom:18px}.help-box h3{font-size:11px;font-weight:700;color:#8a8fb0;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;margin-top:14px}.help-box p{font-size:13px;line-height:1.6;color:#c8cad8}.help-close{position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:#8a8fb0;line-height:1;padding:2px}.help-close:hover{color:#e8eaf0}</style>
+<div id="help-overlay" class="help-overlay">
+  <div class="help-box">
+    <button class="help-close" onclick="closeHelp()">✕</button>
+    <h2>❓ Haupt-Dashboard</h2>
+    <h3>Was macht dieses Dashboard?</h3>
+    <p>Zeigt den Live-Status aller Systemdienste (Dispatcher, Ollama, Syncthing, enzyme u.a.) und fasst zusammen wie viele Dokumente heute verarbeitet wurden.</p>
+    <h3>Wann ist es nützlich?</h3>
+    <p>Täglich zur schnellen Kontrolle — läuft alles reibungslos, wurden Dokumente verarbeitet? Bei Problemen ist hier sofort der defekte Dienst sichtbar.</p>
+    <h3>Beispiel</h3>
+    <p>Du hast einen Scan gemacht und erwartest eine Bestätigung. Hier siehst du sofort: Dispatcher aktiv, heute 2 Dokumente verarbeitet, letztes Dokument "HUK-Leistungsabrechnung".</p>
+  </div>
+</div>
+<script>
+function openHelp(){document.getElementById('help-overlay').classList.add('open')}
+function closeHelp(){document.getElementById('help-overlay').classList.remove('open')}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeHelp()})
+document.getElementById('help-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeHelp()})
 </script>
 </body>
 </html>"""
@@ -2127,6 +2650,7 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
   <h1>Dispatcher · Pipeline</h1>
   <a href="/vault" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600" title="Vault-Struktur">📁 Vault</a>
   <a href="#stats" onclick="showStats();return false;" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600;margin-left:auto" title="Schritt-Statistiken">📊 Statistiken</a>
+  <button class="help-btn" onclick="openHelp()">❓ Hilfe</button>
   <span class="sse-dot" id="sse-dot"></span>
   <span class="sse-label">Live</span>
 </header>
@@ -2886,6 +3410,25 @@ connectSSE();
 refreshWaitingQueue();
 setInterval(refreshWaitingQueue, 3000);
 </script>
+<style>.help-btn{font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;transition:all .15s;white-space:nowrap}.help-btn:hover{border-color:var(--accent);color:var(--accent)}.help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center}.help-overlay.open{display:flex}.help-box{background:#23263a;border-radius:14px;padding:28px 32px;max-width:520px;width:90%;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.4);color:#e8eaf0}.help-box h2{font-size:15px;font-weight:700;color:#7c6af7;margin-bottom:18px}.help-box h3{font-size:11px;font-weight:700;color:#8a8fb0;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;margin-top:14px}.help-box p{font-size:13px;line-height:1.6;color:#c8cad8}.help-close{position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:#8a8fb0;line-height:1;padding:2px}.help-close:hover{color:#e8eaf0}</style>
+<div id="help-overlay" class="help-overlay">
+  <div class="help-box">
+    <button class="help-close" onclick="closeHelp()">✕</button>
+    <h2>❓ Pipeline-Monitor</h2>
+    <h3>Was macht dieses Dashboard?</h3>
+    <p>Zeigt die Verarbeitungsschritte eines laufenden Dokuments in Echtzeit — von OCR über Spracherkennung und LLM-Klassifikation bis zur Ablage im Vault.</p>
+    <h3>Wann ist es nützlich?</h3>
+    <p>Wenn ein Dokument gerade verarbeitet wird und du den Fortschritt verfolgen oder einen Fehler diagnostizieren möchtest.</p>
+    <h3>Beispiel</h3>
+    <p>Du hast ein PDF in den Eingangsordner gelegt. Hier siehst du live: "OCR abgeschlossen (2.340 Zeichen) → LLM klassifiziert → abgelegt in 49 Krankenversicherung/2026".</p>
+  </div>
+</div>
+<script>
+function openHelp(){document.getElementById('help-overlay').classList.add('open')}
+function closeHelp(){document.getElementById('help-overlay').classList.remove('open')}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeHelp()})
+document.getElementById('help-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeHelp()})
+</script>
 </body>
 </html>"""
 
@@ -2934,7 +3477,7 @@ _VAULT_HTML = r"""<!DOCTYPE html>
   <a href="/" class="back-link">← Dashboard</a>
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
   <h1>Vault - Struktur</h1>
-  <a href="/vault/anlagen" target="_blank" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--text);text-decoration:none;font-weight:600;margin-left:8px" title="Anlagen Dateinamen-Analyse">📊 Anlagen-Analyse</a>
+  <button class="help-btn" onclick="openHelp()">❓ Hilfe</button>
   <span class="ts" id="ts"></span>
 </header>
 
@@ -3068,10 +3611,30 @@ fetch('/api/vault/stats')
     el.textContent = 'Fehler: ' + e;
   });
 </script>
+<style>.help-btn{font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;transition:all .15s;white-space:nowrap}.help-btn:hover{border-color:var(--accent);color:var(--accent)}.help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center}.help-overlay.open{display:flex}.help-box{background:#23263a;border-radius:14px;padding:28px 32px;max-width:520px;width:90%;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.4);color:#e8eaf0}.help-box h2{font-size:15px;font-weight:700;color:#7c6af7;margin-bottom:18px}.help-box h3{font-size:11px;font-weight:700;color:#8a8fb0;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;margin-top:14px}.help-box p{font-size:13px;line-height:1.6;color:#c8cad8}.help-close{position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:#8a8fb0;line-height:1;padding:2px}.help-close:hover{color:#e8eaf0}</style>
+<div id="help-overlay" class="help-overlay">
+  <div class="help-box">
+    <button class="help-close" onclick="closeHelp()">✕</button>
+    <h2>❓ Vault-Struktur</h2>
+    <h3>Was macht dieses Dashboard?</h3>
+    <p>Zeigt eine Strukturübersicht des gesamten Dokumenten-Vaults: Anzahl Dokumente pro Kategorie, Verteilung nach Jahr und Gesamtgröße.</p>
+    <h3>Wann ist es nützlich?</h3>
+    <p>Wenn du wissen möchtest wie viele Dokumente pro Kategorie existieren oder ob alle Dokumente korrekt eingeordnet wurden.</p>
+    <h3>Beispiel</h3>
+    <p>Du möchtest wissen wie viele Krankenversicherungs-Dokumente seit 2020 vorhanden sind — das Dashboard zeigt die genaue Zahl direkt auf einen Blick.</p>
+  </div>
+</div>
+<script>
+function openHelp(){document.getElementById('help-overlay').classList.add('open')}
+function closeHelp(){document.getElementById('help-overlay').classList.remove('open')}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeHelp()})
+document.getElementById('help-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeHelp()})
+</script>
 </body>
 </html>"""
 
-_ANLAGEN_HTML = r"""<!DOCTYPE html>
+_ANLAGEN_HTML = None  # entfernt in Phase 6 (Einmal-Tool, Aufgabe abgeschlossen)
+if False: r"""<!DOCTYPE html>
 <html lang="de">
 <head>
 <meta charset="utf-8">
@@ -3347,6 +3910,7 @@ button.primary:disabled{opacity:.4;cursor:not-allowed}
     <a href="/pipeline">Pipeline</a>
     <a href="/vault">Vault</a>
     <span id="rules-toggle" style="margin-left:12px;cursor:pointer;color:var(--accent);font-size:12px" onclick="toggleRulesView()">📚 Lernregeln anzeigen</span>
+    <button class="help-btn" onclick="openHelp()" style="margin-left:auto;font-size:11px;padding:3px 10px;border:1px solid #2a2d3a;border-radius:6px;background:transparent;color:#888;cursor:pointer;font-weight:600">❓ Hilfe</button>
   </div>
 </header>
 <div class="main">
@@ -3669,6 +4233,25 @@ es.addEventListener('lernregel_applied', e => {
 
 init();
 </script>
+<style>.help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center}.help-overlay.open{display:flex}.help-box{background:#23263a;border-radius:14px;padding:28px 32px;max-width:520px;width:90%;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.4);color:#e8eaf0}.help-box h2{font-size:15px;font-weight:700;color:#7c6af7;margin-bottom:18px}.help-box h3{font-size:11px;font-weight:700;color:#8a8fb0;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;margin-top:14px}.help-box p{font-size:13px;line-height:1.6;color:#c8cad8}.help-close{position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:#8a8fb0;line-height:1;padding:2px}.help-close:hover{color:#e8eaf0}</style>
+<div id="help-overlay" class="help-overlay">
+  <div class="help-box">
+    <button class="help-close" onclick="closeHelp()">✕</button>
+    <h2>❓ Review Dashboard</h2>
+    <h3>Was macht dieses Dashboard?</h3>
+    <p>Zeigt alle zuletzt verarbeiteten Dokumente und ermöglicht die manuelle Korrektur von Kategorie, Absender, Adressat und Datum direkt im Browser.</p>
+    <h3>Wann ist es nützlich?</h3>
+    <p>Wenn die automatische Klassifikation nicht stimmt und du mehrere Dokumente am Desktop korrigieren möchtest — als Alternative zum Telegram-Dialog.</p>
+    <h3>Beispiel</h3>
+    <p>3 neue Dokumente wurden als "Archiv" eingestuft. Hier kannst du sie aufrufen, die korrekte Kategorie wählen und per Klick speichern.</p>
+  </div>
+</div>
+<script>
+function openHelp(){document.getElementById('help-overlay').classList.add('open')}
+function closeHelp(){document.getElementById('help-overlay').classList.remove('open')}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeHelp()})
+document.getElementById('help-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeHelp()})
+</script>
 </body>
 </html>"""
 
@@ -3754,6 +4337,36 @@ _WILSON_HTML = r"""<!DOCTYPE html>
   .session-label { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
   .session-ts { color: var(--muted); white-space: nowrap; margin-left: 8px; }
 
+  /* Log viewer */
+  .log-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .log-toolbar select, .log-toolbar button { font-size: 11px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); cursor: pointer; }
+  .log-toolbar button:hover, .log-toolbar select:hover { border-color: var(--accent); color: var(--accent); }
+  .log-toolbar label { font-size: 11px; color: var(--muted); display: flex; gap: 4px; align-items: center; cursor: pointer; }
+  .log-toolbar .log-meta { margin-left: auto; font-size: 11px; color: var(--muted); font-family: monospace; }
+  .log-view { background: #1a1d2e; color: #d1d5db; font-family: 'SF Mono',Menlo,Consolas,monospace; font-size: 11px; line-height: 1.55; padding: 12px 14px; border-radius: 8px; max-height: 420px; overflow-y: auto; white-space: pre; }
+  .log-row { display: flex; gap: 8px; padding: 1px 0; }
+  .log-row.filtered { display: none; }
+  .log-time { color: #6b7280; flex-shrink: 0; }
+  .log-level { font-weight: 700; flex-shrink: 0; width: 52px; }
+  .log-level.error { color: #f87171; }
+  .log-level.warn  { color: #fbbf24; }
+  .log-level.info  { color: #60a5fa; }
+  .log-level.debug { color: #9ca3af; }
+  .log-level.trace { color: #6b7280; }
+  .log-msg { color: #e5e7eb; white-space: pre-wrap; word-break: break-word; }
+  .log-msg.err { color: #fca5a5; }
+  .log-empty { color: var(--muted); font-size: 12px; padding: 18px; text-align: center; }
+
+  /* TUI card */
+  .tui-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .tui-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 8px; background: var(--accent); color: #fff; border: none; font-size: 13px; font-weight: 600; cursor: pointer; text-decoration: none; }
+  .tui-btn:hover { opacity: .9; }
+  .tui-btn.sec { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+  .tui-btn.sec:hover { border-color: var(--accent); color: var(--accent); }
+  .tui-creds { font-family: monospace; font-size: 11px; padding: 5px 10px; background: #f8f9fb; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); }
+  .tui-frame-wrap { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #000; }
+  .tui-frame-wrap iframe { display: block; width: 100%; height: 520px; border: none; }
+
   .refresh-bar { text-align: center; padding: 14px; font-size: 11px; color: var(--muted); background: var(--surface); border-top: 1px solid var(--border); }
   #countdown { color: var(--accent); font-weight: 600; }
 </style>
@@ -3764,6 +4377,7 @@ _WILSON_HTML = r"""<!DOCTYPE html>
   <span style="font-size:20px">🥧</span>
   <h1>Wilson · OpenClaw Dashboard</h1>
   <a href="/vault" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600;margin-left:auto" title="Vault-Struktur">📁 Vault</a>
+  <button class="help-btn" onclick="openHelp()">❓ Hilfe</button>
   <span class="badge" id="overall-badge">Laden…</span>
   <span class="ts" id="ts">–</span>
 </header>
@@ -3771,6 +4385,7 @@ _WILSON_HTML = r"""<!DOCTYPE html>
 <div class="grid" id="grid">
   <div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--muted)">Lade Daten von Wilson Pi…</div>
 </div>
+<div class="grid" id="extras" style="padding-top:0"></div>
 <div class="refresh-bar">Auto-Refresh in <span id="countdown">30</span>s &nbsp;·&nbsp; <a href="#" onclick="load();return false;" style="color:var(--accent)">Jetzt aktualisieren</a></div>
 
 <script>
@@ -3927,6 +4542,173 @@ function renderSessions(d) {
   </div>`;
 }
 
+function renderLogCard() {
+  return `<div class="card wide">
+    <div class="card-header">
+      <span class="dot ok" id="log-dot"></span>
+      <span class="card-title">📜 OpenClaw Log</span>
+      <span class="card-badge ok" id="log-badge">…</span>
+    </div>
+    <div class="log-toolbar">
+      <label>Zeilen
+        <select id="log-lines">
+          <option value="50">50</option>
+          <option value="200" selected>200</option>
+          <option value="500">500</option>
+          <option value="1000">1000</option>
+        </select>
+      </label>
+      <label>Level
+        <select id="log-level">
+          <option value="all">Alle</option>
+          <option value="error">ERROR</option>
+          <option value="warn">WARN+</option>
+          <option value="info">INFO+</option>
+        </select>
+      </label>
+      <label title="Automatisch mitscrollen"><input type="checkbox" id="log-follow" checked> Auto-Scroll</label>
+      <button onclick="loadLog()">Aktualisieren</button>
+      <span class="log-meta" id="log-meta">–</span>
+    </div>
+    <div class="log-view" id="log-view"><div class="log-empty">Lade Log…</div></div>
+  </div>`;
+}
+
+function renderTuiCard(info) {
+  const url = (info && info.url) || ('http://' + location.hostname + ':7681/');
+  const err = info && info.error;
+  return `<div class="card wide">
+    <div class="card-header">
+      <span class="dot ${err ? 'error' : 'ok'}"></span>
+      <span class="card-title">💻 OpenClaw TUI</span>
+      <span class="card-badge ${err ? 'error' : 'ok'}">${err ? 'Fehler' : 'ttyd aktiv'}</span>
+    </div>
+    ${err
+      ? `<div class="error-msg">⚠ ${err}</div>`
+      : `<div class="tui-actions">
+          <a class="tui-btn" href="${url}" target="_blank" rel="noopener noreferrer" onclick="window.open('${url}','_blank','noopener,noreferrer');return false;">↗ TUI in neuem Tab</a>
+          <button class="tui-btn sec" onclick="toggleTui()">Inline ein-/ausblenden</button>
+          <a class="log-meta" href="${url}" target="_blank" rel="noopener noreferrer" style="text-decoration:none">${url}</a>
+        </div>
+        <div class="tui-frame-wrap" id="tui-frame-wrap" style="display:none">
+          <iframe id="tui-frame" title="OpenClaw TUI"></iframe>
+        </div>`
+    }
+  </div>`;
+}
+
+let _tuiUrl = '';
+function toggleTui() {
+  const wrap = document.getElementById('tui-frame-wrap');
+  const frame = document.getElementById('tui-frame');
+  if (!wrap || !frame) return;
+  if (wrap.style.display === 'none') {
+    if (!frame.src && _tuiUrl) frame.src = _tuiUrl;
+    wrap.style.display = 'block';
+  } else {
+    wrap.style.display = 'none';
+  }
+}
+
+function fmtLogTime(t) {
+  try {
+    const d = new Date(t);
+    return d.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  } catch(e) { return t || ''; }
+}
+
+const _LEVEL_RANK = { error:0, warn:1, info:2, debug:3, trace:4 };
+function parseLogLine(raw) {
+  try {
+    const o = JSON.parse(raw);
+    const meta = o._meta || {};
+    const lvl = (meta.logLevelName || '').toLowerCase() || 'info';
+    // Message kann unter "0" liegen (TSLog-Format) oder als einzelnes Feld
+    let msg = '';
+    if (typeof o['0'] === 'string') msg = o['0'];
+    else if (typeof o.message === 'string') msg = o.message;
+    else msg = Object.keys(o).filter(k => k !== '_meta' && k !== 'time').map(k => String(o[k])).join(' ');
+    return { time: o.time || meta.date, level: lvl, msg: msg.trim(), raw };
+  } catch(e) {
+    return { time: null, level: 'info', msg: raw, raw };
+  }
+}
+
+async function loadLog() {
+  const lines = document.getElementById('log-lines')?.value || 200;
+  const view = document.getElementById('log-view');
+  const meta = document.getElementById('log-meta');
+  const badge = document.getElementById('log-badge');
+  const dot = document.getElementById('log-dot');
+  if (!view) return;
+  try {
+    const res = await fetch('/api/wilson/logs?lines=' + encodeURIComponent(lines));
+    const d = await res.json();
+    if (d.error) {
+      view.innerHTML = `<div class="log-empty" style="color:#f87171">⚠ ${d.error}</div>`;
+      if (badge) { badge.textContent = 'Fehler'; badge.className = 'card-badge error'; }
+      if (dot)   dot.className = 'dot error';
+      return;
+    }
+    if (d.missing) {
+      view.innerHTML = `<div class="log-empty">Keine Log-Datei für heute (${d.file || '–'})</div>`;
+      if (badge) { badge.textContent = '–'; badge.className = 'card-badge warn'; }
+      if (dot)   dot.className = 'dot warn';
+      if (meta)  meta.textContent = d.file || '';
+      return;
+    }
+    const filterLvl = document.getElementById('log-level')?.value || 'all';
+    const follow = document.getElementById('log-follow')?.checked;
+    const parsed = (d.lines || []).map(parseLogLine);
+    const errCount = parsed.filter(p => p.level === 'error').length;
+    const warnCount = parsed.filter(p => p.level === 'warn').length;
+    const html = parsed.map(p => {
+      let hidden = '';
+      if (filterLvl !== 'all') {
+        const max = _LEVEL_RANK[filterLvl] ?? 99;
+        const cur = _LEVEL_RANK[p.level] ?? 99;
+        if (cur > max) hidden = ' filtered';
+      }
+      const t = p.time ? fmtLogTime(p.time) : '';
+      const lvlClass = _LEVEL_RANK[p.level] != null ? p.level : 'info';
+      const msgClass = p.level === 'error' ? 'err' : '';
+      return `<div class="log-row${hidden}">
+        <span class="log-time">${t}</span>
+        <span class="log-level ${lvlClass}">${p.level.toUpperCase()}</span>
+        <span class="log-msg ${msgClass}">${escapeHtml(p.msg)}</span>
+      </div>`;
+    }).join('');
+    view.innerHTML = html || '<div class="log-empty">Keine Zeilen.</div>';
+    if (follow) view.scrollTop = view.scrollHeight;
+    const kb = d.size_bytes ? Math.round(d.size_bytes/1024) + ' KB' : '';
+    const mtime = d.mtime ? ' · Stand ' + new Date(d.mtime * 1000).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+    if (meta)  meta.textContent = `${d.returned_lines}/${d.requested_lines} Zeilen · ${kb}${mtime} · ${d.file || ''}`;
+    const state = errCount > 0 ? 'error' : (warnCount > 0 ? 'warn' : 'ok');
+    if (badge) { badge.textContent = errCount > 0 ? `${errCount}✗` : (warnCount > 0 ? `${warnCount}⚠` : 'OK'); badge.className = 'card-badge ' + state; }
+    if (dot)   dot.className = 'dot ' + state;
+  } catch(e) {
+    view.innerHTML = `<div class="log-empty" style="color:#f87171">⚠ ${e.message}</div>`;
+  }
+}
+function escapeHtml(s) { return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function copyText(txt, el) {
+  try {
+    navigator.clipboard.writeText(txt);
+    if (el) { const o = el.textContent; el.textContent = '✓ kopiert'; setTimeout(() => el.textContent = o, 1200); }
+  } catch(e) { alert(txt); }
+}
+
+async function initExtras() {
+  // TUI-Info holen und Karten rendern (nur einmal)
+  let tui = null;
+  try { tui = await (await fetch('/api/wilson/tui-info')).json(); } catch(e) { tui = { error: e.message }; }
+  if (tui && tui.url) _tuiUrl = tui.url;
+  document.getElementById('extras').innerHTML = renderLogCard() + renderTuiCard(tui);
+  document.getElementById('log-lines')?.addEventListener('change', loadLog);
+  document.getElementById('log-level')?.addEventListener('change', loadLog);
+  loadLog();
+}
+
 async function load() {
   try {
     const res = await fetch('/api/wilson/status');
@@ -3972,11 +4754,31 @@ let secs = 30;
 function tick() {
   secs--;
   document.getElementById('countdown').textContent = secs;
-  if (secs <= 0) { secs = 30; load(); }
+  if (secs <= 0) { secs = 30; load(); loadLog(); }
 }
 
 load();
+initExtras();
 setInterval(tick, 1000);
+</script>
+<style>.help-btn{font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;transition:all .15s;white-space:nowrap}.help-btn:hover{border-color:var(--accent);color:var(--accent)}.help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center}.help-overlay.open{display:flex}.help-box{background:#23263a;border-radius:14px;padding:28px 32px;max-width:520px;width:90%;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.4);color:#e8eaf0}.help-box h2{font-size:15px;font-weight:700;color:#7c6af7;margin-bottom:18px}.help-box h3{font-size:11px;font-weight:700;color:#8a8fb0;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;margin-top:14px}.help-box p{font-size:13px;line-height:1.6;color:#c8cad8}.help-close{position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:#8a8fb0;line-height:1;padding:2px}.help-close:hover{color:#e8eaf0}</style>
+<div id="help-overlay" class="help-overlay">
+  <div class="help-box">
+    <button class="help-close" onclick="closeHelp()">✕</button>
+    <h2>❓ Wilson Pi Dashboard</h2>
+    <h3>Was macht dieses Dashboard?</h3>
+    <p>Zeigt den Status des Raspberry Pi (Wilson), der deinen Scanner überwacht — welche Dienste laufen, letzte Aktivitäten und Verbindungsqualität zu Ryzen.</p>
+    <h3>Wann ist es nützlich?</h3>
+    <p>Wenn nach einem Scan keine Telegram-Benachrichtigung kam und du prüfen möchtest ob Wilson und seine Dienste laufen.</p>
+    <h3>Beispiel</h3>
+    <p>Kein Lebenszeichen seit 3 Stunden → hier siehst du sofort: Heartbeat aktiv, letztes Dokument 14:23 Uhr, Ollama erreichbar — alles OK.</p>
+  </div>
+</div>
+<script>
+function openHelp(){document.getElementById('help-overlay').classList.add('open')}
+function closeHelp(){document.getElementById('help-overlay').classList.remove('open')}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeHelp()})
+document.getElementById('help-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeHelp()})
 </script>
 </body>
 </html>"""
@@ -4065,10 +4867,11 @@ nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
     <a href="/pipeline" target="_blank" rel="noopener">⚡ Pipeline</a>
     <a href="/review" target="_blank" rel="noopener">📋 Review</a>
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
-    <a href="/vault/anlagen" target="_blank" rel="noopener">📊 Anlagen</a>
     <a href="/cache" class="hl">🔍 Cache</a>
     <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
+    <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
+    <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
   </nav>
   <span class="ts" id="ts">Laden…</span>
 </header>
@@ -4391,7 +5194,6 @@ table.items tr.item-error td.err-cell{color:var(--err)}
     <a href="/pipeline" target="_blank" rel="noopener">⚡ Pipeline</a>
     <a href="/review" target="_blank" rel="noopener">📋 Review</a>
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
-    <a href="/vault/anlagen" target="_blank" rel="noopener">📊 Anlagen</a>
     <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
     <a href="/batch" class="hl">🧰 Batch</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
@@ -4680,6 +5482,582 @@ timer = setInterval(() => { loadRuns(); if(currentRunId) refreshDetail(); }, 500
 </html>
 """
 
+_DUPLIKATE_HTML = r"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docling · Duplikate</title>
+<style>
+:root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--accent:#7c6af7;--text:#e0e0e0;--muted:#888;--green:#4caf50;--orange:#ff9800;--red:#f44336;--blue:#5bc0de}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;min-height:100vh}
+header{display:flex;align-items:center;gap:16px;padding:10px 18px;background:var(--card);border-bottom:1px solid var(--border);flex-wrap:wrap}
+header h1{font-size:15px;font-weight:600;color:var(--accent)}
+.links a{color:var(--muted);text-decoration:none;font-size:12px;margin-left:12px}
+.links a:hover{color:var(--text)}
+.main{max-width:1100px;margin:0 auto;padding:16px}
+.summary-row{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px 18px;min-width:140px;text-align:center}
+.stat-card .num{font-size:28px;font-weight:700;color:var(--accent)}
+.stat-card .lbl{font-size:11px;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.5px}
+.actions{display:flex;gap:10px;margin-bottom:16px;align-items:center;flex-wrap:wrap}
+button{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:8px 18px;cursor:pointer;font-size:12px;font-weight:600}
+button:hover{opacity:.85}
+button.secondary{background:var(--card);color:var(--text);border:1px solid var(--border)}
+button.danger{background:#7c2020}
+button:disabled{opacity:.4;cursor:not-allowed}
+.tabs{display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid var(--border)}
+.tab{padding:8px 16px;cursor:pointer;font-size:12px;font-weight:600;color:var(--muted);border-bottom:2px solid transparent;transition:all .15s}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.group-card{background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:10px;overflow:hidden}
+.group-header{padding:10px 14px;display:flex;gap:10px;align-items:center;cursor:pointer;user-select:none}
+.group-header:hover{background:#1e2140}
+.group-header .badge{padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700}
+.badge-byte{background:#1a2a3a;color:var(--blue)}
+.badge-sem{background:#2a1a3a;color:#c792ea}
+.badge-offen{background:#3a2a1a;color:var(--orange)}
+.badge-verarbeitet{background:#1a3a1a;color:var(--green)}
+.group-meta{font-size:11px;color:var(--muted);flex:1}
+.group-body{padding:10px 14px;border-top:1px solid var(--border);display:none}
+.group-body.open{display:block}
+.entry-row{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid #1e2130}
+.entry-row:last-child{border-bottom:none}
+.entry-row .icon{font-size:16px;min-width:20px;margin-top:1px}
+.entry-info{flex:1;min-width:0}
+.entry-fname{font-size:12px;font-weight:500;word-break:break-all}
+.entry-meta{font-size:11px;color:var(--muted);margin-top:2px}
+.entry-orig{color:var(--green);font-size:10px;font-weight:700;text-transform:uppercase;margin-top:2px}
+.entry-dup{color:var(--orange);font-size:10px}
+.entry-moved{color:var(--muted);text-decoration:line-through;opacity:.5}
+.move-btn{background:#3a2a1a;color:var(--orange);border:1px solid var(--orange);border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer;white-space:nowrap}
+.move-btn:hover{background:#5a3a2a}
+.move-btn:disabled{opacity:.4;cursor:not-allowed}
+.move-all-btn{margin-top:10px;background:#3a1a1a;color:var(--red);border:1px solid var(--red);border-radius:5px;padding:5px 14px;font-size:11px;cursor:pointer;font-weight:600}
+.move-all-btn:hover{background:#5a2a2a}
+#status-bar{padding:6px 12px;background:#1a2a1a;border:1px solid var(--green);border-radius:6px;color:var(--green);font-size:12px;display:none}
+#status-bar.err{background:#2a1a1a;border-color:var(--red);color:var(--red)}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.empty-msg{padding:40px;text-align:center;color:var(--muted);font-size:14px}
+.scan-progress{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:16px;display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>&#127366; Duplikate</h1>
+  <div class="links">
+    <a href="/">Dashboard</a>
+    <a href="/review">Review</a>
+    <a href="/batch">Batch</a>
+    <a href="/pipeline">Pipeline</a>
+  </div>
+</header>
+<div class="main">
+  <div id="scan-progress" class="scan-progress">
+    <span class="spinner"></span> Scan läuft — bitte warten…
+  </div>
+  <div id="move-progress" class="scan-progress" style="display:none;background:#1a2a1a;border:1px solid var(--green)">
+    <span class="spinner" style="border-top-color:var(--green)"></span>
+    <span id="move-progress-text">Batch-Move läuft…</span>
+  </div>
+  <div id="status-bar"></div>
+  <div class="summary-row">
+    <div class="stat-card"><div class="num" id="s-total">—</div><div class="lbl">PDFs gescannt</div></div>
+    <div class="stat-card"><div class="num" id="s-byte">—</div><div class="lbl">Byte-Duplikat-Gruppen</div></div>
+    <div class="stat-card"><div class="num" id="s-sem">—</div><div class="lbl">Text-Duplikat-Gruppen</div></div>
+    <div class="stat-card"><div class="num" id="s-ts">—</div><div class="lbl">Letzter Scan</div></div>
+  </div>
+  <div class="actions">
+    <button id="scan-btn" onclick="startScan()">&#128270; Scan starten</button>
+    <button id="move-all-btn" class="danger" onclick="confirmMoveAll()">&#128465; Alle Duplikate verschieben</button>
+    <button class="secondary" onclick="loadGroups()">&#8635; Aktualisieren</button>
+    <span id="scan-status" style="font-size:12px;color:var(--muted)"></span>
+  </div>
+  <div class="tabs">
+    <div class="tab active" id="tab-byte" onclick="switchTab('byte')">Byte-Duplikate</div>
+    <div class="tab" id="tab-sem" onclick="switchTab('sem')">Text-Duplikate</div>
+  </div>
+  <div id="groups-byte"></div>
+  <div id="groups-sem" style="display:none"></div>
+</div>
+<script>
+let currentTab = 'byte';
+let allGroups = [];
+let pollTimer = null;
+
+function switchTab(t) {
+  currentTab = t;
+  document.getElementById('tab-byte').className = 'tab' + (t==='byte'?' active':'');
+  document.getElementById('tab-sem').className = 'tab' + (t==='sem'?' active':'');
+  document.getElementById('groups-byte').style.display = t==='byte'?'block':'none';
+  document.getElementById('groups-sem').style.display = t==='sem'?'block':'none';
+}
+
+function showStatus(msg, isErr=false) {
+  const bar = document.getElementById('status-bar');
+  bar.textContent = msg;
+  bar.className = isErr ? 'err' : '';
+  bar.style.display = 'block';
+  setTimeout(() => { bar.style.display='none'; }, 6000);
+}
+
+async function startScan() {
+  document.getElementById('scan-btn').disabled = true;
+  document.getElementById('scan-progress').style.display = 'block';
+  document.getElementById('scan-status').textContent = 'Scan gestartet…';
+  try {
+    const r = await fetch('/api/duplikate/scan', {method:'POST'});
+    if (!r.ok) { const e=await r.json(); showStatus('Fehler: '+e.error, true); return; }
+    pollScanStatus();
+  } catch(e) { showStatus('Netzwerkfehler: '+e, true); document.getElementById('scan-btn').disabled=false; }
+}
+
+function pollScanStatus() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    try {
+      const r = await fetch('/api/duplikate/status');
+      const d = await r.json();
+      if (d.status === 'done' || d.status === 'error' || !d.running) {
+        clearInterval(pollTimer);
+        document.getElementById('scan-progress').style.display = 'none';
+        document.getElementById('scan-btn').disabled = false;
+        document.getElementById('scan-status').textContent = '';
+        if (d.status === 'error') showStatus('Scan-Fehler aufgetreten', true);
+        else { showStatus('Scan abgeschlossen'); loadGroups(); }
+      } else {
+        document.getElementById('scan-status').textContent = 'Scannt…';
+      }
+    } catch(e) {}
+  }, 2000);
+}
+
+async function loadGroups() {
+  try {
+    const r = await fetch('/api/duplikate/gruppen');
+    const d = await r.json();
+    allGroups = d.gruppen || [];
+    renderStats(d);
+    renderGroups();
+  } catch(e) { showStatus('Fehler beim Laden: '+e, true); }
+}
+
+function renderStats(d) {
+  document.getElementById('s-total').textContent = d.total_pdfs ?? '—';
+  document.getElementById('s-byte').textContent = d.byte_gruppen ?? '—';
+  document.getElementById('s-sem').textContent = d.sem_gruppen ?? '—';
+  const ts = d.finished_at || d.started_at;
+  document.getElementById('s-ts').textContent = ts ? ts.substring(5,16) : '—';
+}
+
+function pdfName(pfad) {
+  return pfad ? pfad.split('/').pop() : '—';
+}
+
+function renderGroups() {
+  const byteGrps = allGroups.filter(g => g.typ==='byte');
+  const semGrps  = allGroups.filter(g => g.typ==='semantisch');
+  renderGroupList('groups-byte', byteGrps, 'byte');
+  renderGroupList('groups-sem', semGrps, 'sem');
+}
+
+function renderGroupList(containerId, groups, typ) {
+  const el = document.getElementById(containerId);
+  if (!groups.length) {
+    el.innerHTML = '<div class="empty-msg">Keine ' + (typ==='byte'?'Byte-':'Text-') + 'Duplikate gefunden.</div>';
+    return;
+  }
+  el.innerHTML = groups.map((g,gi) => {
+    const btyp = typ==='byte' ? '<span class="badge badge-byte">BYTE</span>' : '<span class="badge badge-sem">TEXT</span>';
+    const bstat = g.status==='verarbeitet' ? '<span class="badge badge-verarbeitet">erledigt</span>' : '<span class="badge badge-offen">offen</span>';
+    const meta = [g.datum, g.absender].filter(Boolean).join(' · ') || '(unbekannt)';
+    const entries = (g.eintraege || []).map(e => {
+      const fname = pdfName(e.pdf_pfad);
+      const moved = e.verschoben ? ' entry-moved' : '';
+      const isOrig = e.ist_original;
+      const label = isOrig
+        ? '<div class="entry-orig">&#10003; Original (behalten)</div>'
+        : (e.verschoben ? '<div class="entry-dup">&#8594; verschoben</div>' : '<div class="entry-dup">Duplikat</div>');
+      const moveBtn = (!isOrig && !e.verschoben)
+        ? `<button class="move-btn" onclick="moveEntry(${g.id},${e.id},this)">Verschieben</button>`
+        : '';
+      return `<div class="entry-row">
+        <div class="icon">${isOrig ? '&#128196;' : '&#128464;'}</div>
+        <div class="entry-info${moved}">
+          <div class="entry-fname">${fname}</div>
+          <div class="entry-meta">${e.md_pfad || ''}</div>
+          ${label}
+        </div>
+        ${moveBtn}
+      </div>`;
+    }).join('');
+    const openEntries = (g.eintraege||[]).filter(e=>!e.ist_original&&!e.verschoben);
+    const moveAllBtn = openEntries.length > 0
+      ? `<button class="move-all-btn" onclick="moveAllInGroup(${g.id},this)">Alle Duplikate dieser Gruppe verschieben (${openEntries.length})</button>`
+      : '';
+    return `<div class="group-card">
+      <div class="group-header" onclick="toggleGroup(${gi})">
+        ${btyp} ${bstat}
+        <div class="group-meta">${meta} &nbsp;·&nbsp; ${(g.eintraege||[]).length} Dateien</div>
+      </div>
+      <div class="group-body" id="grp-${gi}">
+        ${entries}
+        ${moveAllBtn}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleGroup(gi) {
+  const el = document.getElementById('grp-' + gi);
+  if (el) el.classList.toggle('open');
+}
+
+async function moveEntry(gruppeId, eintragId, btn) {
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const r = await fetch('/api/duplikate/move', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({gruppe_id: gruppeId, eintrag_id: eintragId})
+    });
+    const d = await r.json();
+    if (d.ok) { showStatus('Verschoben: ' + (d.moved||[]).join(', ')); loadGroups(); }
+    else { showStatus('Fehler: ' + d.error, true); btn.disabled=false; btn.textContent='Verschieben'; }
+  } catch(e) { showStatus('Netzwerkfehler: '+e, true); btn.disabled=false; btn.textContent='Verschieben'; }
+}
+
+async function moveAllInGroup(gruppeId, btn) {
+  btn.disabled = true;
+  const grp = allGroups.find(g => g.id === gruppeId);
+  if (!grp) return;
+  const dupes = (grp.eintraege||[]).filter(e=>!e.ist_original&&!e.verschoben);
+  for (const e of dupes) {
+    try {
+      const r = await fetch('/api/duplikate/move', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({gruppe_id: gruppeId, eintrag_id: e.id})
+      });
+      const d = await r.json();
+      if (!d.ok) { showStatus('Fehler: ' + d.error, true); }
+    } catch(ex) { showStatus('Netzwerkfehler', true); }
+  }
+  showStatus('Gruppe verarbeitet.');
+  loadGroups();
+}
+
+let moveAllPollTimer = null;
+
+function confirmMoveAll() {
+  const count = allGroups.reduce((s, g) =>
+    s + (g.eintraege||[]).filter(e => !e.ist_original && !e.verschoben).length, 0);
+  if (count === 0) { showStatus('Keine offenen Duplikate vorhanden.'); return; }
+  if (!confirm(`Alle ${count} Duplikate verschieben?\n\nOriginal-PDFs werden auf den kanonischen Namen umbenannt.\nDuplikate wandern in Anlagen/00 Duplikate/ bzw. Anlagen/00 Text-Duplikate/.\n\nDieser Vorgang kann nicht rückgängig gemacht werden.`)) return;
+  startMoveAll();
+}
+
+async function startMoveAll() {
+  document.getElementById('move-all-btn').disabled = true;
+  document.getElementById('scan-btn').disabled = true;
+  document.getElementById('move-progress').style.display = 'block';
+  document.getElementById('move-progress-text').textContent = 'Batch-Move gestartet…';
+  try {
+    const r = await fetch('/api/duplikate/move-all', {method:'POST'});
+    if (!r.ok) { const e=await r.json(); showStatus('Fehler: '+e.error, true); resetMoveBtn(); return; }
+    pollMoveAll();
+  } catch(e) { showStatus('Netzwerkfehler: '+e, true); resetMoveBtn(); }
+}
+
+function resetMoveBtn() {
+  document.getElementById('move-all-btn').disabled = false;
+  document.getElementById('scan-btn').disabled = false;
+  document.getElementById('move-progress').style.display = 'none';
+}
+
+function pollMoveAll() {
+  if (moveAllPollTimer) clearInterval(moveAllPollTimer);
+  moveAllPollTimer = setInterval(async () => {
+    try {
+      const r = await fetch('/api/duplikate/move-all/status');
+      const d = await r.json();
+      const pct = d.total > 0 ? Math.round(d.processed / d.total * 100) : 0;
+      document.getElementById('move-progress-text').textContent =
+        `Batch-Move: ${d.processed} / ${d.total} verschoben (${pct}%)` +
+        (d.errors > 0 ? ` · ${d.errors} Fehler` : '');
+      if (!d.running) {
+        clearInterval(moveAllPollTimer);
+        resetMoveBtn();
+        const msg = `Fertig: ${d.processed} verschoben` + (d.errors > 0 ? `, ${d.errors} Fehler` : '');
+        showStatus(msg, d.errors > 0);
+        loadGroups();
+      }
+    } catch(e) {}
+  }, 1500);
+}
+
+// Initial load
+loadGroups();
+// Check if scan or move-all is running
+(async () => {
+  const [scanR, moveR] = await Promise.all([
+    fetch('/api/duplikate/status'),
+    fetch('/api/duplikate/move-all/status'),
+  ]);
+  const scan = await scanR.json();
+  const move = await moveR.json();
+  if (scan.running) {
+    document.getElementById('scan-progress').style.display='block';
+    document.getElementById('scan-btn').disabled=true;
+    pollScanStatus();
+  }
+  if (move.running) {
+    document.getElementById('move-progress').style.display='block';
+    document.getElementById('move-all-btn').disabled=true;
+    document.getElementById('scan-btn').disabled=true;
+    pollMoveAll();
+  }
+})();
+</script>
+</body>
+</html>
+"""
+
+_FRONTMATTER_HTML = r"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docling · Frontmatter</title>
+<style>
+:root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--accent:#7c6af7;--text:#e0e0e0;--muted:#888;--green:#4caf50;--orange:#ff9800;--red:#f44336;--blue:#5bc0de}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;min-height:100vh}
+header{display:flex;align-items:center;gap:16px;padding:10px 18px;background:var(--card);border-bottom:1px solid var(--border);flex-wrap:wrap}
+header h1{font-size:15px;font-weight:600;color:var(--accent)}
+.links a{color:var(--muted);text-decoration:none;font-size:12px;margin-left:12px}
+.links a:hover{color:var(--text)}
+.main{max-width:1000px;margin:0 auto;padding:16px}
+.summary-row{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px 18px;min-width:140px;text-align:center}
+.stat-card .num{font-size:28px;font-weight:700;color:var(--accent)}
+.stat-card .lbl{font-size:11px;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.5px}
+.stat-card.green .num{color:var(--green)}
+.stat-card.orange .num{color:var(--orange)}
+.stat-card.red .num{color:var(--red)}
+.section-title{font-size:13px;font-weight:600;color:var(--text);margin:20px 0 10px;letter-spacing:.02em}
+.schema-table{width:100%;border-collapse:collapse;background:var(--card);border-radius:8px;overflow:hidden;border:1px solid var(--border);margin-bottom:20px}
+.schema-table th{text-align:left;padding:8px 12px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border)}
+.schema-table td{padding:8px 12px;border-bottom:1px solid var(--border)}
+.schema-table tr:last-child td{border-bottom:none}
+.bar-wrap{width:140px;background:#1e2130;border-radius:4px;height:8px;display:inline-block;vertical-align:middle}
+.bar-fill{height:8px;border-radius:4px;background:var(--accent)}
+.probe-panel{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:20px}
+.probe-panel h2{font-size:13px;font-weight:600;color:var(--accent);margin-bottom:12px}
+.probe-row{display:flex;gap:8px;margin-bottom:12px;align-items:stretch}
+.probe-row input{flex:1;background:#0f1117;border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:12px;font-family:monospace}
+.probe-row input:focus{outline:none;border-color:var(--accent)}
+button{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:12px;font-weight:600}
+button:hover{opacity:.85}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.danger{background:#7c2020;margin-left:8px}
+button.secondary{background:var(--card);color:var(--text);border:1px solid var(--border)}
+.diff-area{display:none;margin-top:12px}
+.diff-area.visible{display:block}
+.diff-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.diff-col h3{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+pre{background:#0f1117;border:1px solid var(--border);border-radius:6px;padding:10px;font-size:11px;overflow-x:auto;white-space:pre-wrap;color:var(--text);max-height:320px;overflow-y:auto}
+.changes-list{margin:12px 0;padding-left:0;list-style:none}
+.changes-list li{padding:3px 0;color:var(--green);font-size:12px;font-family:monospace}
+.changes-list li::before{content:"+ ";color:var(--green)}
+.no-changes{color:var(--muted);font-size:12px;padding:8px 0}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700}
+.badge-ok{background:#1a3a1a;color:var(--green)}
+.badge-upg{background:#3a2a1a;color:var(--orange)}
+.badge-no{background:#1e2130;color:var(--muted)}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+#msg{margin-top:10px;font-size:12px;padding:6px 10px;border-radius:5px;display:none}
+#msg.ok{background:#1a3a1a;color:var(--green);display:block}
+#msg.err{background:#3a1a1a;color:var(--red);display:block}
+.batch-panel{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:20px}
+.batch-panel h2{font-size:13px;font-weight:600;color:var(--accent);margin-bottom:8px}
+.batch-desc{font-size:12px;color:var(--muted);margin-bottom:12px}
+.progress-wrap{background:#1e2130;border-radius:6px;height:12px;margin:10px 0;overflow:hidden;display:none}
+.progress-fill{height:12px;background:var(--green);border-radius:6px;transition:width .5s}
+#batch-status{font-size:12px;color:var(--muted);margin-top:6px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏷️ Frontmatter</h1>
+  <div class="links">
+    <a href="/">Dashboard</a>
+    <a href="/vault">📁 Vault</a>
+    <a href="/cache">🔍 Cache</a>
+    <a href="/batch">🧰 Batch</a>
+    <a href="/wilson">🥧 Wilson</a>
+    <a href="/duplikate">🗂️ Duplikate</a>
+  </div>
+  <span id="scan-ts" style="margin-left:auto;font-size:11px;color:var(--muted)"></span>
+</header>
+<div class="main">
+  <div class="summary-row" id="stats-row">
+    <div class="stat-card"><div class="num" id="s-total">…</div><div class="lbl">MDs gesamt</div></div>
+    <div class="stat-card green"><div class="num" id="s-unified">…</div><div class="lbl">Unified</div></div>
+    <div class="stat-card orange"><div class="num" id="s-upg">…</div><div class="lbl">Upgradeable</div></div>
+    <div class="stat-card red"><div class="num" id="s-nofm">…</div><div class="lbl">Kein Frontmatter</div></div>
+    <div class="stat-card"><div class="num" id="s-pct" style="font-size:22px">…</div><div class="lbl">% Unified</div></div>
+  </div>
+
+  <div class="section-title">Schema-Verteilung</div>
+  <table class="schema-table">
+    <thead><tr><th>Schema</th><th>Anzahl</th><th>Anteil</th></tr></thead>
+    <tbody id="schema-tbody"><tr><td colspan="3" style="color:var(--muted);text-align:center;padding:20px"><span class="spinner"></span> Lade…</td></tr></tbody>
+  </table>
+
+  <div class="batch-panel">
+    <h2>Batch-Upgrade</h2>
+    <p class="batch-desc">Fügt <code>erstellt_am</code> und <code>tags</code> zu allen noch nicht vereinheitlichten Dokumenten hinzu. Legacy-Felder bleiben erhalten. Einmaliger Vorgang — neue Dokumente bekommen das Schema automatisch.</p>
+    <button id="batch-btn" onclick="startBatch()">Alle Dokumente upgraden</button>
+    <div class="progress-wrap" id="progress-wrap">
+      <div class="progress-fill" id="progress-fill" style="width:0%"></div>
+    </div>
+    <div id="batch-status"></div>
+  </div>
+
+  <div class="probe-panel">
+    <h2>Probe-Upgrade</h2>
+    <div class="probe-row">
+      <input type="text" id="md-input" placeholder="z.B. 49 Krankenversicherung/2025/20250315_HUK-COBURG_Leistungsabrechnung.md">
+      <button id="probe-btn" onclick="doProbe()">Prüfen</button>
+      <button id="upgrade-btn" class="danger" onclick="doUpgrade()" style="display:none">Upgrade anwenden</button>
+    </div>
+    <div class="diff-area" id="diff-area">
+      <p id="schema-badge" style="margin-bottom:8px;font-size:12px"></p>
+      <ul class="changes-list" id="changes-list"></ul>
+      <div class="diff-grid" id="diff-grid">
+        <div><h3>Aktuell</h3><pre id="pre-current"></pre></div>
+        <div><h3>Nach Upgrade</h3><pre id="pre-upgraded"></pre></div>
+      </div>
+    </div>
+    <div id="msg"></div>
+  </div>
+</div>
+<script>
+async function loadStats() {
+  const r = await fetch('/api/frontmatter/stats');
+  const d = await r.json();
+  if (d.error) { document.getElementById('schema-tbody').innerHTML = '<tr><td colspan="3" style="color:var(--red)">'+d.error+'</td></tr>'; return; }
+  document.getElementById('s-total').textContent = d.total;
+  document.getElementById('s-unified').textContent = d.unified;
+  document.getElementById('s-upg').textContent = d.upgradeable;
+  document.getElementById('s-nofm').textContent = d.no_frontmatter;
+  document.getElementById('s-pct').textContent = d.unified_pct + '%';
+  if (d.scanned_at) document.getElementById('scan-ts').textContent = 'Scan: ' + d.scanned_at;
+  const tbody = document.getElementById('schema-tbody');
+  tbody.innerHTML = '';
+  for (const [name, cnt] of Object.entries(d.schemas)) {
+    const pct = d.total ? Math.round(cnt / d.total * 100) : 0;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${name}</td><td style="font-weight:600">${cnt}</td>
+      <td><span class="bar-wrap"><span class="bar-fill" style="width:${pct}%"></span></span>
+      <span style="margin-left:8px;color:var(--muted);font-size:11px">${pct}%</span></td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+let lastProbe = null;
+
+async function doProbe() {
+  const md = document.getElementById('md-input').value.trim();
+  if (!md) return;
+  document.getElementById('probe-btn').disabled = true;
+  document.getElementById('upgrade-btn').style.display = 'none';
+  document.getElementById('msg').className = '';
+  const r = await fetch('/api/frontmatter/probe?md=' + encodeURIComponent(md));
+  const d = await r.json();
+  document.getElementById('probe-btn').disabled = false;
+  lastProbe = d;
+  const area = document.getElementById('diff-area');
+  area.classList.add('visible');
+  document.getElementById('schema-badge').innerHTML =
+    'Schema: <strong>' + (d.schema||'?') + '</strong>';
+  const cl = document.getElementById('changes-list');
+  cl.innerHTML = '';
+  if (d.error) { cl.innerHTML = '<li style="color:var(--red)">' + d.error + '</li>'; return; }
+  if (d.changes && d.changes.length) {
+    d.changes.forEach(c => { const li = document.createElement('li'); li.textContent = c; cl.appendChild(li); });
+    document.getElementById('upgrade-btn').style.display = '';
+  } else {
+    cl.innerHTML = '<li class="no-changes" style="color:var(--muted)">Keine Änderungen notwendig — bereits unified.</li>';
+  }
+  document.getElementById('pre-current').textContent = d.current ? jsYaml(d.current) : '(kein Frontmatter)';
+  document.getElementById('pre-upgraded').textContent = d.upgraded ? jsYaml(d.upgraded) : '(kein Frontmatter)';
+}
+
+async function doUpgrade() {
+  const md = document.getElementById('md-input').value.trim();
+  if (!md) return;
+  document.getElementById('upgrade-btn').disabled = true;
+  const r = await fetch('/api/frontmatter/upgrade?md=' + encodeURIComponent(md), {method:'POST'});
+  const d = await r.json();
+  document.getElementById('upgrade-btn').disabled = false;
+  const msg = document.getElementById('msg');
+  if (d.ok) {
+    msg.className = 'ok';
+    msg.textContent = 'Upgrade erfolgreich: ' + (d.changes||[]).join(' | ');
+    document.getElementById('upgrade-btn').style.display = 'none';
+    setTimeout(doProbe, 400);
+  } else {
+    msg.className = 'err';
+    msg.textContent = 'Fehler: ' + (d.reason || 'Unbekannt');
+  }
+}
+
+let batchPoll = null;
+
+async function startBatch() {
+  if (!confirm('Alle Vault-Dokumente upgraden? Legacy-Felder bleiben erhalten.')) return;
+  document.getElementById('batch-btn').disabled = true;
+  document.getElementById('batch-status').textContent = 'Starte…';
+  document.getElementById('progress-wrap').style.display = 'block';
+  await fetch('/api/frontmatter/batch-upgrade', {method:'POST'});
+  batchPoll = setInterval(pollBatch, 1000);
+}
+
+async function pollBatch() {
+  const r = await fetch('/api/frontmatter/batch-status');
+  const d = await r.json();
+  const pct = d.total ? Math.round(d.done / d.total * 100) : 0;
+  document.getElementById('progress-fill').style.width = pct + '%';
+  document.getElementById('batch-status').textContent =
+    `${d.done} / ${d.total} verarbeitet (${pct}%)${d.errors ? ' — ' + d.errors + ' Fehler' : ''}`;
+  if (d.finished) {
+    clearInterval(batchPoll);
+    document.getElementById('batch-btn').disabled = false;
+    document.getElementById('batch-status').textContent =
+      `✅ Fertig — ${d.done} Dokumente verarbeitet${d.errors ? ', ' + d.errors + ' Fehler' : ''}.`;
+    setTimeout(loadStats, 1000);
+  }
+}
+
+function jsYaml(obj) {
+  return Object.entries(obj).map(([k,v]) => {
+    if (Array.isArray(v)) return k + ': [' + v.join(', ') + ']';
+    if (v !== null && typeof v === 'object') return k + ': {...}';
+    return k + ': ' + String(v);
+  }).join('\n');
+}
+
+document.getElementById('md-input').addEventListener('keydown', e => { if(e.key==='Enter') doProbe(); });
+loadStats();
+</script>
+</body>
+</html>
+"""
+
 
 class _ApiHandler(BaseHTTPRequestHandler):
 
@@ -4733,7 +6111,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
                     rows = con.execute(
                         "SELECT id, dateiname, rechnungsdatum, kategorie, typ, absender, adressat, "
                         "konfidenz, vault_pfad, anlagen_dateiname FROM dokumente "
-                        "WHERE kategorie='Inbox' OR kategorie IS NULL ORDER BY id DESC"
+                        "WHERE kategorie='Inbox' OR kategorie IS NULL OR kategorie='' "
+                        "OR vault_pfad LIKE '00 Inbox%' ORDER BY id DESC"
                     ).fetchall()
                 elif mode == "niedrig":
                     rows = con.execute(
@@ -4750,7 +6129,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
             for r in rows:
                 d = dict(r)
                 d["pdf_name"] = (d.get("anlagen_dateiname")
-                                 or (Path(d["vault_pfad"]).stem + ".pdf" if d.get("vault_pfad") else None)
+                                 or (_safe_pdf_name_from_vault_pfad(d["vault_pfad"], d.get("dateiname", "")) if d.get("vault_pfad") else None)
                                  or d.get("dateiname", ""))
                 docs.append(d)
             self._json_response(docs)
@@ -5002,52 +6381,6 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._json_response({"folders": result, "cols": COLS})
             return
 
-        # GET /vault/anlagen — Anlagen Dateinamen-Analyse
-        elif path == "/vault/anlagen":
-            self._html_response(_ANLAGEN_HTML)
-            return
-
-        # GET /api/vault/anlagen-analyse — Statistik Datumspräfixe in Anlagen
-        elif path == "/api/vault/anlagen-analyse":
-            from collections import defaultdict
-            import re as _re
-            anlagen_dir = VAULT_PDF_ARCHIV
-            total = 0
-            dated = 0
-            undated_samples = []
-            year_counts: dict = defaultdict(int)
-            invalid_counts: dict = defaultdict(int)
-            if anlagen_dir and anlagen_dir.exists():
-                for f in sorted(anlagen_dir.rglob("*.pdf")):
-                    if f.name.startswith("._"):
-                        continue
-                    total += 1
-                    name = f.name
-                    prefix = name[:8]
-                    if _re.match(r'^\d{8}$', prefix):
-                        year = int(prefix[:4])
-                        if 1990 <= year <= 2030:
-                            year_counts[year] += 1
-                            dated += 1
-                        else:
-                            invalid_counts[prefix] += 1
-                    else:
-                        if len(undated_samples) < 20:
-                            undated_samples.append(name)
-            undated = total - dated - sum(invalid_counts.values())
-            by_year = [{"year": y, "count": year_counts[y]} for y in sorted(year_counts)]
-            invalid_dates = sorted([{"prefix": p, "count": c} for p, c in invalid_counts.items()], key=lambda x: -x["count"])
-            self._json_response({
-                "total": total,
-                "dated": dated,
-                "undated": undated,
-                "invalid_count": sum(invalid_counts.values()),
-                "by_year": by_year,
-                "invalid_dates": invalid_dates,
-                "undated_samples": undated_samples,
-            })
-            return
-
         # GET /wilson — Wilson/OpenClaw Dashboard
         elif path == "/wilson":
             self._html_response(_WILSON_HTML)
@@ -5056,6 +6389,20 @@ class _ApiHandler(BaseHTTPRequestHandler):
         # GET /api/wilson/status — Wilson Status via SSH
         elif path == "/api/wilson/status":
             self._json_response(_collect_wilson_status())
+            return
+
+        # GET /api/wilson/logs?lines=N — OpenClaw-Log des aktuellen Tages
+        elif path == "/api/wilson/logs":
+            try:
+                n = int(params.get("lines", ["200"])[0])
+            except ValueError:
+                n = 200
+            self._json_response(_collect_wilson_logs(n))
+            return
+
+        # GET /api/wilson/tui-info — Host/Port/Creds der ttyd-TUI
+        elif path == "/api/wilson/tui-info":
+            self._json_response(_fetch_wilson_tui_info())
             return
 
         # GET /api/health — aggregierter Service-Status
@@ -5156,7 +6503,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 d = dict(r)
                 # anlagen_dateiname bevorzugen; Fallback: vault_pfad-Stem oder dateiname
                 d["pdf_name"] = (d.get("anlagen_dateiname")
-                                 or (Path(d["vault_pfad"]).stem + ".pdf" if d.get("vault_pfad") else None)
+                                 or (_safe_pdf_name_from_vault_pfad(d["vault_pfad"], d.get("dateiname", "")) if d.get("vault_pfad") else None)
                                  or d.get("dateiname", ""))
                 docs.append(d)
             self._json_response(docs)
@@ -5169,7 +6516,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 self._json_response({"error": "Ungültige ID"}, 400); return
             with get_db() as con:
                 row = con.execute(
-                    "SELECT id, dateiname, rechnungsdatum, kategorie, typ, absender, adressat, konfidenz, vault_pfad, erstellt_am "
+                    "SELECT id, dateiname, rechnungsdatum, kategorie, typ, absender, adressat, konfidenz, vault_pfad, anlagen_dateiname, erstellt_am "
                     "FROM dokumente WHERE id = ?", (doc_id,)
                 ).fetchone()
             if not row:
@@ -5359,6 +6706,46 @@ class _ApiHandler(BaseHTTPRequestHandler):
             return
 
         # GET /api/pdf/<dateiname> — PDF aus Anlagen ausliefern (rekursiv)
+        # GET /api/vault-pdf?md=<vault-relativer-md-pfad>
+        # Liest das MD, extrahiert den original:-Link und liefert das PDF als Download.
+        elif path == "/api/vault-pdf":
+            md_rel = params.get("md", [""])[0]
+            if not md_rel or ".." in md_rel or md_rel.startswith("/"):
+                self._json_response({"error": "Ungültiger MD-Pfad"}, 400); return
+            if not VAULT_ROOT:
+                self._json_response({"error": "VAULT_ROOT nicht konfiguriert"}, 500); return
+            md_full = VAULT_ROOT / md_rel
+            if not md_full.exists() or md_full.suffix.lower() != ".md":
+                self._json_response({"error": f"MD nicht gefunden: {md_rel}"}, 404); return
+            try:
+                md_full.resolve().relative_to(VAULT_ROOT.resolve())
+            except ValueError:
+                self._json_response({"error": "Path traversal blockiert"}, 400); return
+            content = md_full.read_text(encoding="utf-8", errors="replace")
+            # original: "[[Anlagen/DATEI.pdf]]"  oder  original: [[Anlagen/DATEI.pdf]]
+            import re as _re
+            m = _re.search(r'\[\[([^\]]+\.pdf)\]\]', content)
+            if not m:
+                self._json_response({"error": "Kein PDF-Link (original:) im MD gefunden"}, 404); return
+            pdf_rel = m.group(1)
+            if ".." in pdf_rel or pdf_rel.startswith("/"):
+                self._json_response({"error": "Ungültiger PDF-Pfad im MD"}, 400); return
+            pdf_full = VAULT_ROOT / pdf_rel
+            if not pdf_full.exists() or not pdf_full.is_file():
+                self._json_response({"error": f"PDF nicht gefunden: {pdf_rel}"}, 404); return
+            try:
+                pdf_full.resolve().relative_to(VAULT_ROOT.resolve())
+            except ValueError:
+                self._json_response({"error": "Path traversal blockiert"}, 400); return
+            data = pdf_full.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", len(data))
+            self.send_header("Content-Disposition", f'attachment; filename="{pdf_full.name}"')
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
         # GET /api/vault-file?path=... — Liefert jede Vault-Datei (PDF oder andere) als Stream
         elif path == "/api/vault-file":
             rel = params.get("path", [""])[0]
@@ -5409,6 +6796,136 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Disposition", f'inline; filename="{filename}"')
             self.end_headers()
             self.wfile.write(data)
+
+        # GET /duplikate — Duplikat-Dashboard
+        elif path == "/duplikate":
+            self._html_response(_DUPLIKATE_HTML)
+            return
+
+        # GET /api/duplikate/status — Scan-Status
+        elif path == "/api/duplikate/status":
+            with _DEDUP_SCAN_LOCK:
+                running = _DEDUP_SCAN_STATUS["running"]
+                scan_id = _DEDUP_SCAN_STATUS["scan_id"]
+            scan = None
+            if scan_id is not None:
+                with get_db() as con:
+                    row = con.execute(
+                        "SELECT id, status, total_pdfs, byte_gruppen, sem_gruppen, started_at, finished_at "
+                        "FROM duplikat_scans WHERE id=?", (scan_id,)
+                    ).fetchone()
+                    if row:
+                        scan = dict(row)
+            if scan:
+                scan["running"] = running
+                self._json_response(scan)
+            else:
+                # Return last scan from DB if any
+                with get_db() as con:
+                    row = con.execute(
+                        "SELECT id, status, total_pdfs, byte_gruppen, sem_gruppen, started_at, finished_at "
+                        "FROM duplikat_scans ORDER BY id DESC LIMIT 1"
+                    ).fetchone()
+                if row:
+                    d = dict(row)
+                    d["running"] = running
+                    self._json_response(d)
+                else:
+                    self._json_response({"running": False, "status": None})
+            return
+
+        # GET /api/duplikate/move-all/status — Batch-Move-Fortschritt
+        elif path == "/api/duplikate/move-all/status":
+            with _DEDUP_MOVE_LOCK:
+                self._json_response(dict(_DEDUP_MOVE_STATUS))
+            return
+
+        # GET /api/duplikate/gruppen — alle Duplikat-Gruppen + Einträge
+        elif path == "/api/duplikate/gruppen":
+            with get_db() as con:
+                scan_row = con.execute(
+                    "SELECT id, status, total_pdfs, byte_gruppen, sem_gruppen, started_at, finished_at "
+                    "FROM duplikat_scans ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                if not scan_row:
+                    self._json_response({"gruppen": [], "total_pdfs": 0, "byte_gruppen": 0, "sem_gruppen": 0})
+                    return
+                scan = dict(scan_row)
+                gruppen_rows = con.execute(
+                    "SELECT id, typ, pdf_hash, datum, absender, status "
+                    "FROM duplikat_gruppen WHERE scan_id=? ORDER BY typ, id",
+                    (scan["id"],)
+                ).fetchall()
+                result = []
+                for g in gruppen_rows:
+                    gd = dict(g)
+                    eintraege = con.execute(
+                        "SELECT id, pdf_pfad, md_pfad, ist_original, verschoben "
+                        "FROM duplikat_eintraege WHERE gruppe_id=? ORDER BY ist_original DESC, id",
+                        (g["id"],)
+                    ).fetchall()
+                    gd["eintraege"] = [dict(e) for e in eintraege]
+                    result.append(gd)
+            scan["gruppen"] = result
+            self._json_response(scan)
+            return
+
+        # GET /frontmatter — Frontmatter-Dashboard
+        elif path == "/frontmatter":
+            self._html_response(_FRONTMATTER_HTML)
+            return
+
+        # GET /api/frontmatter/stats — Schema-Verteilung
+        elif path == "/api/frontmatter/stats":
+            self._json_response(_fm_stats())
+            return
+
+        # GET /api/frontmatter/probe?md=<vault-rel-pfad>
+        elif path == "/api/frontmatter/probe":
+            md_rel = params.get("md", [""])[0]
+            if not md_rel or ".." in md_rel or md_rel.startswith("/"):
+                self._json_response({"error": "Ungültiger MD-Pfad"}, 400); return
+            if not VAULT_ROOT:
+                self._json_response({"error": "VAULT_ROOT nicht konfiguriert"}, 500); return
+            md_full = VAULT_ROOT / md_rel
+            if not md_full.exists():
+                self._json_response({"error": f"MD nicht gefunden: {md_rel}"}, 404); return
+            try:
+                md_full.resolve().relative_to(VAULT_ROOT.resolve())
+            except ValueError:
+                self._json_response({"error": "Path traversal blockiert"}, 400); return
+            self._json_response(_fm_probe(md_full))
+            return
+
+        # GET /api/frontmatter/batch-status
+        elif path == "/api/frontmatter/batch-status":
+            with _FM_BATCH_LOCK:
+                self._json_response(dict(_FM_BATCH_STATE))
+            return
+
+        # GET /api/proxy/cache-reader — Proxy für Wilson (port 8501 intern nicht erreichbar)
+        elif path == "/api/proxy/cache-reader":
+            try:
+                r = requests.get("http://cache-reader:8501/stats", timeout=5)
+                self.send_response(r.status_code)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(r.content)
+            except Exception as e:
+                self._json_response({"error": str(e)}, 502)
+            return
+
+        # GET /api/proxy/docling — Proxy für Wilson (port 5001 intern nicht erreichbar)
+        elif path == "/api/proxy/docling":
+            try:
+                r = requests.get("http://docling-serve:5001/health", timeout=5)
+                self.send_response(r.status_code)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(r.content)
+            except Exception as e:
+                self._json_response({"error": str(e)}, 502)
+            return
 
         else:
             self._json_response({"error": "Unbekannter Endpunkt"}, 404)
@@ -5759,6 +7276,99 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 self._json_response({"status": "stopping", "done": _rescan_state["done"], "total": _rescan_state["total"]})
             else:
                 self._json_response({"status": "not_running"})
+
+        # POST /api/ocr — PDF-Datei per multipart hochladen, Docling-Markdown zurück
+        elif path == "/api/ocr":
+            ctype = self.headers.get("Content-Type", "")
+            length = int(self.headers.get("Content-Length", 0))
+            if not length:
+                self._json_response({"error": "Kein Body"}, 400); return
+            raw = self.rfile.read(length)
+            import tempfile, cgi, io
+            environ = {"REQUEST_METHOD": "POST", "CONTENT_TYPE": ctype, "CONTENT_LENGTH": str(length)}
+            fs = cgi.FieldStorage(fp=io.BytesIO(raw), environ=environ, keep_blank_values=True)
+            pdf_item = None
+            for field in ("file", "files"):
+                if field in fs:
+                    pdf_item = fs[field]
+                    break
+            if pdf_item is None or not hasattr(pdf_item, "file"):
+                self._json_response({"error": "Feld 'file' fehlt"}, 400); return
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(pdf_item.file.read())
+                tmp_path = Path(tmp.name)
+            try:
+                md = convert_to_markdown(tmp_path)
+            finally:
+                tmp_path.unlink(missing_ok=True)
+            if md is None:
+                self._json_response({"error": "OCR fehlgeschlagen"}, 502); return
+            self._json_response({"text": md})
+
+        # POST /api/duplikate/scan — Duplikat-Scan starten
+        elif path == "/api/duplikate/scan":
+            with _DEDUP_SCAN_LOCK:
+                if _DEDUP_SCAN_STATUS["running"]:
+                    self._json_response({"error": "Scan läuft bereits"}, 409); return
+            t = threading.Thread(target=_run_duplikat_scan, daemon=True)
+            t.start()
+            self._json_response({"ok": True, "msg": "Scan gestartet"})
+            return
+
+        # POST /api/duplikate/move-all — alle offenen Duplikate verschieben
+        elif path == "/api/duplikate/move-all":
+            with _DEDUP_MOVE_LOCK:
+                if _DEDUP_MOVE_STATUS["running"]:
+                    self._json_response({"error": "Batch-Move läuft bereits"}, 409); return
+            threading.Thread(target=_run_move_all, daemon=True).start()
+            self._json_response({"ok": True, "msg": "Batch-Move gestartet"})
+            return
+
+        # POST /api/duplikate/move — Duplikat-Eintrag verschieben
+        elif path == "/api/duplikate/move":
+            try:
+                body = self._read_body()
+            except Exception:
+                self._json_response({"error": "Ungültiger Body"}, 400); return
+            gruppe_id = body.get("gruppe_id")
+            eintrag_id = body.get("eintrag_id")
+            if not gruppe_id or not eintrag_id:
+                self._json_response({"error": "gruppe_id und eintrag_id erforderlich"}, 400); return
+            result = _move_duplikat(int(gruppe_id), int(eintrag_id))
+            status = 200 if result.get("ok") else 400
+            self._json_response(result, status)
+            return
+
+        # POST /api/frontmatter/upgrade?md=<vault-rel-pfad>
+        elif path == "/api/frontmatter/upgrade":
+            from urllib.parse import parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            md_rel = qs.get("md", [""])[0]
+            if not md_rel or ".." in md_rel or md_rel.startswith("/"):
+                self._json_response({"error": "Ungültiger MD-Pfad"}, 400); return
+            if not VAULT_ROOT:
+                self._json_response({"error": "VAULT_ROOT nicht konfiguriert"}, 500); return
+            md_full = VAULT_ROOT / md_rel
+            if not md_full.exists():
+                self._json_response({"error": f"MD nicht gefunden: {md_rel}"}, 404); return
+            try:
+                md_full.resolve().relative_to(VAULT_ROOT.resolve())
+            except ValueError:
+                self._json_response({"error": "Path traversal blockiert"}, 400); return
+            result = _fm_apply_upgrade(md_full)
+            if result.get("ok"):
+                _FM_STATS_CACHE_TS = 0.0  # invalidate cache
+            self._json_response(result, 200 if result.get("ok") else 400)
+            return
+
+        # POST /api/frontmatter/batch-upgrade — alle Vault-MDs upgraden (Hintergrund)
+        elif path == "/api/frontmatter/batch-upgrade":
+            with _FM_BATCH_LOCK:
+                if _FM_BATCH_STATE.get("running"):
+                    self._json_response({"error": "Batch läuft bereits"}, 409); return
+            threading.Thread(target=_fm_batch_upgrade_all, daemon=True).start()
+            self._json_response({"ok": True, "message": "Batch-Upgrade gestartet"})
+            return
 
         else:
             self._json_response({"error": "Unbekannter Endpunkt"}, 404)
@@ -6479,13 +8089,12 @@ Für Krankenversicherung/Versicherung zusätzlich ausfüllen:
         for regel in BRANCHEN_REGELN:
             kws = " / ".join(regel.get("absender_keywords", []))
             cat = regel.get("category_id", "")
-            typ = regel.get("type_id", "")
             desc = (regel.get("beschreibung") or "").strip().replace("\n", " ")
             hinweis = (regel.get("hinweis") or "").strip().replace("\n", " ")
             regeln_lines.append(
                 f"- Absender-Branche: {kws}\n"
                 f"  Beschreibung: {desc}\n"
-                f"  → category_id=\"{cat}\", type_id=\"{typ}\"\n"
+                f"  → category_id=\"{cat}\"\n"
                 + (f"  Hinweis: {hinweis}\n" if hinweis else "")
             )
         branchen_block = "\n".join(regeln_lines)
@@ -6623,6 +8232,13 @@ def aggregate_konfidenz(result: dict) -> str:
 
 # ── Verarbeitung ───────────────────────────────────────────────────────────────
 
+def _safe_pdf_name_from_vault_pfad(vault_pfad: str, fallback: str = "") -> str:
+    """Gibt den PDF-Dateinamen aus vault_pfad zurück — strippt doppelte .pdf-Extension."""
+    stem = Path(vault_pfad).stem
+    if stem.lower().endswith(".pdf"):
+        stem = stem[:-4]
+    return stem + ".pdf" if stem else fallback
+
 def _sanitize_name_part(s: str) -> str:
     """Sanitize a string for use in filenames: collapse whitespace, keep alphanumeric + umlauts."""
     s = re.sub(r"[^\w\s\-äöüÄÖÜß]", "", s)
@@ -6682,24 +8298,19 @@ def build_clean_filename(result: dict, original_stem: str) -> str:
     else:
         absender_clean = ""
 
-    # Typ
-    type_clean = _sanitize_name_part(type_label) if type_label else ""
-
-    # Tier (optional, nur bei familie/tierarztrechnung gesetzt)
+    # Tier (optional, nur bei familie/tierarzt gesetzt)
     tier = result.get("tier")
     tier_clean = _sanitize_name_part(tier) if tier else ""
 
-    # Zusammenbauen
+    # Zusammenbauen — kein type_label mehr (Typen sind abgeschafft)
     parts = [date_str]
     if absender_clean:
         parts.append(absender_clean)
     if tier_clean:
         parts.append(tier_clean)
-    if type_clean:
-        parts.append(type_clean)
 
     if len(parts) == 1:
-        # Kein Absender, kein Typ → Original-Stem verwenden
+        # Kein Absender → Original-Stem verwenden
         return _sanitize_name_part(original_stem)
 
     return "_".join(parts)
@@ -6784,7 +8395,10 @@ def move_to_vault(file_path: Path, temp_md: Path, category_id: str, type_id: str
     adressat = (result.get("adressat") or "") if result else ""
 
     # Sauberen Dateinamen generieren
-    if result:
+    # _force_stem: von Wilson vorgegebener Dateiname (Bypass-Modus) — nicht neu ableiten.
+    if result and result.get("_force_stem"):
+        clean_name = _sanitize_name_part(result["_force_stem"])
+    elif result:
         clean_name = build_clean_filename(result, file_path.stem)
     else:
         clean_name = _sanitize_name_part(file_path.stem)
@@ -6876,12 +8490,10 @@ def apply_keyword_rules(result: dict, text: str, categories: dict) -> dict:
         old_conf = result.get("konfidenz_category", "niedrig")
         if old_cat == cat_id and old_conf in ("hoch", "mittel"):
             continue  # LLM war schon korrekt und sicher
-        result["category_id"]       = cat_id
-        result["type_id"]           = type_id
+        result["category_id"]        = cat_id
+        result["type_id"]            = type_id  # None wenn nicht in Regel gesetzt
         result["konfidenz_category"] = "hoch"
-        if result.get("konfidenz_type") == "niedrig":
-            result["konfidenz_type"] = "mittel"
-        log.info(f"Keyword-Rule greift: '{rule.get('beschreibung', cat_id)}' → {cat_id}/{type_id}")
+        log.info(f"Keyword-Rule greift: '{rule.get('beschreibung', cat_id)}' → {cat_id}")
         break  # Erste passende Regel gewinnt
     return result
 
@@ -7471,6 +9083,122 @@ def process_file(file_path: Path):
         tg_send(f"⚠️ Datei nicht stabil (Transfer abgebrochen?)\n<code>{_fn}</code>")
         return
 
+    # ── Wilson-Sidecar-Bypass ──────────────────────────────────────────────────
+    # Wenn Wilson das Dokument vorverarbeitet hat, liegt eine .meta.json neben dem PDF.
+    # In diesem Fall: OCR + LLM auf Ryzen überspringen, Sidecar-Daten direkt verwenden.
+    sidecar_path = file_path.parent / (file_path.stem + ".meta.json")
+    if sidecar_path.exists() and not _batch_active():
+        log.info(f"Wilson-Sidecar gefunden: {sidecar_path.name} — Bypass-Modus aktiv")
+        _step_emit(_fn, "wilson_bypass", "Wilson-Sidecar-Bypass", "running")
+        try:
+            sidecar_data = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            log.warning(f"Sidecar parse-Fehler: {e} — falle auf normale Pipeline zurück")
+            sidecar_data = None
+
+        if sidecar_data and sidecar_data.get("version") == "2.0":
+            dok = sidecar_data.get("dokument", {})
+            verarb = sidecar_data.get("verarbeitung", {})
+
+            # Datum YYYY-MM-DD → DD.MM.YYYY
+            datum_raw = dok.get("datum", "")
+            rechnungsdatum = None
+            if datum_raw and re.match(r"\d{4}-\d{2}-\d{2}", datum_raw):
+                y, m, d = datum_raw.split("-")
+                rechnungsdatum = f"{d}.{m}.{y}"
+
+            kategorie_id = dok.get("kategorie_id", "")
+            categories = load_categories()
+            category_label = categories.get(kategorie_id, {}).get("label", kategorie_id) if categories else kategorie_id
+            absender  = dok.get("absender", "") or "–"
+            adressat  = dok.get("adressat", "Reinhard") or "Reinhard"
+            beschreibung = dok.get("beschreibung", "")
+            # Dateiname aus Sidecar als autoritativer Stem (ohne .pdf)
+            force_stem = Path(dok.get("dateiname", file_path.name)).stem or file_path.stem
+
+            result_bypass = {
+                "absender":           absender,
+                "adressat":           adressat,
+                "rechnungsdatum":     rechnungsdatum,
+                "category_id":        kategorie_id,
+                "category_label":     category_label,
+                "type_id":            None,
+                "type_label":         None,
+                "beschreibung":       beschreibung,
+                "konfidenz":          "hoch",
+                "konfidenz_category": "hoch",
+                "konfidenz_absender": "hoch",
+                "konfidenz_adressat": "hoch",
+                "konfidenz_datum":    "hoch" if rechnungsdatum else "niedrig",
+                "_wilson_bypass":     True,
+                "_force_stem":        force_stem,
+            }
+
+            _step_emit(_fn, "ocr",    "OCR / Docling",             "skip")
+            _step_emit(_fn, "header", "Header-Extraktion",         "skip")
+            _step_emit(_fn, "identifiers", "Identifier-Extraktion","skip")
+            _step_emit(_fn, "doctype","Dokumenttyp-Erkennung",     "skip")
+            _step_emit(_fn, "lang",   "Spracherkennung",           "skip")
+            _step_emit(_fn, "translate", "Übersetzung",            "skip")
+            _step_emit(_fn, "llm",    "LLM-Klassifikation (Ollama)", "skip",
+                       extracted={"reason": "Wilson-Sidecar", "kategorie_id": kategorie_id})
+            _step_emit(_fn, "overrides", "Deterministisches Override", "skip")
+
+            # Temp-MD: Beschreibung aus Sidecar als Vault-Inhalt
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            stem_safe = re.sub(r"[^\w\-]", "_", file_path.stem)
+            temp_md_bp = TEMP_DIR / f"{timestamp}_{stem_safe}.md"
+            wilson_ts = verarb.get("extrahiert_am", "")
+            temp_md_bp.write_text(
+                f"*Vorverarbeitet von Wilson am {wilson_ts}*\n\n{beschreibung}",
+                encoding="utf-8",
+            )
+
+            _step_emit(_fn, "db", "Datenbank speichern", "running")
+            match_infos_bp = save_to_db(file_path, result_bypass)
+            save_klassifikation_historie(result_bypass.get("_dok_id"), result_bypass)
+            _step_emit(_fn, "db", "Datenbank speichern", "done",
+                       extracted={"dok_id": result_bypass.get("_dok_id"),
+                                  "category_id": kategorie_id,
+                                  "konfidenz": "hoch"})
+
+            # Telegram
+            tg_send_document(file_path)
+            tg_lines = [
+                f"✅ <b>Dokument von Wilson empfangen</b>",
+                f"",
+                f"📄 Datei:     <code>{force_stem}.pdf</code>",
+                f"🏢 Absender:  🟢 {absender}",
+                f"👤 Adressat:  🟢 {adressat}",
+            ]
+            if rechnungsdatum:
+                tg_lines.append(f"📅 Datum:     🟢 {rechnungsdatum}")
+            tg_lines += [
+                f"🗂 Kategorie: 🟢 <b>{category_label}</b>",
+                f"",
+                f"📝 {beschreibung[:300]}",
+                f"",
+                f"🤖 Vorverarbeitet von Wilson — kein LLM auf Ryzen",
+            ]
+            tg_send("\n".join(tg_lines))
+            log.info(f"Wilson-Bypass abgeschlossen: {file_path.name} → {kategorie_id}")
+
+            _step_emit(_fn, "vault", "Vault-Move", "running")
+            move_to_vault(file_path, temp_md_bp, kategorie_id, "", result_bypass)
+            _step_emit(_fn, "vault", "Vault-Move", "done",
+                       extracted={"vault_pfad": result_bypass.get("vault_pfad", "")})
+
+            try:
+                sidecar_path.unlink()
+                log.info(f"Sidecar gelöscht: {sidecar_path.name}")
+            except Exception as e:
+                log.warning(f"Sidecar löschen fehlgeschlagen: {e}")
+
+            return
+        else:
+            log.warning(f"Sidecar ungültig oder falsche Version — falle auf normale Pipeline zurück")
+    # ── Ende Wilson-Sidecar-Bypass ─────────────────────────────────────────────
+
     # 1. PDF → Markdown via Docling (oder Cache, im Batch-Modus)
     _step_emit(_fn, "ocr", "OCR / Docling", "running")
     _t0 = time.monotonic()
@@ -7881,7 +9609,6 @@ def process_file(file_path: Path):
         lines.append(f"📅 Datum:      {_ki('datum')} {rechnungsdatum}")
     lines += [
         f"🗂 Kategorie:  {_ki('category')} <b>{result.get('category_label', '–')}</b>",
-        f"📁 Typ:        {_ki('type')} <b>{result.get('type_label', '–')}</b>",
     ]
 
     if is_la:
@@ -7928,7 +9655,7 @@ def process_file(file_path: Path):
 
     # SSE — Live-Update ans Dashboard
     _vault_pfad = result.get("vault_pfad", "")
-    _pdf_name = (Path(_vault_pfad).stem + ".pdf") if _vault_pfad else file_path.name
+    _pdf_name = _safe_pdf_name_from_vault_pfad(_vault_pfad, file_path.name) if _vault_pfad else file_path.name
     sse_broadcast("doc_processed", {
         "dateiname":      file_path.name,
         "pdf_name":       _pdf_name,
@@ -7970,6 +9697,8 @@ def queue_worker():
                 process_enex_file(item[1])
             else:
                 process_file(item)
+        except FileNotFoundError as e:
+            log.warning(f"Datei nicht mehr vorhanden (bereits gelöscht?): {item} — {e}")
         except Exception as e:
             import traceback
             log.error(f"Unerwarteter Fehler bei {item}: {e}\n{traceback.format_exc()}")
@@ -8488,6 +10217,489 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     return p
 
 
+# ── Duplikat-Erkennung ─────────────────────────────────────────────────────────
+
+_DEDUP_SCAN_LOCK = threading.Lock()
+_DEDUP_SCAN_STATUS: dict = {"running": False, "scan_id": None}
+
+_DEDUP_MOVE_LOCK = threading.Lock()
+_DEDUP_MOVE_STATUS: dict = {
+    "running": False, "total": 0, "processed": 0, "errors": 0,
+    "started_at": None, "finished_at": None, "last_error": None,
+}
+
+_DEDUP_SKIP_DIRS = {"00 Duplikate", "00 Text-Duplikate"}
+
+
+def _extract_amounts(text: str) -> set[str]:
+    """Extrahiert normalisierte Geldbeträge aus OCR-Text."""
+    amounts: set[str] = set()
+    for m in re.finditer(
+        r'(?:EUR|€)\s*\d[\d.,]*|\d[\d.,]*\s*(?:EUR|€)|\d{1,3}(?:[.,]\d{3})+[.,]\d{2}',
+        text, re.IGNORECASE
+    ):
+        # Normalize: extract digits + last 2 decimal places
+        raw = re.sub(r'\s+', '', m.group(0).upper().replace('€', 'EUR'))
+        amounts.add(raw)
+    return amounts
+
+
+def _metadata_for_pdf(pdf_name: str) -> dict:
+    """Holt (datum, absender, vault_pfad) für einen PDF-Dateinamen.
+
+    Priorität: DB → MD-Frontmatter → Filename-Prefix.
+    """
+    res = {"datum": None, "absender": None, "vault_pfad": None, "source": None}
+    # 1. DB
+    with get_db() as con:
+        row = con.execute(
+            "SELECT rechnungsdatum, absender, vault_pfad FROM dokumente "
+            "WHERE anlagen_dateiname=? OR dateiname LIKE ?",
+            (pdf_name, f"%{pdf_name}%")
+        ).fetchone()
+    if row:
+        res.update({"datum": row["rechnungsdatum"], "absender": row["absender"],
+                    "vault_pfad": row["vault_pfad"], "source": "db"})
+    # 2. MD-Frontmatter (neues Format: datum/absender; altes Format: date/title)
+    if VAULT_ROOT and res.get("vault_pfad"):
+        md = VAULT_ROOT / res["vault_pfad"]
+        if md.exists():
+            try:
+                content = md.read_text(encoding="utf-8", errors="replace")
+                if content.startswith("---"):
+                    end = content.find("---", 3)
+                    if end > 0:
+                        for line in content[3:end].splitlines():
+                            if ":" not in line:
+                                continue
+                            k, _, v = line.partition(":")
+                            k, v = k.strip(), v.strip().strip("\"'")
+                            # neues Format
+                            if k == "datum" and not res["datum"]:
+                                res["datum"] = v; res["source"] = "frontmatter"
+                            elif k == "absender" and not res["absender"]:
+                                res["absender"] = v; res["source"] = "frontmatter"
+                            # altes Format (Obsidian-Import)
+                            elif k == "date" and not res["datum"]:
+                                # date: YYYY-MM-DD → DD.MM.YYYY
+                                dm = re.match(r'(\d{4})-(\d{2})-(\d{2})', v)
+                                if dm:
+                                    res["datum"] = f"{dm.group(3)}.{dm.group(2)}.{dm.group(1)}"
+                                    res["source"] = "frontmatter"
+            except Exception:
+                pass
+    # 3. Filename-Prefix
+    stem = Path(pdf_name).stem
+    if not res["datum"]:
+        ds = _date_from_filename_prefix(stem)
+        if ds:
+            res["datum"] = f"{ds[6:]}.{ds[4:6]}.{ds[:4]}"
+            res["source"] = res["source"] or "filename"
+    if not res["absender"]:
+        parts = stem.split("_")
+        if len(parts) >= 2:
+            res["absender"] = parts[1]
+            res["source"] = res["source"] or "filename"
+    return res
+
+
+def _run_duplikat_scan() -> None:
+    """Führt vollständigen Duplikat-Scan im Hintergrund aus."""
+    with _DEDUP_SCAN_LOCK:
+        _DEDUP_SCAN_STATUS["running"] = True
+
+    scan_id: int | None = None
+    try:
+        with get_db() as con:
+            # Alte Scan-Ergebnisse löschen
+            con.execute("DELETE FROM duplikat_eintraege")
+            con.execute("DELETE FROM duplikat_gruppen")
+            con.execute("DELETE FROM duplikat_scans")
+            cur = con.execute(
+                "INSERT INTO duplikat_scans (status, started_at) VALUES ('running', datetime('now','localtime'))"
+            )
+            scan_id = cur.lastrowid
+        _DEDUP_SCAN_STATUS["scan_id"] = scan_id
+
+        if not VAULT_PDF_ARCHIV or not VAULT_PDF_ARCHIV.exists():
+            log.warning("Duplikat-Scan: VAULT_PDF_ARCHIV nicht konfiguriert")
+            with get_db() as con:
+                con.execute("UPDATE duplikat_scans SET status='error', finished_at=datetime('now','localtime') WHERE id=?", (scan_id,))
+            return
+
+        # ── Phase 1: Byte-Duplikate ──────────────────────────────────────────
+        log.info("Duplikat-Scan Phase 1: Byte-Duplikate")
+        hash_map: dict[str, list[Path]] = {}
+        total = 0
+        for pdf in sorted(VAULT_PDF_ARCHIV.rglob("*.pdf")):
+            if any(p in _DEDUP_SKIP_DIRS for p in pdf.parts):
+                continue
+            if pdf.name.startswith("._"):
+                continue
+            total += 1
+            try:
+                h = _md5_file(pdf)
+                hash_map.setdefault(h, []).append(pdf)
+            except Exception as e:
+                log.warning(f"MD5 Fehler {pdf.name}: {e}")
+
+        log.info(f"Duplikat-Scan: {total} PDFs indexiert")
+        byte_gruppen = 0
+        byte_dup_set: set[Path] = set()
+        for md5, paths in hash_map.items():
+            if len(paths) < 2:
+                continue
+            byte_gruppen += 1
+
+            metas = {p: _metadata_for_pdf(p.name) for p in paths}
+
+            def _score(p: Path) -> tuple:
+                m = metas[p]
+                has_vault = bool(m.get("vault_pfad"))
+                # Prefer YYYYMMDD_ or YYYYMMDD- prefix
+                has_clean_date = bool(re.match(r'^\d{8}[_\-]', p.stem))
+                # Penalize _1, _2 … duplicates
+                is_suffix_dup = bool(re.search(r'_\d+$', p.stem))
+                return (not has_vault, not has_clean_date, is_suffix_dup, len(p.stem))
+
+            ordered = sorted(paths, key=_score)
+            meta0 = metas[ordered[0]]
+            with get_db() as con:
+                cur = con.execute(
+                    "INSERT INTO duplikat_gruppen (scan_id, typ, pdf_hash, datum, absender) VALUES (?,?,?,?,?)",
+                    (scan_id, "byte", md5, meta0["datum"], meta0["absender"])
+                )
+                gid = cur.lastrowid
+                for i, p in enumerate(ordered):
+                    em = metas[p]
+                    con.execute(
+                        "INSERT INTO duplikat_eintraege (gruppe_id, pdf_pfad, md_pfad, ist_original) VALUES (?,?,?,?)",
+                        (gid, str(p), em["vault_pfad"], 1 if i == 0 else 0)
+                    )
+            for p in ordered[1:]:
+                byte_dup_set.add(p)
+
+        log.info(f"Duplikat-Scan: {byte_gruppen} Byte-Gruppen")
+
+        # ── Phase 2: Semantische Duplikate ───────────────────────────────────
+        log.info("Duplikat-Scan Phase 2: Semantische Duplikate")
+        sem_map: dict[tuple, list[dict]] = {}
+        for pdf in sorted(VAULT_PDF_ARCHIV.rglob("*.pdf")):
+            if any(p in _DEDUP_SKIP_DIRS for p in pdf.parts):
+                continue
+            if pdf.name.startswith("._"):
+                continue
+            if pdf in byte_dup_set:
+                continue
+            m = _metadata_for_pdf(pdf.name)
+            datum = (m.get("datum") or "").strip()
+            absender = (m.get("absender") or "").strip()
+            if not datum and not absender:
+                continue
+            # Normalize datum → YYYYMMDD
+            dn = ""
+            dm = re.match(r'(\d{2})\.(\d{2})\.(\d{4})', datum)
+            if dm:
+                dn = f"{dm.group(3)}{dm.group(2)}{dm.group(1)}"
+            else:
+                dm2 = re.match(r'(\d{4})-(\d{2})-(\d{2})', datum)
+                if dm2:
+                    dn = f"{dm2.group(1)}{dm2.group(2)}{dm2.group(3)}"
+                else:
+                    dn = datum
+            an = re.sub(r'[^a-z0-9äöüß]', '', absender.lower())[:20]
+            key = (dn, an)
+            sem_map.setdefault(key, []).append({
+                "pdf": pdf, "vault_pfad": m.get("vault_pfad"),
+                "datum": datum, "absender": absender,
+            })
+
+        sem_gruppen = 0
+        for (dn, an), entries in sem_map.items():
+            if len(entries) < 2:
+                continue
+            if not dn and not an:
+                continue
+
+            # Fetch OCR texts from cache
+            texts: list[str | None] = []
+            for entry in entries:
+                vp = entry.get("vault_pfad")
+                text = None
+                if vp:
+                    ce = _cache_lookup(vp)
+                    if ce:
+                        text = ce.get("text") or ""
+                texts.append(text)
+
+            valid = [(i, t) for i, t in enumerate(texts) if t and len(t.strip()) > 50]
+            is_dup = False
+            if len(valid) >= 2:
+                t1, t2 = valid[0][1], valid[1][1]
+                a1, a2 = _extract_amounts(t1), _extract_amounts(t2)
+                if a1 and a2:
+                    overlap = len(a1 & a2) / max(len(a1), len(a2))
+                    if overlap >= 0.3:
+                        is_dup = True
+                if not is_dup:
+                    def _trigrams(s: str) -> set:
+                        w = re.sub(r'\s+', ' ', s[:600]).lower().split()
+                        return set(zip(w, w[1:], w[2:])) if len(w) >= 3 else set()
+                    tg1, tg2 = _trigrams(t1), _trigrams(t2)
+                    if tg1 and tg2:
+                        jaccard = len(tg1 & tg2) / len(tg1 | tg2)
+                        if jaccard >= 0.25:
+                            is_dup = True
+            elif len(entries) >= 2 and len(dn) >= 8 and len(an) >= 3:
+                # Same date + sender, no OCR → likely duplicate
+                is_dup = True
+
+            if not is_dup:
+                continue
+            sem_gruppen += 1
+
+            def _sem_score(e: dict) -> tuple:
+                has_date = bool(re.match(r'^\d{8}_', e["pdf"].stem))
+                has_vault = bool(e.get("vault_pfad"))
+                return (not has_date and not has_vault, not has_vault, len(e["pdf"].stem))
+
+            ordered_e = sorted(entries, key=_sem_score)
+            with get_db() as con:
+                cur = con.execute(
+                    "INSERT INTO duplikat_gruppen (scan_id, typ, datum, absender) VALUES (?,?,?,?)",
+                    (scan_id, "semantisch", ordered_e[0]["datum"], ordered_e[0]["absender"])
+                )
+                gid = cur.lastrowid
+                for i, entry in enumerate(ordered_e):
+                    con.execute(
+                        "INSERT INTO duplikat_eintraege (gruppe_id, pdf_pfad, md_pfad, ist_original) VALUES (?,?,?,?)",
+                        (gid, str(entry["pdf"]), entry.get("vault_pfad"), 1 if i == 0 else 0)
+                    )
+
+        log.info(f"Duplikat-Scan: {sem_gruppen} semantische Gruppen")
+
+        with get_db() as con:
+            con.execute(
+                "UPDATE duplikat_scans SET status='done', total_pdfs=?, byte_gruppen=?, "
+                "sem_gruppen=?, finished_at=datetime('now','localtime') WHERE id=?",
+                (total, byte_gruppen, sem_gruppen, scan_id)
+            )
+        log.info("Duplikat-Scan abgeschlossen")
+
+    except Exception as e:
+        log.error(f"Duplikat-Scan Fehler: {e}", exc_info=True)
+        if scan_id is not None:
+            try:
+                with get_db() as con:
+                    con.execute(
+                        "UPDATE duplikat_scans SET status='error', finished_at=datetime('now','localtime') WHERE id=?",
+                        (scan_id,)
+                    )
+            except Exception:
+                pass
+    finally:
+        with _DEDUP_SCAN_LOCK:
+            _DEDUP_SCAN_STATUS["running"] = False
+
+
+def _update_md_original_link(md_path: Path, old_pdf_name: str, new_pdf_rel: str) -> None:
+    """Aktualisiert den original:-Wikilink im MD-Frontmatter auf den neuen PDF-Pfad.
+
+    Behandelt beide Frontmatter-Formate:
+    - Neues Format:  original: "[[Anlagen/DATEI.pdf]]"
+    - Altes Format:  📎 **PDF:** [[Anlagen/DATEI.pdf]]  (im Body)
+    """
+    try:
+        content = md_path.read_text(encoding="utf-8", errors="replace")
+        # Ersetze alle Vorkommen des alten Wikilinks (im Frontmatter und im Body)
+        old_link_anlagen = f"[[Anlagen/{old_pdf_name}]]"
+        new_link = f"[[Anlagen/{new_pdf_rel}]]"
+        if old_link_anlagen in content:
+            content = content.replace(old_link_anlagen, new_link)
+            md_path.write_text(content, encoding="utf-8")
+    except Exception as e:
+        log.warning(f"Frontmatter-Update fehlgeschlagen ({md_path.name}): {e}")
+
+
+def _move_duplikat(gruppe_id: int, eintrag_id: int) -> dict:
+    """Verschiebt ein Duplikat in den Quarantäne-Ordner.
+
+    Kanonischer Name: abgeleitet aus dem MD-Stem des Originals (z.B.
+    20250710_Versicherungskammer_Bayern_Versicherungsschein_Tarifänderung.pdf).
+    Das Original-PDF wird auf diesen Namen umbenannt falls nötig;
+    das Duplikat landet mit demselben kanonischen Namen im Quarantäne-Ordner.
+    """
+    with get_db() as con:
+        gruppe = con.execute(
+            "SELECT typ, datum, absender FROM duplikat_gruppen WHERE id=?", (gruppe_id,)
+        ).fetchone()
+        eintrag = con.execute(
+            "SELECT id, pdf_pfad, md_pfad, ist_original, verschoben FROM duplikat_eintraege WHERE id=?",
+            (eintrag_id,)
+        ).fetchone()
+        orig_eintrag = con.execute(
+            "SELECT id, pdf_pfad, md_pfad FROM duplikat_eintraege WHERE gruppe_id=? AND ist_original=1",
+            (gruppe_id,)
+        ).fetchone()
+    if not gruppe:
+        return {"error": f"Gruppe {gruppe_id} nicht gefunden"}
+    if not eintrag:
+        return {"error": f"Eintrag {eintrag_id} nicht gefunden"}
+    if eintrag["ist_original"]:
+        return {"error": "Original kann nicht verschoben werden"}
+    if eintrag["verschoben"]:
+        return {"error": "Bereits verschoben"}
+
+    qname = "00 Duplikate" if gruppe["typ"] == "byte" else "00 Text-Duplikate"
+    pdf_src = Path(eintrag["pdf_pfad"])
+    if not pdf_src.exists():
+        return {"error": f"PDF nicht gefunden: {pdf_src.name}"}
+
+    moved: list[str] = []
+
+    # ── Kanonischen Namen aus dem MD-Stem des Originals ableiten ────────────
+    canonical_pdf_name: str | None = None
+    if orig_eintrag and orig_eintrag["md_pfad"]:
+        canonical_pdf_name = Path(orig_eintrag["md_pfad"]).stem + ".pdf"
+
+    # ── Original-PDF umbenennen falls Name nicht kanonisch ───────────────────
+    if canonical_pdf_name and VAULT_PDF_ARCHIV and orig_eintrag:
+        orig_pdf = Path(orig_eintrag["pdf_pfad"])
+        if orig_pdf.exists() and orig_pdf.name != canonical_pdf_name:
+            new_orig_pdf = VAULT_PDF_ARCHIV / canonical_pdf_name
+            if not new_orig_pdf.exists():
+                try:
+                    orig_pdf.rename(new_orig_pdf)
+                    # Frontmatter original:-Link im MD aktualisieren
+                    if orig_eintrag["md_pfad"] and VAULT_ROOT:
+                        _update_md_original_link(
+                            VAULT_ROOT / orig_eintrag["md_pfad"],
+                            orig_pdf.name, canonical_pdf_name
+                        )
+                    # DB: anlagen_dateiname + scan-Eintrag
+                    with get_db() as con:
+                        con.execute(
+                            "UPDATE dokumente SET anlagen_dateiname=? WHERE anlagen_dateiname=?",
+                            (canonical_pdf_name, orig_pdf.name)
+                        )
+                        con.execute(
+                            "UPDATE duplikat_eintraege SET pdf_pfad=? WHERE id=?",
+                            (str(new_orig_pdf), orig_eintrag["id"])
+                        )
+                    moved.append(f"Original umbenannt: {orig_pdf.name} → {canonical_pdf_name}")
+                    log.info(f"Original-PDF umbenannt: {orig_pdf.name} → {canonical_pdf_name}")
+                except Exception as e:
+                    log.warning(f"Umbenennung Original fehlgeschlagen: {e}")
+
+    # ── Duplikat-PDF in Quarantäne verschieben ────────────────────────────────
+    dest_pdf_name = canonical_pdf_name or pdf_src.name
+    if not VAULT_PDF_ARCHIV:
+        return {"error": "VAULT_PDF_ARCHIV nicht konfiguriert"}
+    anlagen_q = VAULT_PDF_ARCHIV / qname
+    anlagen_q.mkdir(parents=True, exist_ok=True)
+    pdf_dst = anlagen_q / dest_pdf_name
+    # Kollision: gleicher Name schon im Quarantäne-Ordner
+    if pdf_dst.exists():
+        pdf_dst = anlagen_q / (Path(dest_pdf_name).stem + "_dup.pdf")
+    try:
+        shutil.move(str(pdf_src), str(pdf_dst))
+        moved.append(f"PDF → {qname}/{pdf_dst.name}")
+        log.info(f"Duplikat verschoben: {pdf_src.name} → {qname}/{pdf_dst.name}")
+    except Exception as e:
+        return {"error": f"PDF-Verschieben fehlgeschlagen: {e}"}
+
+    # ── Duplikat-MD verschieben + Frontmatter aktualisieren ──────────────────
+    md_vault_pfad = eintrag["md_pfad"]
+    if md_vault_pfad and VAULT_ROOT:
+        md_src = VAULT_ROOT / md_vault_pfad
+        if md_src.exists():
+            vault_q = VAULT_ROOT / qname
+            vault_q.mkdir(parents=True, exist_ok=True)
+            md_dst_name = Path(dest_pdf_name).stem + ".md"
+            md_dst = vault_q / md_dst_name
+            if md_dst.exists():
+                md_dst = vault_q / (Path(md_dst_name).stem + "_dup.md")
+            try:
+                _update_md_original_link(md_src, pdf_src.name, f"{qname}/{pdf_dst.name}")
+                shutil.move(str(md_src), str(md_dst))
+                moved.append(f"MD → {qname}/{md_dst.name}")
+                with get_db() as con:
+                    con.execute(
+                        "UPDATE dokumente SET vault_pfad=? WHERE vault_pfad=?",
+                        (f"{qname}/{md_dst.name}", md_vault_pfad)
+                    )
+            except Exception as e:
+                log.warning(f"MD-Verschieben fehlgeschlagen: {e}")
+                moved.append(f"MD-Verschieben fehlgeschlagen: {e}")
+
+    with get_db() as con:
+        con.execute("UPDATE duplikat_eintraege SET verschoben=1 WHERE id=?", (eintrag_id,))
+        remaining = con.execute(
+            "SELECT COUNT(*) FROM duplikat_eintraege WHERE gruppe_id=? AND ist_original=0 AND verschoben=0",
+            (gruppe_id,)
+        ).fetchone()[0]
+        if remaining == 0:
+            con.execute("UPDATE duplikat_gruppen SET status='verarbeitet' WHERE id=?", (gruppe_id,))
+
+    return {"ok": True, "moved": moved}
+
+
+def _run_move_all() -> None:
+    """Verschiebt alle offenen Duplikate im Hintergrund."""
+    with _DEDUP_MOVE_LOCK:
+        _DEDUP_MOVE_STATUS.update({
+            "running": True, "total": 0, "processed": 0, "errors": 0,
+            "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "finished_at": None, "last_error": None,
+        })
+    try:
+        with get_db() as con:
+            scan_row = con.execute(
+                "SELECT id FROM duplikat_scans ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if not scan_row:
+                log.warning("Move-All: kein Scan vorhanden")
+                return
+            scan_id = scan_row["id"]
+            eintraege = con.execute(
+                "SELECT de.id, de.gruppe_id FROM duplikat_eintraege de "
+                "JOIN duplikat_gruppen dg ON de.gruppe_id = dg.id "
+                "WHERE dg.scan_id=? AND de.ist_original=0 AND de.verschoben=0",
+                (scan_id,)
+            ).fetchall()
+
+        total = len(eintraege)
+        with _DEDUP_MOVE_LOCK:
+            _DEDUP_MOVE_STATUS["total"] = total
+        log.info(f"Move-All: {total} Duplikate werden verarbeitet")
+
+        processed = 0
+        errors = 0
+        for row in eintraege:
+            result = _move_duplikat(row["gruppe_id"], row["id"])
+            if result.get("ok"):
+                processed += 1
+            else:
+                errors += 1
+                err = result.get("error", "")
+                log.warning(f"Move-All Fehler (eintrag {row['id']}): {err}")
+                with _DEDUP_MOVE_LOCK:
+                    _DEDUP_MOVE_STATUS["last_error"] = err
+            with _DEDUP_MOVE_LOCK:
+                _DEDUP_MOVE_STATUS["processed"] = processed
+                _DEDUP_MOVE_STATUS["errors"] = errors
+
+        log.info(f"Move-All abgeschlossen: {processed} verschoben, {errors} Fehler")
+    except Exception as e:
+        log.error(f"Move-All Fehler: {e}", exc_info=True)
+        with _DEDUP_MOVE_LOCK:
+            _DEDUP_MOVE_STATUS["last_error"] = str(e)
+    finally:
+        with _DEDUP_MOVE_LOCK:
+            _DEDUP_MOVE_STATUS["running"] = False
+            _DEDUP_MOVE_STATUS["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def main():
     parser = _build_cli_parser()
     args = parser.parse_args()
@@ -8536,9 +10748,7 @@ def main():
     worker.start()
 
     threading.Thread(target=start_api_server, daemon=True).start()
-    # Telegram-Polling deaktiviert — Wilson/OpenClaw pollt (selber Bot-Token!).
-    # Dispatcher ist send-only. Korrekturen laufen über REST-API (/api/correct).
-    # threading.Thread(target=tg_poll, daemon=True).start()
+    threading.Thread(target=tg_poll, daemon=True).start()
 
     # Vorhandene PDFs in WATCH_DIR verarbeiten
     for f in WATCH_DIR.glob("*.pdf"):
