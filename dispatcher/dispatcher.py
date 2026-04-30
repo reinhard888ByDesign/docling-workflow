@@ -1258,14 +1258,17 @@ result = {"ts": datetime.now().isoformat(timespec="seconds")}
 
 # --- Gateway-Prozess ---
 try:
-    ps = subprocess.run(["ps", "aux"], capture_output=True, text=True).stdout
-    gw = {"running": False}
-    for line in ps.splitlines():
-        if "openclaw-gateway" in line and "grep" not in line:
-            p = line.split()
-            gw = {"running": True, "pid": int(p[1]), "cpu_pct": float(p[2]),
-                  "mem_pct": float(p[3]), "uptime": p[9]}
-            break
+    svc = subprocess.run(["systemctl", "--user", "is-active", "openclaw-gateway"],
+                         capture_output=True, text=True).stdout.strip()
+    gw = {"running": svc == "active"}
+    if gw["running"]:
+        ps = subprocess.run(["ps", "aux"], capture_output=True, text=True).stdout
+        for line in ps.splitlines():
+            if "openclaw" in line and "gateway" in line and "grep" not in line:
+                p = line.split()
+                gw["pid"] = int(p[1]); gw["cpu_pct"] = float(p[2])
+                gw["mem_pct"] = float(p[3]); gw["uptime"] = p[9]
+                break
     result["gateway"] = gw
 except Exception as e:
     result["gateway"] = {"running": False, "error": str(e)}
@@ -4487,23 +4490,13 @@ _WILSON_HTML = r"""<!DOCTYPE html>
   .refresh-bar { text-align: center; padding: 14px; font-size: 11px; color: var(--muted); background: var(--surface); border-top: 1px solid var(--border); }
   #countdown { color: var(--accent); font-weight: 600; }
 
-  /* Projekte Vault panel */
-  .pv-wrap { display: flex; justify-content: flex-end; padding: 12px 24px 4px; }
-  .pv-card { background: var(--surface); border: 1.5px solid var(--accent); border-radius: 12px; padding: 12px 18px; min-width: 300px; max-width: 480px; box-shadow: 0 2px 12px rgba(79,70,229,.10); }
-  .pv-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  .pv-head .pv-title { font-size: 13px; font-weight: 700; color: var(--accent); }
-  .pv-head .pv-err { font-size: 11px; color: var(--err); margin-left: auto; }
-  .pv-kpis { display: flex; gap: 14px; margin-bottom: 10px; }
-  .pv-kpi { text-align: center; flex: 1; }
+  /* Projekte Vault in-grid metrics */
+  .pv-kpis { display: flex; gap: 16px; margin: 8px 0 10px; }
+  .pv-kpi { text-align: center; flex: 1; padding: 8px 4px; background: #f8f9fb; border-radius: 8px; }
   .pv-kpi .pv-val { font-size: 22px; font-weight: 700; color: var(--text); line-height: 1.1; }
   .pv-kpi .pv-lbl { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-weight: 700; }
   .pv-kpi.ok .pv-val { color: var(--ok); }
   .pv-kpi.accent .pv-val { color: var(--accent); }
-  .pv-divider { height: 1px; background: var(--border); margin: 8px 0; }
-  .pv-recent { display: flex; flex-direction: column; gap: 3px; }
-  .pv-file { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; }
-  .pv-fname { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; }
-  .pv-fts { color: var(--muted); white-space: nowrap; margin-left: 8px; flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -4520,7 +4513,6 @@ _WILSON_HTML = r"""<!DOCTYPE html>
   <span id="update-banner-text"></span>
   <button class="update-btn" id="update-btn" onclick="startUpdate()">🔄 Jetzt updaten</button>
 </div>
-<div class="pv-wrap" id="pv-wrap"></div>
 <div class="grid" id="grid">
   <div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--muted)">Lade Daten von Wilson Pi…</div>
 </div>
@@ -4725,17 +4717,17 @@ function renderProjekteVault(d) {
   const pv = d.projekte_vault || {};
   const recent = pv.recent || [];
   const recentHtml = recent.length
-    ? recent.map(f => `<div class="pv-file">
-        <span class="pv-fname" title="${f.rel||f.name}">${f.name}</span>
-        <span class="pv-fts">${f.mtime||'–'}</span>
+    ? recent.map(f => `<div class="metric">
+        <span class="metric-label" title="${f.rel||f.name}" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${f.name}</span>
+        <span class="metric-value" style="font-size:11px;color:var(--muted)">${f.mtime||'–'}</span>
       </div>`).join('')
-    : '<span style="font-size:11px;color:var(--muted)">–</span>';
-  const errHtml = pv.error ? `<div class="pv-err">⚠ ${pv.error}</div>` : '';
-  document.getElementById('pv-wrap').innerHTML = `<div class="pv-card">
-    <div class="pv-head">
-      <span style="font-size:18px">📓</span>
-      <span class="pv-title">Projekte Vault</span>
-      ${errHtml}
+    : '<div style="font-size:12px;color:var(--muted)">–</div>';
+  const errHtml = pv.error ? `<div class="error-msg">⚠ ${pv.error}</div>` : '';
+  return `<div class="card">
+    <div class="card-header">
+      <span class="dot ${pv.error ? 'warn' : 'ok'}"></span>
+      <span class="card-title">📓 Projekte Vault</span>
+      <span class="card-badge ok">${pv.md_count ?? '–'} Notizen</span>
     </div>
     <div class="pv-kpis">
       <div class="pv-kpi accent">
@@ -4751,9 +4743,9 @@ function renderProjekteVault(d) {
         <div class="pv-lbl">Heute geändert</div>
       </div>
     </div>
-    <div class="pv-divider"></div>
-    <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Zuletzt geändert</div>
-    <div class="pv-recent">${recentHtml}</div>
+    <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Zuletzt geändert</div>
+    <div class="metrics">${recentHtml}</div>
+    ${errHtml}
   </div>`;
 }
 
@@ -4957,10 +4949,9 @@ async function load() {
       return;
     }
 
-    renderProjekteVault(d);
-
     document.getElementById('grid').innerHTML =
       renderGateway(d) +
+      renderProjekteVault(d) +
       renderTelegram(d) +
       renderOllama(d) +
       renderSyncthing(d) +
