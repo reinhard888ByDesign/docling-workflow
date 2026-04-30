@@ -1,6 +1,6 @@
 # Persönliches KI-gestütztes Dokumentenmanagement — Projektdokumentation
 
-**Stand: 2026-04-29 — AI-Assistent-Bot eingeführt, zwei getrennte Telegram-Bots, DeepSeek-Integration auf Wilson**
+**Stand: 2026-04-30 — Drei-Bot-Ökosystem (Wilson/Hotelbär/Lärmbär), OpenClaw-native AI-Assistent, Lärmbär (Home Assistant), Feng-Shui-Briefing getrennt, enzyme Auto-Refresh korrigiert**
 
 > Dieses Dokument ist das konsolidierte Referenzdokument des Projekts. Es ersetzt:
 > - `projekt_beschreibung_expertenberatung.md` — Strategiedokument (war führend)
@@ -74,17 +74,22 @@ input-dispatcher/
 
 | Service | Datei | Bot-Token | Funktion |
 |---|---|---|---|
-| `doc-processor` | `wilson/doc_processor.py` | `8382100394` (Dispatcher-Bot) | Dokument-Eingang, OCR via Ryzen, Sidecar-JSON, Telegram-Benachrichtigung |
-| `ai-assistant` | `wilson/ai_assistant.py` | `8621101278` (AI-Assistent-Bot) | DeepSeek-Chat, Projekte Vault direkt, Reinhards Vault via enzyme |
+| `openclaw-gateway` | (OpenClaw intern) | `8621101278` (Wilson-Bot) | AI-Assistent, Vault-Suche, Cron-Jobs, Telegram-Polling **aktiv** |
+| `doc-processor` | `wilson/doc_processor.py` | `8382100394` (Hotelbär) | Dokument-Eingang, OCR via Ryzen, Sidecar-JSON, Telegram-Benachrichtigung |
+| `laerenbaer` | `wilson/laerenbaer.py` | `8539477131` (Lärmbär) | Home-Assistant-Bot: Sensoren, Kameras, Gerätesteuerung |
 | `heartbeat` | `wilson/heartbeat.py` | — | Service-Monitor: pollt Dispatcher/Cache-Reader/Docling/Ollama alle 90s, Telegram-Alert bei 2 Fehlern |
-| `openclaw-gateway` | (OpenClaw intern) | — (Telegram deaktiviert) | WebSocket-Gateway für Crestodian (CLI), Telegram-Polling deaktiviert (war 409-Konflikt) |
 
-**Zwei getrennte Telegram-Bots (Stand 2026-04-29):**
+Alle Secrets (`TELEGRAM_BOT_TOKEN`, `LAERENBAER_BOT_TOKEN`, `DEEPSEEK_API_KEY`) werden aus `~/.openclaw/secrets.env` geladen (nicht im Git-Repo). Vorlage: `wilson/secrets.env.example`.
 
-| Bot | Token-Prefix | Pollt | Befehle |
-|---|---|---|---|
-| **Dispatcher-Bot** | `8382100394` | `doc-processor` | `/status` (ausstehende Docs), `/hilfe` |
-| **AI-Assistent** | `8621101278` | `ai-assistant` | `/suche /lese /aufgaben /vault /dokumente /themen /reset /hilfe` |
+**Drei-Bot-Ökosystem (Stand 2026-04-30):**
+
+| Bot | Name | Token-Prefix | Technologie | Funktion |
+|---|---|---|---|---|
+| **Wilson** | Wilson AI-Assistent | `8621101278` | OpenClaw Gateway | Persönlicher Assistent, Cron-Jobs, Vault-Suche, Feng-Shui, Portfolio |
+| **Hotelbär** | Dispatcher-Bot | `8382100394` | `doc_processor.py` | Dokumenten-Eingang, OCR, Klassifikation, Vault-Ablage |
+| **Lärmbär** | HA-Bot | `8539477131` | `laerenbaer.py` | Home Assistant: Sensoren, Kameras, Schalten |
+
+**Warum drei getrennte Tokens:** Telegram erlaubt nur einen aktiven `getUpdates`-Poller pro Bot-Token (409 Conflict). Jeder Dienst pollt seinen eigenen Token — keine Konflikte.
 
 **Wilson OpenClaw Skills** (`~/.openclaw/skills/` auf Wilson):
 
@@ -93,7 +98,29 @@ input-dispatcher/
 | `enzyme/SKILL.md` | Semantische Vault-Suche via enzyme (Port 11180) |
 | `dispatcher/SKILL.md` | Dispatcher-API: Dokumente suchen, lesen, korrigieren, **PDF senden** |
 | `homeassistant/SKILL.md` | HA-Sensoren, Kamera-Snapshots |
-| `file-manager/SKILL.md` | Dateisystem-Operationen auf Wilson |
+| `file-manager/SKILL.md` | Dateisystem-Operationen auf `~/Vaults` (Projekte Vault) |
+
+**Wilson OpenClaw Cron-Jobs:**
+
+| Job | Zeit | Funktion |
+|---|---|---|
+| TODO Neu-Einsortierung | 06:00 täglich | Aufgaben in Aufgaben.md in richtige Zeitabschnitte sortieren |
+| Portfolio Kursabruf | 07:30 täglich | `portfolio_update.py` → Kurse abrufen, DB speichern, Telegram-Zusammenfassung |
+| Tages-Briefing | 07:30 täglich | Wetter, Gestern-Memory, HA-Sensoren, offene Aufgaben → 1 Telegram-Nachricht |
+| Feng Shui Briefing | 07:45 täglich | gua_calculator → Tages-/Monats-/Jahres-/Periodenenergie + Fokus-Satz → Telegram |
+| Babbel Erinnerung | 08:00 täglich | Italienisch-Lektion Erinnerung |
+| Tägliche Garten-Checkliste | 09:00 täglich | Gartenaufgaben + Wetter → Telegram |
+| Garten-Pflegeplan wöchentlich | 07:00 montags | Pflegeplan aus Vault ausgeben |
+| Abend-Check | 22:00 täglich | Fällige Aufgaben abfragen, erledigte abhaken, Aufgaben.md aktualisieren |
+| Tägliches Tagebuch | 22:30 täglich | Memory-Datei + Chat-History → Tagebucheintrag in Vault |
+| Täglicher Session-Reset | 23:59 täglich | `/reset` — Gesprächssession zurücksetzen |
+| Wöchentliche Fälligkeits-Review | 11:00 sonntags | Überfällige + termlose Aufgaben reviewen |
+| Wochenaufgaben | 17:00 sonntags | Wochenvorschau mit Aufgaben-Übersicht |
+| Rudern Erinnerung | alle 48h | Sport-Reminder |
+| Übergabeprotokoll Lipowskystr. | 04.05.2026 17:00 | Einmalige Erinnerung (deleteAfterRun) |
+
+**Wilson Identitäts-Kontext (BOOT.md):**
+Wilson kennt Reinhards Garten (Südtirol + Karlsruhe), Immobilien, Projekte, Gewohnheiten. Liest beim Start `~/Vaults/BOOT.md` (max. 20.000 Zeichen) als Systemkontext. Default-Modell: `deepseek/deepseek-v4-flash`.
 
 ### Obsidian-Vault
 
@@ -373,51 +400,49 @@ Aus dem bereits vorhandenen Text-Extractor-Cache könnten **ca. 200–250 Dokume
 
 ---
 
-## 6. Zwei Vaults — Zwei Bots
+## 6. Drei-Bot-Ökosystem und Vaults
 
 ### Vault-Übersicht
 
 Das System nutzt zwei getrennte Obsidian-Vaults mit unterschiedlichen Zwecken:
 
-| Vault | Ort | Inhalt | Zugang |
+| Vault | Ort | Inhalt | Zugang | Sync |
+|---|---|---|---|---|
+| **Reinhards Vault** | Ryzen `/home/reinhard/docker/RYZEN - docling-workflow/syncthing/data/reinhards-vault` | Dokumentenarchiv — 1.885 PDFs, 1.923 MDs, alle Kategorien | enzyme (Port 11180), Dispatcher-Dashboard (Port 8765) | bidirektional Ryzen ↔ Wilson ↔ Mac |
+| **Projekte Vault** | Wilson `~/Vaults` | Projektmanagement — AUFGABEN, Themen, Memory, Business, Garten, Feng Shui | OpenClaw file-manager Skill, Cron-Jobs direkt | bidirektional Wilson ↔ Mac |
+
+**Syncthing-Ordner (Stand 2026-04-30):**
+
+| Folder-ID | Label | Typ (Ryzen) | Mit Mac |
 |---|---|---|---|
-| **Reinhards Vault** | Ryzen `/home/reinhard/docker/RYZEN - docling-workflow/syncthing/data/reinhards-vault` | Dokumentenarchiv — 1.885 PDFs, 1.923 MDs, alle Kategorien | enzyme (Port 11180), Dispatcher-Dashboard (Port 8765) |
-| **Projekte Vault** | Wilson `/home/reinhard/Vaults` | Projektmanagement — AUFGABEN, Themen, Memory, Business, Garten, Pool, FengShui | Direktes Lesen (ai_assistant.py), OpenClaw-Workspace |
+| `reinhards-vault` | Reinhards Vault | `sendreceive` | ja |
+| `input-dispatcher` | Scanner-Eingang | `sendreceive` | ja |
+| `projekte-vault` | Projekte Vault | — (auf Wilson) | ja (eingeladen, Annahme ausstehend) |
 
-### AI-Assistent-Bot (Port 8621101278, Service: ai-assistant)
+### Wilson AI-Assistent (openclaw-gateway, Token 8621101278)
 
-Eigenständiger Telegram-Bot auf Wilson. Trennt AI-Chat vollständig vom Dokumenten-Workflow.
+Wilson ist Reinhards persönlicher KI-Assistent — jetzt vollständig OpenClaw-nativ. Der frühere `ai_assistant.py`-Bot wurde durch den OpenClaw Gateway ersetzt. Wilson kennt Reinhards Garten, Projekte, Immobilien und Gewohnheiten aus `~/Vaults/BOOT.md`.
 
-**Projekte Vault (Wilson, direkt — kein enzyme nötig):**
+**Fähigkeiten über Skills:**
 
-| Befehl | Funktion |
+| Skill | Was Wilson kann |
 |---|---|
-| `/suche <Begriff>` | Volltextsuche (grep) in allen .md-Dateien |
-| `/lese <Dateiname>` | Datei lesen per Teilstring-Match |
-| `/aufgaben` | AUFGABEN.md direkt anzeigen |
-| `/vault` | Vault-Struktur-Übersicht |
+| `enzyme` | Semantische Suche in Reinhards Vault (Ryzen, Port 11180) |
+| `dispatcher` | Dokumente suchen, lesen, korrigieren, als PDF senden |
+| `homeassistant` | HA-Sensoren abfragen, Kameras, Geräte schalten |
+| `file-manager` | Projekte Vault lesen/schreiben (`~/Vaults`) |
 
-**Reinhards Vault (Ryzen, via enzyme):**
-
-| Befehl | Funktion |
-|---|---|
-| `/dokumente <Begriff>` | Semantische Suche via enzyme `/catalyze` |
-| `/themen` | Aktive Vault-Themen via enzyme `/petri` |
-
-**AI-Chat:**
-- Freier Text → DeepSeek API mit Gesprächsgedächtnis (SQLite, max. 20 Nachrichten)
-- AUFGABEN.md + MEMORY.md + USER.md werden **bei jedem Chat automatisch als Kontext** mitgegeben
-- `/reset` — Gesprächsverlauf löschen
+**Tägliche Cron-Jobs:** Siehe Tabelle in Abschnitt 1.
 
 **Technisch:**
-- `wilson/ai_assistant.py` — polling auf eigenem Bot-Token, keine Abhängigkeit von OpenClaw-Gateway
-- SQLite: `~/.openclaw/ai_assistant.db` (history + tg_offset)
-- DeepSeek-Key aus env (`DEEPSEEK_API_KEY`)
-- enzyme URL: `http://192.168.86.195:11180` (Ryzen)
+- OpenClaw Gateway auf Port 18789 (loopback), Telegram-Polling aktiv
+- Default-Modell: `deepseek/deepseek-v4-flash`, Fallback: `deepseek/deepseek-chat`
+- API-Keys in `~/.openclaw/agents/main/agent/auth-profiles.json` (separater Key-Store, unabhängig von `secrets.env`)
+- Session-Key für Telegram: `agent:main:telegram:direct:8620231031`
 
-### Dispatcher-Bot (Token 8382100394, Service: doc-processor)
+### Hotelbär / Dispatcher-Bot (doc-processor, Token 8382100394)
 
-Fokussiert auf Dokumentenverarbeitung. Befehle:
+Fokussiert ausschließlich auf Dokumentenverarbeitung.
 
 | Befehl | Funktion |
 |---|---|
@@ -426,11 +451,24 @@ Fokussiert auf Dokumentenverarbeitung. Befehle:
 
 PDF senden → automatische OCR + Kategorisierung + Vault-Ablage.
 
-### Warum getrennte Bots
+### Lärmbär / HA-Bot (laerenbaer, Token 8539477131)
 
-Telegram erlaubt nur einen aktiven `getUpdates`-Poller pro Bot-Token (409 Conflict). Der OpenClaw-Gateway und der doc_processor konkurrierten früher um denselben Token → Gateway crashte. Lösung: eigenständiger Token pro Dienst.
+Neuer eigenständiger Bot für Home Assistant. Kein LLM — direkte HA REST API-Abfragen.
 
-**OpenClaw-Gateway:** Telegram dauerhaft deaktiviert (`channels.telegram.enabled: false`). Weiterhin nutzbar via WebSocket (Crestodian CLI: `ws://127.0.0.1:18789`).
+| Befehl | Funktion |
+|---|---|
+| `/sensoren` | Übersicht Haupt-Sensoren (Temp, Feuchte, Wind, Regen, Energie, Wasser) |
+| `/sensor <name>` | Einzelnen Sensor abfragen |
+| `/kamera <name>` | Snapshot einer EUFY-Kamera via `ha-camera.sh` |
+| `/kameras` | Liste aller verfügbaren Kameras |
+| `/schalten <entity> <an\|aus>` | Gerät ein-/ausschalten |
+| `/hilfe` | Befehlsübersicht |
+
+**Technisch:**
+- `wilson/laerenbaer.py` — eigenständiges Polling, kein LLM
+- HA-Token aus `~/.config/homeassistant/token`
+- Token aus HA `core.config_entries` (Platform: `broadcast` — kein Polling-Konflikt)
+- HA-URL: `http://192.168.86.183:8123`
 
 ### OmniSearch / cache-reader als Basis
 
@@ -940,11 +978,38 @@ Bekannte KV-Absender (HUK, Gothaer, Barmenia, vigo) werden deterministisch auf `
 | PDF-Upload via Telegram | `wilson/doc_processor.py` | `_handle_tg_pdf_upload()` — PDF aus Dispatcher-Bot-Chat empfangen, OCR, Sidecar, Weiterleitung |
 | Getrennter Bot-Token | `wilson/doc-processor.service` | Dispatcher-Bot: `8382100394`. Verhindert 409-Konflikt mit AI-Assistenten. |
 | Dispatcher-Bot Befehle | `wilson/doc_processor.py` | `/hilfe`, `/status` (ausstehende Dokumente mit Icons) |
-| AI-Assistent-Bot | `wilson/ai_assistant.py` | Eigenständiger Bot (Token `8621101278`): DeepSeek-Chat + Projekte Vault direkt + enzyme für Reinhards Vault |
-| AI-Assistent Service | `wilson/ai-assistant.service` | systemd user service, läuft parallel zu doc-processor |
+| AI-Assistent-Bot (initial) | `wilson/ai_assistant.py` | Eigenständiger Bot (Token `8621101278`): DeepSeek-Chat + Projekte Vault direkt + enzyme für Reinhards Vault. **Abgelöst durch OpenClaw-native (s.u.)** |
 | POLIZIA-Keyword-Regel | `dispatcher-config/categories.yaml` | Polizia Stradale / POLIZIA DI STATO → `fahrzeuge` (zuvor LLM-Fehler → fengshui) |
 | Mac Syncthing Tile | `dispatcher/dispatcher.py` | URL-Extraktion aus `svc.address` ohne `tcp://`-Prefix (Regex-Fix) |
 | Telegram-Menü | Telegram API `setMyCommands` | Beide Bots haben `/`-Befehlsmenü in Telegram |
+| Wilson Update-Button | `dispatcher/dispatcher.py` | `POST /api/wilson/update` + `GET /api/wilson/update/status` im `/wilson`-Dashboard |
+
+**Ergänzungen 2026-04-30 — Drei-Bot-Ökosystem:**
+
+| Komponente | Datei | Beschreibung |
+|---|---|---|
+| OpenClaw-native Wilson | `~/.openclaw/openclaw.json` | `channels.telegram.enabled: true`. Wilson nutzt jetzt den OpenClaw Gateway als primären AI-Assistenten statt `ai_assistant.py` |
+| ai-assistant.service deaktiviert | Wilson systemd | `systemctl --user stop/disable ai-assistant`. `ai_assistant.py` bleibt als Backup im Repo. |
+| Lärmbär (neu) | `wilson/laerenbaer.py` | Neuer eigenständiger HA-Bot. Token aus HA `core.config_entries`. Befehle: `/sensoren`, `/sensor`, `/kamera`, `/kameras`, `/schalten`, `/hilfe` |
+| laerenbaer.service (neu) | `wilson/laerenbaer.service` | systemd user service, `EnvironmentFile=~/.openclaw/secrets.env` |
+| deploy-wilson.sh | `wilson/deploy-wilson.sh` | Erweitert um Lärmbär-Deploy (laerenbaer.py + service + enable) |
+| secrets.env (neu) | `~/.openclaw/secrets.env` (auf Wilson) | Zentrale Secrets-Datei (chmod 600): TELEGRAM_BOT_TOKEN, LAERENBAER_BOT_TOKEN, DEEPSEEK_API_KEY |
+| secrets.env.example | `wilson/secrets.env.example` | Vorlage ohne echte Werte, im Git-Repo |
+| Secrets aus Service-Files entfernt | `wilson/*.service` | Hardcodierte Tokens/Keys aus allen `.service`-Dateien entfernt → `EnvironmentFile` |
+| Secrets aus Python entfernt | `wilson/*.py` | Hardcodierte Tokens aus `doc_processor.py`, `ai_assistant.py`, `heartbeat.py` entfernt (leerer Default) |
+| BOOT.md | `~/Vaults/BOOT.md` | Neu geschrieben: Wilson-Identität, Drei-Bot-Übersicht, Skills-Tabelle, Kontext (Garten/Immobilien/Business) |
+| AGENTS.md | `~/Vaults/AGENTS.md` | Drei-Bot-Tabelle mit Token-Präfixen und Rollen |
+| file-manager Skill | `~/.openclaw/skills/file-manager/SKILL.md` | Pfad korrigiert: `~/Vaults/SecondBrain` → `~/Vaults` |
+| OpenClaw Default-Modell | `~/.openclaw/openclaw.json` | `agents.defaults.model.primary: "deepseek/deepseek-v4-flash"` (war `deepseek-v4-pro`) |
+| auth-profiles.json | `~/.openclaw/agents/main/agent/auth-profiles.json` | DeepSeek-Key aktualisiert (separater Key-Store von secrets.env) |
+| Syncthing bidirektional | Syncthing Ryzen API | `reinhards-vault` und `input-dispatcher` auf Ryzen: `sendreceive` (war `sendonly`). Mac als Gerät zu `projekte-vault` auf Wilson eingeladen. |
+| Cron-Jobs bereinigt | `~/.openclaw/cron/jobs.json` | 3 abgelaufene Einmal-Jobs entfernt (EVE Steckdose, Windmesser Batterien, Kräuter+Gurken) |
+| Tages-Briefing aufgeteilt | `~/.openclaw/cron/jobs.json` | Tages-Briefing (7:30) und Feng-Shui-Briefing (7:45) sind jetzt getrennte Cron-Jobs |
+| Feng-Shui-Briefing | `~/.openclaw/cron/jobs.json` | Neuer Job 7:45: gua_calculator-Output direkt senden (alle 4 Energien + Fokus-Satz). Kua-Zahl 2, Geburtsdatum 08.12.1962 |
+| OpenClaw reinstalliert | Wilson npm | `npm uninstall -g openclaw && npm install -g openclaw` — Hash-Mismatch in dist/ nach partiellem npm-Update behoben |
+| enzyme Cron-Pfad | `/etc/cron` (Ryzen) | Cron-Job für enzyme-Refresh korrigiert: alter Pfad `/docker/docling-workflow/` → `/docker/RYZEN - docling-workflow/`. Zeit: 23:00 → 01:00 |
+| enzyme warn-Schwelle | `dispatcher/dispatcher.py` | Warn bei >36h (war 24h), Error bei >72h (war 48h) |
+| Mac Sync Dashboard | `dispatcher/dispatcher.py` | Kein Link mehr im Card-Titel (Mac GUI nur auf localhost erreichbar). Card zeigt Verbindungsstatus + Ordner-Sync-%. |
 
 **Vault-Suche + PDF-Download — Telegram-Flow:**
 ```
@@ -1242,8 +1307,11 @@ Jedes verbleibende Dashboard bekommt einen `❓ Hilfe`-Button in der Kopfzeile. 
 | Bekannte Absender (absender.yaml) | 47 |
 | Lernregeln aus Korrekturen | 11 |
 | Klassifikations-Kategorien | 16 |
-| Primäres Klassifikations-LLM | qwen2.5:7b |
+| Primäres Klassifikations-LLM (Dispatcher) | gemma4:e4b (Ollama) |
+| Primäres LLM Wilson (AI-Assistent) | deepseek/deepseek-v4-flash (DeepSeek API) |
 | Übersetzungs-LLM | qwen2.5:7b |
+| Wilson AI-Architektur | OpenClaw Gateway + Skills (enzyme, dispatcher, homeassistant, file-manager) |
+| Aktive Wilson Cron-Jobs | 13 (davon 1 Einmal-Job mit deleteAfterRun) |
 | Geschätzter Vollrescan-Aufwand (verworfen) | 63–157 Stunden (nach Dedup) |
 | Duplikat-Scan 2026-04-27 | 990 Gruppen, 1.188 Duplikate bereinigt |
 | MD-Dateien mit Unified Schema | ~219 (11,5%) |
