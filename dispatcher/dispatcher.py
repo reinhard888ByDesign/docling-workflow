@@ -1347,6 +1347,7 @@ try:
     result["cron_jobs"] = [
         {"name": j.get("name"), "enabled": j.get("enabled"),
          "schedule": j.get("schedule", {}).get("expr"),
+         "schedule_kind": j.get("schedule", {}).get("kind", "cron"),
          "last_status": j.get("state", {}).get("lastRunStatus"),
          "last_dur_ms": j.get("state", {}).get("lastDurationMs"),
          "last_run_ms": j.get("state", {}).get("lastRunAtMs"),
@@ -1366,6 +1367,36 @@ try:
     result["sessions"] = {"total": len(items), "recent": recent}
 except Exception as e:
     result["sessions"] = {"total": 0, "error": str(e)}
+
+# --- Projekte Vault ---
+try:
+    import time as _time
+    vault_path = Path.home() / "Vaults"
+    if vault_path.exists():
+        md_files = list(vault_path.rglob("*.md"))
+        md_count = len(md_files)
+        folders = [d.name for d in vault_path.iterdir() if d.is_dir() and not d.name.startswith('.')]
+        folder_count = len(folders)
+        now_ts = _time.time()
+        today_count = sum(1 for f in md_files if (now_ts - f.stat().st_mtime) < 86400)
+        md_files_sorted = sorted(md_files, key=lambda p: p.stat().st_mtime, reverse=True)
+        recent = []
+        for f in md_files_sorted[:5]:
+            try:
+                rel = str(f.relative_to(vault_path))
+                mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%d.%m. %H:%M")
+                recent.append({"name": f.name, "rel": rel, "mtime": mtime})
+            except Exception:
+                pass
+        result["projekte_vault"] = {
+            "md_count": md_count, "folder_count": folder_count,
+            "today_count": today_count, "recent": recent,
+        }
+    else:
+        result["projekte_vault"] = {"md_count": 0, "folder_count": 0, "today_count": 0,
+                                     "recent": [], "error": "~/Vaults nicht gefunden"}
+except Exception as e:
+    result["projekte_vault"] = {"error": str(e)}
 
 print(json.dumps(result, ensure_ascii=False))
 """
@@ -1394,6 +1425,41 @@ def _collect_wilson_status() -> dict:
 
 
 _WILSON_TUI_PORT = int(os.environ.get("WILSON_TUI_PORT", "7681"))
+
+# ── Wilson OpenClaw Update ────────────────────────────────────────────────────
+_wilson_update_lock   = threading.Lock()
+_wilson_update_status = {"state": "idle", "msg": "", "ts": ""}   # idle|running|done|error
+
+
+def _run_wilson_update():
+    global _wilson_update_status
+    with _wilson_update_lock:
+        if _wilson_update_status["state"] == "running":
+            return
+        _wilson_update_status = {"state": "running", "msg": "Update läuft…", "ts": datetime.now().isoformat(timespec="seconds")}
+    try:
+        import paramiko
+        key = paramiko.Ed25519Key.from_private_key_file("/ssh/id_ed25519")
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(_WILSON_HOST, username="reinhard", pkey=key, timeout=10, banner_timeout=15)
+        cmd = "bash /home/reinhard/.openclaw/scripts/openclaw-update.sh 2>&1; echo __EXIT__$?"
+        _, stdout, _ = client.exec_command(cmd, timeout=120)
+        out = stdout.read().decode(errors="replace")
+        client.close()
+        exit_code = 0
+        if "__EXIT__" in out:
+            try:
+                exit_code = int(out.split("__EXIT__")[-1].strip())
+            except Exception:
+                pass
+            out = out.split("__EXIT__")[0].strip()
+        if exit_code == 0:
+            _wilson_update_status = {"state": "done", "msg": out[-400:] or "Update erfolgreich.", "ts": datetime.now().isoformat(timespec="seconds")}
+        else:
+            _wilson_update_status = {"state": "error", "msg": out[-400:] or f"Exit {exit_code}", "ts": datetime.now().isoformat(timespec="seconds")}
+    except Exception as e:
+        _wilson_update_status = {"state": "error", "msg": str(e), "ts": datetime.now().isoformat(timespec="seconds")}
 
 
 def _fetch_wilson_tui_info() -> dict:
@@ -1611,9 +1677,9 @@ def _collect_health() -> dict:
                     mtime = _enzyme_db.stat().st_mtime
                     last_refresh = datetime.fromtimestamp(mtime).strftime("%d.%m.%Y %H:%M")
                     age_h = (time.time() - mtime) / 3600
-                    if age_h > 48:
+                    if age_h > 72:
                         enzyme_status = "error"
-                    elif age_h > 24:
+                    elif age_h > 36:
                         enzyme_status = "warn"
                 except Exception:
                     pass
@@ -1993,6 +2059,18 @@ a.fstep:hover{border-color:var(--accent);box-shadow:0 4px 16px rgba(79,70,229,.1
 .estat .ev{font-size:17px;font-weight:700;color:var(--accent)}
 .estat .el{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 
+/* KPI strip */
+.kpi-strip{display:flex;flex-wrap:wrap;gap:10px;padding:12px 24px;background:var(--surface);border-bottom:1px solid var(--border)}
+.kpi{display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;min-width:140px;text-decoration:none;color:inherit;transition:border-color .15s,box-shadow .15s}
+a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12);cursor:pointer}
+.kpi .kpi-icon{font-size:16px;flex-shrink:0}
+.kpi .kpi-body{display:flex;flex-direction:column;gap:1px}
+.kpi .kpi-val{font-size:15px;font-weight:700;color:var(--text);line-height:1.1}
+.kpi .kpi-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.kpi.accent .kpi-val{color:var(--accent)}
+.kpi.ok .kpi-val{color:var(--ok)}
+.kpi.warn .kpi-val{color:var(--warn)}
+
 /* Rescan banner */
 #rescan-banner{display:none;margin:0 24px;padding:12px 16px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;align-items:center;gap:12px;font-size:13px;color:#3730a3}
 #rescan-banner .rb-bar-wrap{flex:1;height:8px;background:#c7d2fe;border-radius:4px;overflow:hidden}
@@ -2042,6 +2120,7 @@ a.fstep:hover{border-color:var(--accent);box-shadow:0 4px 16px rgba(79,70,229,.1
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
     <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
+    <a href="/db" target="_blank" rel="noopener">🗄️ DB</a>
   </nav>
   <div class="sse-wrap">
     <span class="sse-dot" id="sse-dot"></span>Live
@@ -2117,6 +2196,26 @@ a.fstep:hover{border-color:var(--accent);box-shadow:0 4px 16px rgba(79,70,229,.1
     </span>
 
   </div>
+</div>
+
+<!-- KPI strip -->
+<div class="kpi-strip" id="kpi-strip">
+  <a class="kpi accent" href="/db" title="Dispatcher-Datenbank öffnen">
+    <span class="kpi-icon">📄</span>
+    <div class="kpi-body"><div class="kpi-val" id="kpi-docs">–</div><div class="kpi-lbl">Verarbeitete PDFs</div></div>
+  </a>
+  <a class="kpi ok" href="/db" title="Heute verarbeitete Dokumente in DB anzeigen">
+    <span class="kpi-icon">📥</span>
+    <div class="kpi-body"><div class="kpi-val" id="kpi-today">–</div><div class="kpi-lbl">Heute verarbeitet</div></div>
+  </a>
+  <a class="kpi" id="kpi-enzyme-link" href="#" title="enzyme MCP — Vault-Suchindex">
+    <span class="kpi-icon">🧪</span>
+    <div class="kpi-body"><div class="kpi-val" id="kpi-enzyme" style="font-size:12px">–</div><div class="kpi-lbl">enzyme aktualisiert</div></div>
+  </a>
+  <a class="kpi" id="kpi-syncthing-link" href="#" title="Syncthing Weboberfläche">
+    <span class="kpi-icon">🔄</span>
+    <div class="kpi-body"><div class="kpi-val" id="kpi-syncthing">–</div><div class="kpi-lbl">Syncthing Verbindungen</div></div>
+  </a>
 </div>
 
 <!-- Service cards -->
@@ -2248,10 +2347,7 @@ function renderCard(key, svc) {
 
   const errHtml = svc.error ? `<div class="err-msg">⚠ ${svc.error}</div>` : '';
   let url = meta.urlFn ? meta.urlFn(_hostIp) : null;
-  if (key === 'syncthing_mac' && svc.address) {
-    const m = svc.address.match(/(?:tcp:\/\/)?([\d.]+):\d+/);
-    if (m) url = `http://${m[1]}:8384/`;
-  }
+  // Mac Syncthing GUI binds to localhost only — no remote link possible
   const target = (key==='dispatcher'||key==='wilson_pi') ? '' : 'target="_blank"';
   const titleHtml = url
     ? `<a href="${url}" ${target} style="color:inherit;text-decoration:none;border-bottom:1px dashed #c7d2fe"
@@ -2296,6 +2392,22 @@ async function loadData() {
     setHref('fstep-ollama',     SVC.ollama.urlFn(_hostIp));
     setHref('fstep-enzyme',     SVC.enzyme.urlFn(_hostIp));
     setHref('fstep-openwebui',  SVC.open_webui.urlFn(_hostIp));
+
+    // KPI strip
+    const disp = svcs.dispatcher || {};
+    const enzy = svcs.enzyme || {};
+    const sync = svcs.syncthing || {};
+    const kpiEl = id => document.getElementById(id);
+    if (kpiEl('kpi-docs'))    kpiEl('kpi-docs').textContent   = disp.docs_total ?? '–';
+    if (kpiEl('kpi-today'))   kpiEl('kpi-today').textContent  = disp.docs_today ?? '–';
+    if (kpiEl('kpi-enzyme'))  kpiEl('kpi-enzyme').textContent = enzy.last_refresh ?? '–';
+    if (kpiEl('kpi-syncthing')) kpiEl('kpi-syncthing').textContent = sync.connections ?? '–';
+    // Dynamic links for enzyme + syncthing
+    const enzymeLink = kpiEl('kpi-enzyme-link');
+    if (enzymeLink && data.host_ip) enzymeLink.href = `http://${data.host_ip}:11180/`;
+    else if (enzymeLink) enzymeLink.href = '/api/health';
+    const syncLink = kpiEl('kpi-syncthing-link');
+    if (syncLink && data.host_ip) syncLink.href = `http://${data.host_ip}:8384/`;
 
     // Render cards in flow order
     document.getElementById('grid').innerHTML =
@@ -4286,7 +4398,12 @@ _WILSON_HTML = r"""<!DOCTYPE html>
   .badge.err  { background: #fee2e2; color: var(--err); }
 
   /* Update-Banner */
-  .update-banner { background: #fef3c7; border-bottom: 1px solid #fcd34d; padding: 8px 24px; font-size: 12px; color: var(--warn); display: none; }
+  .update-banner { background: #fef3c7; border-bottom: 1px solid #fcd34d; padding: 8px 24px; font-size: 12px; color: var(--warn); display: none; align-items: center; gap: 12px; }
+  .update-banner.running { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; }
+  .update-banner.done    { background: #f0fdf4; border-color: #86efac; color: #15803d; }
+  .update-banner.error   { background: #fef2f2; border-color: #fca5a5; color: #dc2626; }
+  .update-btn { padding: 3px 10px; border: 1px solid currentColor; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; font-size: 11px; white-space: nowrap; }
+  .update-btn:disabled { opacity: 0.5; cursor: default; }
 
   /* Grid */
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; padding: 20px 24px; }
@@ -4369,6 +4486,24 @@ _WILSON_HTML = r"""<!DOCTYPE html>
 
   .refresh-bar { text-align: center; padding: 14px; font-size: 11px; color: var(--muted); background: var(--surface); border-top: 1px solid var(--border); }
   #countdown { color: var(--accent); font-weight: 600; }
+
+  /* Projekte Vault panel */
+  .pv-wrap { display: flex; justify-content: flex-end; padding: 12px 24px 4px; }
+  .pv-card { background: var(--surface); border: 1.5px solid var(--accent); border-radius: 12px; padding: 12px 18px; min-width: 300px; max-width: 480px; box-shadow: 0 2px 12px rgba(79,70,229,.10); }
+  .pv-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .pv-head .pv-title { font-size: 13px; font-weight: 700; color: var(--accent); }
+  .pv-head .pv-err { font-size: 11px; color: var(--err); margin-left: auto; }
+  .pv-kpis { display: flex; gap: 14px; margin-bottom: 10px; }
+  .pv-kpi { text-align: center; flex: 1; }
+  .pv-kpi .pv-val { font-size: 22px; font-weight: 700; color: var(--text); line-height: 1.1; }
+  .pv-kpi .pv-lbl { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-weight: 700; }
+  .pv-kpi.ok .pv-val { color: var(--ok); }
+  .pv-kpi.accent .pv-val { color: var(--accent); }
+  .pv-divider { height: 1px; background: var(--border); margin: 8px 0; }
+  .pv-recent { display: flex; flex-direction: column; gap: 3px; }
+  .pv-file { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; }
+  .pv-fname { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; }
+  .pv-fts { color: var(--muted); white-space: nowrap; margin-left: 8px; flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -4381,7 +4516,11 @@ _WILSON_HTML = r"""<!DOCTYPE html>
   <span class="badge" id="overall-badge">Laden…</span>
   <span class="ts" id="ts">–</span>
 </header>
-<div class="update-banner" id="update-banner"></div>
+<div class="update-banner" id="update-banner" style="display:none">
+  <span id="update-banner-text"></span>
+  <button class="update-btn" id="update-btn" onclick="startUpdate()">🔄 Jetzt updaten</button>
+</div>
+<div class="pv-wrap" id="pv-wrap"></div>
 <div class="grid" id="grid">
   <div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--muted)">Lade Daten von Wilson Pi…</div>
 </div>
@@ -4491,33 +4630,73 @@ function renderInputFolder(d) {
   </div>`;
 }
 
-function renderCron(d) {
-  const jobs = d.cron_jobs || [];
-  const hasErr = jobs.some(j => j.errors > 0);
-  const st = hasErr ? 'warn' : 'ok';
+function parseCronExpr(expr) {
+  if (!expr) return {time: '–', day: '–'};
+  const p = expr.trim().split(/\s+/);
+  if (p.length < 5) return {time: expr, day: '–'};
+  const [min, hour, dom, , dow] = p;
+  const time = (hour !== '*' && min !== '*') ? hour.padStart(2,'0') + ':' + min.padStart(2,'0') : '–';
+  const DOW = {'0':'So','1':'Mo','2':'Di','3':'Mi','4':'Do','5':'Fr','6':'Sa','7':'So'};
+  let day;
+  if (dow === '*') {
+    day = dom === '*' ? 'täglich' : 'Tag ' + dom;
+  } else if (dow.includes('-')) {
+    const [s,e] = dow.split('-'); day = (DOW[s]||s) + '–' + (DOW[e]||e);
+  } else if (dow.includes(',')) {
+    day = dow.split(',').map(d => DOW[d]||d).join(', ');
+  } else {
+    day = DOW[dow] || dow;
+  }
+  return {time, day};
+}
+
+function renderCronTable(jobs) {
+  if (!jobs.length) return '<div style="font-size:12px;color:var(--muted);padding:8px 0">Keine Cron-Jobs in dieser Gruppe.</div>';
   const rows = jobs.map(j => {
     const jst = j.errors > 0 ? 'err' : j.last_status === 'ok' ? 'ok' : 'off';
     const jstLabel = j.errors > 0 ? `${j.errors}✗` : (j.last_status || '–');
+    const {time, day} = parseCronExpr(j.schedule);
     return `<tr class="${j.enabled ? '' : 'disabled'}">
       <td>${j.enabled ? '✅' : '⏸️'}</td>
       <td style="font-weight:500">${j.name || '–'}</td>
-      <td><code style="font-size:10px">${j.schedule || '–'}</code></td>
+      <td style="color:var(--muted)">${day}</td>
+      <td style="font-family:monospace;font-size:11px">${time}</td>
       <td><span class="kbadge ${jst}">${jstLabel}</span></td>
       <td style="color:var(--muted)">${fmtDur(j.last_dur_ms)}</td>
       <td style="color:var(--muted)">${fmtTs(j.last_run_ms)}</td>
       <td style="color:var(--muted)">${fmtTs(j.next_run_ms)}</td>
     </tr>`;
   }).join('');
+  return `<table class="cron-table">
+    <thead><tr><th></th><th>Name</th><th>Tag</th><th>Uhrzeit</th><th>Status</th><th>Dauer</th><th>Letzter Run</th><th>Nächster Run</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function renderCron(d) {
+  const jobs = d.cron_jobs || [];
+  const hasErr = jobs.some(j => j.errors > 0);
+  const st = hasErr ? 'warn' : 'ok';
+  const recurring = jobs.filter(j => (j.schedule_kind || 'cron') === 'cron');
+  const oneTime   = jobs.filter(j => (j.schedule_kind || 'cron') !== 'cron');
+  let inner;
+  if (!jobs.length) {
+    inner = '<div style="font-size:12px;color:var(--muted)">Keine Cron-Jobs konfiguriert.</div>';
+  } else if (oneTime.length === 0) {
+    inner = renderCronTable(recurring);
+  } else {
+    inner = `<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">🔁 Wiederkehrend (${recurring.length})</div>
+    ${renderCronTable(recurring)}
+    <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:14px 0 6px">🎯 Einmalig (${oneTime.length})</div>
+    ${renderCronTable(oneTime)}`;
+  }
   return `<div class="card wide">
     <div class="card-header">
       <span class="dot ${st}"></span>
       <span class="card-title">⏰ Cron-Jobs</span>
       <span class="card-badge ${st}">${jobs.length} Jobs</span>
     </div>
-    ${rows ? `<table class="cron-table">
-      <thead><tr><th></th><th>Name</th><th>Schedule</th><th>Status</th><th>Dauer</th><th>Letzter Run</th><th>Nächster Run</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>` : '<div style="font-size:12px;color:var(--muted)">Keine Cron-Jobs konfiguriert.</div>'}
+    ${inner}
   </div>`;
 }
 
@@ -4539,6 +4718,42 @@ function renderSessions(d) {
     </div>
     ${items ? `<div class="session-list">${items}</div>` : '<div style="font-size:12px;color:var(--muted)">Keine Sessions.</div>'}
     ${sess.error ? `<div class="error-msg">⚠ ${sess.error}</div>` : ''}
+  </div>`;
+}
+
+function renderProjekteVault(d) {
+  const pv = d.projekte_vault || {};
+  const recent = pv.recent || [];
+  const recentHtml = recent.length
+    ? recent.map(f => `<div class="pv-file">
+        <span class="pv-fname" title="${f.rel||f.name}">${f.name}</span>
+        <span class="pv-fts">${f.mtime||'–'}</span>
+      </div>`).join('')
+    : '<span style="font-size:11px;color:var(--muted)">–</span>';
+  const errHtml = pv.error ? `<div class="pv-err">⚠ ${pv.error}</div>` : '';
+  document.getElementById('pv-wrap').innerHTML = `<div class="pv-card">
+    <div class="pv-head">
+      <span style="font-size:18px">📓</span>
+      <span class="pv-title">Projekte Vault</span>
+      ${errHtml}
+    </div>
+    <div class="pv-kpis">
+      <div class="pv-kpi accent">
+        <div class="pv-val">${pv.md_count ?? '–'}</div>
+        <div class="pv-lbl">Notizen</div>
+      </div>
+      <div class="pv-kpi">
+        <div class="pv-val">${pv.folder_count ?? '–'}</div>
+        <div class="pv-lbl">Projekte</div>
+      </div>
+      <div class="pv-kpi ok">
+        <div class="pv-val">${pv.today_count ?? '–'}</div>
+        <div class="pv-lbl">Heute geändert</div>
+      </div>
+    </div>
+    <div class="pv-divider"></div>
+    <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Zuletzt geändert</div>
+    <div class="pv-recent">${recentHtml}</div>
   </div>`;
 }
 
@@ -4716,13 +4931,19 @@ async function load() {
 
     document.getElementById('ts').textContent = 'Stand: ' + (d.ts || '').replace('T',' ');
 
-    // Update-Banner
-    const banner = document.getElementById('update-banner');
-    if (d.gateway?.update_available) {
-      banner.style.display = '';
-      banner.textContent = `⚠️ Update verfügbar: ${d.gateway.version_installed} → ${d.gateway.version_available}`;
-    } else {
-      banner.style.display = 'none';
+    // Update-Banner (nur zeigen wenn kein Update gerade läuft/fertig)
+    const upd = _updateState;
+    if (upd.state === 'idle' || upd.state === '') {
+      const banner = document.getElementById('update-banner');
+      if (d.gateway?.update_available) {
+        banner.style.display = 'flex';
+        banner.className = 'update-banner';
+        document.getElementById('update-banner-text').textContent =
+          `⚠️ Update verfügbar: ${d.gateway.version_installed} → ${d.gateway.version_available}`;
+        document.getElementById('update-btn').style.display = '';
+      } else {
+        banner.style.display = 'none';
+      }
     }
 
     // Overall badge
@@ -4735,6 +4956,8 @@ async function load() {
       document.getElementById('grid').innerHTML = `<div style="grid-column:1/-1;padding:40px;text-align:center;color:var(--err)">SSH-Fehler: ${d.error}</div>`;
       return;
     }
+
+    renderProjekteVault(d);
 
     document.getElementById('grid').innerHTML =
       renderGateway(d) +
@@ -4755,6 +4978,63 @@ function tick() {
   secs--;
   document.getElementById('countdown').textContent = secs;
   if (secs <= 0) { secs = 30; load(); loadLog(); }
+}
+
+// ── OpenClaw Update ───────────────────────────────────────────────────────────
+let _updateState = { state: 'idle', msg: '', ts: '' };
+let _updatePollTimer = null;
+
+async function startUpdate() {
+  const btn = document.getElementById('update-btn');
+  const banner = document.getElementById('update-banner');
+  btn.disabled = true;
+  btn.textContent = '⏳ Läuft…';
+  banner.className = 'update-banner running';
+  banner.style.display = 'flex';
+  document.getElementById('update-banner-text').textContent = 'Update wird gestartet…';
+  try {
+    const r = await fetch('/api/wilson/update', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) {
+      setUpdateBanner('error', d.msg || 'Fehler');
+      return;
+    }
+    _updatePollTimer = setInterval(pollUpdateStatus, 2000);
+  } catch(e) {
+    setUpdateBanner('error', e.message);
+  }
+}
+
+async function pollUpdateStatus() {
+  try {
+    const d = await (await fetch('/api/wilson/update/status')).json();
+    _updateState = d;
+    if (d.state === 'running') {
+      setUpdateBanner('running', d.msg || 'Update läuft…');
+    } else {
+      clearInterval(_updatePollTimer);
+      _updatePollTimer = null;
+      setUpdateBanner(d.state, d.msg);
+      if (d.state === 'done') { setTimeout(load, 3000); }
+    }
+  } catch(e) { /* ignore poll errors */ }
+}
+
+function setUpdateBanner(state, msg) {
+  const banner = document.getElementById('update-banner');
+  const text   = document.getElementById('update-banner-text');
+  const btn    = document.getElementById('update-btn');
+  banner.style.display = 'flex';
+  banner.className = 'update-banner ' + state;
+  const icons = { running: '⏳', done: '✅', error: '❌', idle: '⚠️' };
+  text.textContent = (icons[state] || '') + ' ' + (msg || '').split('\n').pop();
+  if (state === 'running') {
+    btn.disabled = true; btn.textContent = '⏳ Läuft…';
+  } else if (state === 'done') {
+    btn.style.display = 'none';
+  } else {
+    btn.disabled = false; btn.textContent = '🔄 Jetzt updaten';
+  }
 }
 
 load();
@@ -4872,7 +5152,9 @@ nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
     <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
+    <a href="/db" target="_blank" rel="noopener">🗄️ DB</a>
   </nav>
+  <button class="help-btn" onclick="openHelp()" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;white-space:nowrap">❓ Hilfe</button>
   <span class="ts" id="ts">Laden…</span>
 </header>
 
@@ -5089,6 +5371,25 @@ document.getElementById('search-input').addEventListener('keydown', e => {
 loadStats();
 setInterval(loadStats, 30000);
 </script>
+<style>.help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center}.help-overlay.open{display:flex}.help-box{background:#23263a;border-radius:14px;padding:28px 32px;max-width:520px;width:90%;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.4);color:#e8eaf0}.help-box h2{font-size:15px;font-weight:700;color:#7c6af7;margin-bottom:18px}.help-box h3{font-size:11px;font-weight:700;color:#8a8fb0;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;margin-top:14px}.help-box p{font-size:13px;line-height:1.6;color:#c8cad8}.help-close{position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:#8a8fb0;line-height:1;padding:2px}.help-close:hover{color:#e8eaf0}</style>
+<div id="help-overlay" class="help-overlay">
+  <div class="help-box">
+    <button class="help-close" onclick="closeHelp()">✕</button>
+    <h2>❓ Cache-Reader</h2>
+    <h3>Was macht dieses Dashboard?</h3>
+    <p>Durchsucht alle vom Docling OCR-Prozess indizierten PDFs — Volltextsuche direkt im Cache, ohne auf den Vault-Dateipfad angewiesen zu sein.</p>
+    <h3>Suche starten</h3>
+    <p>Suchbegriff eingeben und Enter drücken. Klick auf einen Treffer öffnet den Volltext. Mit „An Batch übergeben" werden die Treffer als Eingabe für einen Batch-Lauf gespeichert.</p>
+    <h3>Neu indizieren</h3>
+    <p>Falls Dokumente im Cache fehlen oder veraltet sind: „Neu indizieren" baut den FTS5-Index komplett neu auf. Dauert je nach Vault-Größe 10–30 Sekunden.</p>
+  </div>
+</div>
+<script>
+function openHelp(){document.getElementById('help-overlay').classList.add('open')}
+function closeHelp(){document.getElementById('help-overlay').classList.remove('open')}
+document.getElementById('help-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeHelp()})
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('help-overlay').classList.contains('open'))closeHelp()})
+</script>
 </body>
 </html>
 """
@@ -5197,7 +5498,11 @@ table.items tr.item-error td.err-cell{color:var(--err)}
     <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
     <a href="/batch" class="hl">🧰 Batch</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
+    <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
+    <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
+    <a href="/db" target="_blank" rel="noopener">🗄️ DB</a>
   </nav>
+  <button onclick="openHelp()" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;white-space:nowrap">❓ Hilfe</button>
   <span class="ts" id="ts">Laden…</span>
 </header>
 
@@ -5478,6 +5783,25 @@ async function ctrl(action){
 loadRuns();
 timer = setInterval(() => { loadRuns(); if(currentRunId) refreshDetail(); }, 5000);
 </script>
+<style>.help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center}.help-overlay.open{display:flex}.help-box{background:#23263a;border-radius:14px;padding:28px 32px;max-width:520px;width:90%;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.4);color:#e8eaf0}.help-box h2{font-size:15px;font-weight:700;color:#7c6af7;margin-bottom:18px}.help-box h3{font-size:11px;font-weight:700;color:#8a8fb0;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;margin-top:14px}.help-box p{font-size:13px;line-height:1.6;color:#c8cad8}.help-close{position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:#8a8fb0;line-height:1;padding:2px}.help-close:hover{color:#e8eaf0}</style>
+<div id="help-overlay" class="help-overlay">
+  <div class="help-box">
+    <button class="help-close" onclick="closeHelp()">✕</button>
+    <h2>❓ Batch-Dashboard</h2>
+    <h3>Was macht dieses Dashboard?</h3>
+    <p>Startet Auswertungsläufe über bestehende Vault-Dokumente — ohne sie zu verschieben. Ideal für Auswertungen wie „alle Gothaer-Dokumente 2024".</p>
+    <h3>Typischer Ablauf</h3>
+    <p>1. Cache-Suche → Treffer an Batch übergeben → Lauf starten. Oder: Dateipfad direkt eingeben, Quelle und Ausgabe wählen, dann starten.</p>
+    <h3>OCR-Quelle</h3>
+    <p>„Cache" (schnell, nutzt vorhandenen Text) vs. „Docling" (langsam, frische Extraktion). Für Auswertungen reicht fast immer der Cache.</p>
+  </div>
+</div>
+<script>
+function openHelp(){document.getElementById('help-overlay').classList.add('open')}
+function closeHelp(){document.getElementById('help-overlay').classList.remove('open')}
+document.getElementById('help-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeHelp()})
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('help-overlay').classList.contains('open'))closeHelp()})
+</script>
 </body>
 </html>
 """
@@ -5492,10 +5816,12 @@ _DUPLIKATE_HTML = r"""<!DOCTYPE html>
 :root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--accent:#7c6af7;--text:#e0e0e0;--muted:#888;--green:#4caf50;--orange:#ff9800;--red:#f44336;--blue:#5bc0de}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;min-height:100vh}
-header{display:flex;align-items:center;gap:16px;padding:10px 18px;background:var(--card);border-bottom:1px solid var(--border);flex-wrap:wrap}
-header h1{font-size:15px;font-weight:600;color:var(--accent)}
-.links a{color:var(--muted);text-decoration:none;font-size:12px;margin-left:12px}
-.links a:hover{color:var(--text)}
+header{display:flex;align-items:center;gap:10px;padding:10px 18px;background:var(--card);border-bottom:1px solid var(--border);flex-wrap:wrap}
+header h1{font-size:15px;font-weight:600;color:var(--accent);white-space:nowrap}
+header nav a{color:var(--muted);text-decoration:none;font-size:12px;padding:3px 9px;border:1px solid var(--border);border-radius:6px;font-weight:600;white-space:nowrap;transition:all .15s}
+header nav a:hover{color:var(--text);border-color:var(--accent)}
+.help-btn-dark{font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;white-space:nowrap}
+.help-btn-dark:hover{border-color:var(--accent);color:var(--text)}
 .main{max-width:1100px;margin:0 auto;padding:16px}
 .summary-row{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}
 .stat-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px 18px;min-width:140px;text-align:center}
@@ -5546,12 +5872,18 @@ button:disabled{opacity:.4;cursor:not-allowed}
 <body>
 <header>
   <h1>&#127366; Duplikate</h1>
-  <div class="links">
-    <a href="/">Dashboard</a>
-    <a href="/review">Review</a>
-    <a href="/batch">Batch</a>
-    <a href="/pipeline">Pipeline</a>
-  </div>
+  <nav style="display:flex;gap:5px;flex-wrap:wrap">
+    <a href="/">⊞ Dashboard</a>
+    <a href="/pipeline">⚡ Pipeline</a>
+    <a href="/review">📋 Review</a>
+    <a href="/vault">📁 Vault</a>
+    <a href="/cache">🔍 Cache</a>
+    <a href="/batch">🧰 Batch</a>
+    <a href="/wilson">🥧 Wilson</a>
+    <a href="/frontmatter">🏷️ Frontmatter</a>
+    <a href="/db">🗄️ DB</a>
+  </nav>
+  <button class="help-btn-dark" onclick="openHelp()" style="margin-left:auto">❓ Hilfe</button>
 </header>
 <div class="main">
   <div id="scan-progress" class="scan-progress">
@@ -5820,6 +6152,25 @@ loadGroups();
   }
 })();
 </script>
+<style>.help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center}.help-overlay.open{display:flex}.help-box{background:#23263a;border-radius:14px;padding:28px 32px;max-width:520px;width:90%;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.4);color:#e8eaf0}.help-box h2{font-size:15px;font-weight:700;color:#7c6af7;margin-bottom:18px}.help-box h3{font-size:11px;font-weight:700;color:#8a8fb0;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;margin-top:14px}.help-box p{font-size:13px;line-height:1.6;color:#c8cad8}.help-close{position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:#8a8fb0;line-height:1;padding:2px}.help-close:hover{color:#e8eaf0}</style>
+<div id="help-overlay" class="help-overlay">
+  <div class="help-box">
+    <button class="help-close" onclick="closeHelp()">✕</button>
+    <h2>❓ Duplikate-Dashboard</h2>
+    <h3>Was macht dieses Dashboard?</h3>
+    <p>Erkennt doppelte PDFs im Vault — entweder als byte-identische Kopien (gleicher Hash) oder als semantische Duplikate (gleicher Text, anderer Name).</p>
+    <h3>Scan starten</h3>
+    <p>„Scan starten" durchsucht den gesamten Vault. Danach erscheinen alle Duplikat-Gruppen sortiert nach Typ. Jede Gruppe zeigt das Original und alle Kopien.</p>
+    <h3>Duplikate verschieben</h3>
+    <p>Einzelne Kopien oder alle auf einmal in den Papierkorb-Ordner verschieben — das Original bleibt immer erhalten.</p>
+  </div>
+</div>
+<script>
+function openHelp(){document.getElementById('help-overlay').classList.add('open')}
+function closeHelp(){document.getElementById('help-overlay').classList.remove('open')}
+document.getElementById('help-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeHelp()})
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('help-overlay').classList.contains('open'))closeHelp()})
+</script>
 </body>
 </html>
 """
@@ -5834,10 +6185,12 @@ _FRONTMATTER_HTML = r"""<!DOCTYPE html>
 :root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--accent:#7c6af7;--text:#e0e0e0;--muted:#888;--green:#4caf50;--orange:#ff9800;--red:#f44336;--blue:#5bc0de}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;min-height:100vh}
-header{display:flex;align-items:center;gap:16px;padding:10px 18px;background:var(--card);border-bottom:1px solid var(--border);flex-wrap:wrap}
-header h1{font-size:15px;font-weight:600;color:var(--accent)}
-.links a{color:var(--muted);text-decoration:none;font-size:12px;margin-left:12px}
-.links a:hover{color:var(--text)}
+header{display:flex;align-items:center;gap:10px;padding:10px 18px;background:var(--card);border-bottom:1px solid var(--border);flex-wrap:wrap}
+header h1{font-size:15px;font-weight:600;color:var(--accent);white-space:nowrap}
+header nav a{color:var(--muted);text-decoration:none;font-size:12px;padding:3px 9px;border:1px solid var(--border);border-radius:6px;font-weight:600;white-space:nowrap;transition:all .15s}
+header nav a:hover{color:var(--text);border-color:var(--accent)}
+.help-btn-dark{font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;white-space:nowrap}
+.help-btn-dark:hover{border-color:var(--accent);color:var(--text)}
 .main{max-width:1000px;margin:0 auto;padding:16px}
 .summary-row{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
 .stat-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px 18px;min-width:140px;text-align:center}
@@ -5892,15 +6245,19 @@ pre{background:#0f1117;border:1px solid var(--border);border-radius:6px;padding:
 <body>
 <header>
   <h1>🏷️ Frontmatter</h1>
-  <div class="links">
-    <a href="/">Dashboard</a>
+  <nav style="display:flex;gap:5px;flex-wrap:wrap">
+    <a href="/">⊞ Dashboard</a>
+    <a href="/pipeline">⚡ Pipeline</a>
+    <a href="/review">📋 Review</a>
     <a href="/vault">📁 Vault</a>
     <a href="/cache">🔍 Cache</a>
     <a href="/batch">🧰 Batch</a>
     <a href="/wilson">🥧 Wilson</a>
-    <a href="/duplikate">🗂️ Duplikate</a>
-  </div>
-  <span id="scan-ts" style="margin-left:auto;font-size:11px;color:var(--muted)"></span>
+    <a href="/duplikate">&#127366; Duplikate</a>
+    <a href="/db">🗄️ DB</a>
+  </nav>
+  <button class="help-btn-dark" onclick="openHelp()" style="margin-left:auto">❓ Hilfe</button>
+  <span id="scan-ts" style="font-size:11px;color:var(--muted)"></span>
 </header>
 <div class="main">
   <div class="summary-row" id="stats-row">
@@ -6053,6 +6410,283 @@ function jsYaml(obj) {
 
 document.getElementById('md-input').addEventListener('keydown', e => { if(e.key==='Enter') doProbe(); });
 loadStats();
+</script>
+<style>.help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center}.help-overlay.open{display:flex}.help-box{background:#23263a;border-radius:14px;padding:28px 32px;max-width:520px;width:90%;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.4);color:#e8eaf0}.help-box h2{font-size:15px;font-weight:700;color:#7c6af7;margin-bottom:18px}.help-box h3{font-size:11px;font-weight:700;color:#8a8fb0;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;margin-top:14px}.help-box p{font-size:13px;line-height:1.6;color:#c8cad8}.help-close{position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:#8a8fb0;line-height:1;padding:2px}.help-close:hover{color:#e8eaf0}</style>
+<div id="help-overlay" class="help-overlay">
+  <div class="help-box">
+    <button class="help-close" onclick="closeHelp()">✕</button>
+    <h2>❓ Frontmatter-Dashboard</h2>
+    <h3>Was macht dieses Dashboard?</h3>
+    <p>Zeigt den Zustand der YAML-Frontmatter aller Vault-Markdown-Dateien — wie viele haben das einheitliche Schema, welche sind veraltet.</p>
+    <h3>Batch-Upgrade</h3>
+    <p>Fügt bei allen noch nicht vereinheitlichten MDs die Felder <code>erstellt_am</code> und <code>tags</code> hinzu. Legacy-Felder bleiben erhalten. Einmaliger Vorgang.</p>
+    <h3>Probe-Upgrade</h3>
+    <p>Einzelne MD-Datei prüfen: Pfad relativ zum Vault eingeben, „Prüfen" klicken — du siehst Before/After und kannst gezielt upgraden.</p>
+  </div>
+</div>
+<script>
+function openHelp(){document.getElementById('help-overlay').classList.add('open')}
+function closeHelp(){document.getElementById('help-overlay').classList.remove('open')}
+document.getElementById('help-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeHelp()})
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('help-overlay').classList.contains('open'))closeHelp()})
+</script>
+</body>
+</html>
+"""
+
+
+_DB_HTML = r"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docling Workflow · Dispatcher-DB</title>
+<style>
+:root{--bg:#f4f5f7;--surface:#fff;--border:#dde1ea;--text:#1a1d2e;--muted:#6b7280;--ok:#059669;--warn:#d97706;--err:#dc2626;--accent:#4f46e5}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;min-height:100vh}
+header{border-bottom:1px solid var(--border);padding:13px 24px;display:flex;align-items:center;gap:10px;background:var(--surface);flex-wrap:wrap}
+header h1{font-size:16px;font-weight:700;color:var(--accent);white-space:nowrap;margin-right:4px}
+nav a{font-size:12px;padding:4px 12px;border:1px solid var(--border);border-radius:7px;color:var(--text);text-decoration:none;font-weight:600;white-space:nowrap;transition:all .15s;margin-right:5px}
+nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
+.ts{font-size:12px;color:var(--muted);margin-left:auto;white-space:nowrap}
+.kpi-row{display:flex;flex-wrap:wrap;gap:12px;padding:18px 24px}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 18px;min-width:130px;flex:1}
+.kpi .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700;margin-bottom:6px}
+.kpi .val{font-size:26px;font-weight:700;color:var(--text)}
+.kpi.accent .val{color:var(--accent)}.kpi.ok .val{color:var(--ok)}.kpi.warn .val{color:var(--warn)}.kpi.err .val{color:var(--err)}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:0 24px 16px}
+.section{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.section.full{margin:0 24px 16px}
+.section h2{font-size:13px;font-weight:700;color:var(--text);padding:12px 18px;border-bottom:1px solid var(--border);background:#fafbfc;display:flex;align-items:center;gap:8px}
+.section h2 .cnt{margin-left:auto;font-size:11px;color:var(--muted);font-weight:400}
+.cat-table{width:100%;border-collapse:collapse;font-size:12px}
+.cat-table th{text-align:left;padding:7px 12px;font-weight:700;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--border)}
+.cat-table td{padding:7px 12px;border-bottom:1px solid #f0f1f5}
+.cat-table tr:last-child td{border-bottom:none}
+.cat-table tr:hover td{background:#fafbfc}
+.bar{height:6px;border-radius:3px;background:var(--accent);display:inline-block;vertical-align:middle;margin-right:6px;opacity:.65;min-width:2px}
+.cat-tag{font-size:11px;background:#eef2ff;color:var(--accent);border-radius:4px;padding:1px 6px;font-weight:600;cursor:pointer}
+.cat-tag:hover{background:#e0e7ff}
+.filter-row{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;padding:14px 18px;border-bottom:1px solid var(--border);background:#fafbfc}
+.fg{display:flex;flex-direction:column;gap:3px}
+.fg label{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.fg input,.fg select{font-size:13px;padding:5px 9px;border:1px solid var(--border);border-radius:6px;background:#fff;color:var(--text);height:32px}
+.fg input:focus,.fg select:focus{border-color:var(--accent);outline:none}
+.fg.wide input{width:220px}.fg.med select{width:155px}.fg.sm input,.fg.sm select{width:120px}
+button.primary{padding:7px 16px;background:var(--accent);color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;height:32px}
+button.primary:hover{opacity:.9}
+button.sec{padding:7px 12px;background:#fff;color:var(--muted);border:1px solid var(--border);border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;height:32px}
+button.sec:hover{border-color:var(--accent);color:var(--accent)}
+table.docs{width:100%;border-collapse:collapse;font-size:12.5px}
+table.docs th{text-align:left;padding:8px 10px;font-weight:700;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--border);background:#fafbfc;white-space:nowrap}
+table.docs td{padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
+table.docs tr:hover td{background:#fafbfc}
+.kbadge{display:inline-block;font-size:10px;padding:2px 7px;border-radius:999px;font-weight:700}
+.kbadge.hoch{background:#d1fae5;color:var(--ok)}.kbadge.mittel{background:#fef3c7;color:var(--warn)}.kbadge.niedrig{background:#fee2e2;color:var(--err)}.kbadge.none{background:#f1f2f6;color:var(--muted)}
+.truncate{max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pdf-link{color:var(--accent);text-decoration:none;font-size:11px;font-weight:600}
+.pdf-link:hover{text-decoration:underline}
+.empty{color:var(--muted);font-size:12px;text-align:center;padding:28px}
+.hint{font-size:11px;color:var(--muted);padding:10px 18px}
+</style>
+</head>
+<body>
+<header>
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+  <h1>Dispatcher-DB</h1>
+  <nav>
+    <a href="/">⊞ Dashboard</a>
+    <a href="/pipeline" target="_blank" rel="noopener">⚡ Pipeline</a>
+    <a href="/review" target="_blank" rel="noopener">📋 Review</a>
+    <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
+    <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
+    <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
+    <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
+    <a href="/db" class="hl">🗄️ DB</a>
+  </nav>
+  <button onclick="openHelp()" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;white-space:nowrap">❓ Hilfe</button>
+  <span class="ts" id="ts">Laden…</span>
+</header>
+
+<div class="kpi-row">
+  <div class="kpi accent"><div class="lbl">Verarbeitete PDFs gesamt</div><div class="val" id="k-total">–</div></div>
+  <div class="kpi ok"><div class="lbl">Heute verarbeitet</div><div class="val" id="k-today">–</div></div>
+  <div class="kpi"><div class="lbl">Letzte 7 Tage</div><div class="val" id="k-7d">–</div></div>
+  <div class="kpi warn"><div class="lbl">Inbox / unklar</div><div class="val" id="k-inbox">–</div></div>
+</div>
+
+<div class="two-col">
+  <div class="section">
+    <h2>📊 Nach Kategorie <span class="cnt" id="cat-cnt"></span></h2>
+    <table class="cat-table"><thead><tr><th>Kategorie</th><th>Anzahl</th><th>Anteil</th></tr></thead>
+    <tbody id="cat-tbody"><tr><td colspan="3" class="empty">Laden…</td></tr></tbody></table>
+  </div>
+  <div class="section">
+    <h2>📅 Nach Jahr <span class="cnt" id="year-cnt"></span></h2>
+    <table class="cat-table"><thead><tr><th>Jahr</th><th>Anzahl</th><th>Anteil</th></tr></thead>
+    <tbody id="year-tbody"><tr><td colspan="3" class="empty">Laden…</td></tr></tbody></table>
+  </div>
+</div>
+
+<div class="section full">
+  <h2>🔎 Dokumente durchsuchen <span class="cnt" id="doc-cnt"></span></h2>
+  <div class="filter-row">
+    <div class="fg wide"><label>Suche</label><input id="f-q" type="search" placeholder="Dateiname, Absender…" oninput="schedFilter()"></div>
+    <div class="fg med"><label>Kategorie</label><select id="f-kat" onchange="loadDocs()"><option value="">Alle Kategorien</option></select></div>
+    <div class="fg sm"><label>Adressat</label><select id="f-adr" onchange="loadDocs()"><option value="">Alle</option><option>Reinhard</option><option>Marion</option></select></div>
+    <div class="fg sm"><label>Konfidenz</label><select id="f-konfid" onchange="loadDocs()"><option value="">Alle</option><option value="hoch">Hoch</option><option value="mittel">Mittel</option><option value="niedrig">Niedrig</option></select></div>
+    <div class="fg sm"><label>Von (Datum)</label><input id="f-von" type="date" onchange="loadDocs()"></div>
+    <div class="fg sm"><label>Bis (Datum)</label><input id="f-bis" type="date" onchange="loadDocs()"></div>
+    <button class="primary" onclick="loadDocs()">Suchen</button>
+    <button class="sec" onclick="resetFilter()">✕ Reset</button>
+  </div>
+  <div style="overflow-x:auto">
+    <table class="docs">
+      <thead><tr>
+        <th>Datum</th><th>Dateiname</th><th>Kategorie</th>
+        <th>Absender</th><th>Adressat</th><th>Konfidenz</th>
+        <th>Eingetragen</th><th>PDF</th>
+      </tr></thead>
+      <tbody id="docs-tbody"><tr><td colspan="8" class="empty">Laden…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="hint" id="doc-hint"></div>
+</div>
+
+<div style="height:24px"></div>
+
+<script>
+let _ft = null;
+
+function schedFilter(){clearTimeout(_ft);_ft=setTimeout(loadDocs,350)}
+
+function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+
+async function loadStats(){
+  try{
+    const r = await fetch('/api/db/stats');
+    const d = await r.json();
+    document.getElementById('ts').textContent = 'Stand: ' + new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+    document.getElementById('k-total').textContent = d.total ?? '–';
+    document.getElementById('k-today').textContent = d.today ?? '–';
+    document.getElementById('k-7d').textContent   = d.last_7d ?? '–';
+    document.getElementById('k-inbox').textContent = d.inbox ?? '–';
+    const total = d.total || 1;
+    // Category table
+    const cats = d.by_category || [];
+    document.getElementById('cat-cnt').textContent = cats.length + ' Kategorien';
+    const maxC = cats[0]?.count || 1;
+    document.getElementById('cat-tbody').innerHTML = cats.map(c=>`<tr>
+      <td><span class="cat-tag" onclick="filterKat('${esc(c.kategorie||'')}')">${esc(c.kategorie||'Inbox')}</span></td>
+      <td style="font-weight:700">${c.count}</td>
+      <td><span class="bar" style="width:${Math.round(c.count/maxC*120)}px"></span><span style="font-size:11px;color:var(--muted)">${Math.round(c.count/total*100)}%</span></td>
+    </tr>`).join('') || '<tr><td colspan="3" class="empty">Keine Daten</td></tr>';
+    // Year table
+    const years = d.by_year || [];
+    document.getElementById('year-cnt').textContent = years.length + ' Jahre';
+    const maxY = years[0]?.count || 1;
+    document.getElementById('year-tbody').innerHTML = years.map(y=>`<tr>
+      <td style="font-weight:700">${esc(y.year||'–')}</td>
+      <td>${y.count}</td>
+      <td><span class="bar" style="width:${Math.round(y.count/maxY*120)}px"></span><span style="font-size:11px;color:var(--muted)">${Math.round(y.count/total*100)}%</span></td>
+    </tr>`).join('') || '<tr><td colspan="3" class="empty">Keine Daten</td></tr>';
+  }catch(e){console.error(e)}
+}
+
+function filterKat(kat){
+  document.getElementById('f-kat').value = kat;
+  loadDocs();
+}
+
+async function loadCategories(){
+  try{
+    const r = await fetch('/api/categories');
+    const cats = await r.json();
+    const sel = document.getElementById('f-kat');
+    Object.entries(cats).sort((a,b)=>a[1].label.localeCompare(b[1].label,'de')).forEach(([id,c])=>{
+      const o = document.createElement('option');
+      o.value = id; o.textContent = c.label; sel.appendChild(o);
+    });
+  }catch(e){}
+}
+
+async function loadDocs(){
+  const q      = document.getElementById('f-q').value.trim();
+  const kat    = document.getElementById('f-kat').value;
+  const adr    = document.getElementById('f-adr').value;
+  const konfid = document.getElementById('f-konfid').value;
+  const von    = document.getElementById('f-von').value;
+  const bis    = document.getElementById('f-bis').value;
+  const p = new URLSearchParams({limit:101});
+  if(q)      p.set('q',q);
+  if(kat)    p.set('kategorie',kat);
+  if(adr)    p.set('adressat',adr);
+  if(konfid) p.set('konfidenz',konfid);
+  if(von)    p.set('von',von);
+  if(bis)    p.set('bis',bis);
+  try{
+    const r = await fetch('/api/recent?' + p);
+    const docs = await r.json();
+    const hasMore = docs.length > 100;
+    const shown = hasMore ? docs.slice(0,100) : docs;
+    document.getElementById('doc-cnt').textContent = shown.length + (hasMore?' (erste 100 — Filter verfeinern)':'') + ' Treffer';
+    document.getElementById('doc-hint').textContent = hasMore ? '⚠ Mehr als 100 Treffer — bitte Filter verfeinern.' : '';
+    document.getElementById('docs-tbody').innerHTML = shown.map(d=>{
+      const kc = (d.konfidenz||'').toLowerCase();
+      const kb = kc ? `<span class="kbadge ${kc}">${esc(d.konfidenz)}</span>` : `<span class="kbadge none">–</span>`;
+      const date = (d.rechnungsdatum||'–').slice(0,10);
+      const ts   = (d.erstellt_am||'–').slice(0,16).replace('T',' ');
+      const fname = esc((d.pdf_name||d.dateiname||'–').slice(0,55));
+      const kat_s = d.kategorie ? `<span class="cat-tag" onclick="filterKat('${esc(d.kategorie)}')">${esc(d.kategorie)}</span>` : '<span style="color:var(--muted)">–</span>';
+      const pdfLink = d.vault_pfad
+        ? `<a class="pdf-link" href="/api/vault-pdf?md=${encodeURIComponent(d.vault_pfad)}" target="_blank" rel="noopener">PDF</a>`
+        : '–';
+      return `<tr>
+        <td style="white-space:nowrap;color:var(--muted);font-size:12px">${date}</td>
+        <td class="truncate" title="${esc(d.dateiname||'')}">${fname}</td>
+        <td>${kat_s}</td>
+        <td class="truncate">${esc((d.absender||'–').slice(0,40))}</td>
+        <td style="font-size:12px">${esc(d.adressat||'–')}</td>
+        <td>${kb}</td>
+        <td style="font-size:11px;color:var(--muted);white-space:nowrap">${ts}</td>
+        <td>${pdfLink}</td>
+      </tr>`;
+    }).join('') || `<tr><td colspan="8" class="empty">Keine Dokumente gefunden.</td></tr>`;
+  }catch(e){
+    document.getElementById('docs-tbody').innerHTML=`<tr><td colspan="8" class="empty" style="color:var(--err)">Fehler: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function resetFilter(){
+  ['f-q','f-von','f-bis'].forEach(id=>document.getElementById(id).value='');
+  ['f-kat','f-adr','f-konfid'].forEach(id=>document.getElementById(id).value='');
+  loadDocs();
+}
+
+function openHelp(){document.getElementById('help-overlay').classList.add('open')}
+function closeHelp(){document.getElementById('help-overlay').classList.remove('open')}
+
+loadStats();
+loadCategories();
+loadDocs();
+</script>
+<style>.help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center}.help-overlay.open{display:flex}.help-box{background:#23263a;border-radius:14px;padding:28px 32px;max-width:520px;width:90%;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.4);color:#e8eaf0}.help-box h2{font-size:15px;font-weight:700;color:#7c6af7;margin-bottom:18px}.help-box h3{font-size:11px;font-weight:700;color:#8a8fb0;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;margin-top:14px}.help-box p{font-size:13px;line-height:1.6;color:#c8cad8}.help-close{position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:#8a8fb0;line-height:1;padding:2px}.help-close:hover{color:#e8eaf0}</style>
+<div id="help-overlay" class="help-overlay">
+  <div class="help-box">
+    <button class="help-close" onclick="closeHelp()">✕</button>
+    <h2>❓ Dispatcher-Datenbank</h2>
+    <h3>Was ist das?</h3>
+    <p>Die SQLite-Datenbank des Docling-Workflows. Jedes PDF, das durch Wilson → OCR → LLM → Dispatcher gelaufen ist, hat hier einen Eintrag mit Kategorie, Absender, Konfidenz und Vault-Pfad.</p>
+    <h3>Suche &amp; Filter</h3>
+    <p>Suche nach Dateiname oder Absender, filtere nach Kategorie, Adressat, Konfidenz oder Zeitraum (Rechnungsdatum). Klick auf ein Kategorie-Tag filtert sofort. Bis zu 100 Treffer werden angezeigt.</p>
+    <h3>Kein Vault-Vault</h3>
+    <p>Diese DB enthält nur Dokumente aus der Dispatcher-Pipeline — keine manuell erstellten Notizen aus dem Projekte-Vault.</p>
+  </div>
+</div>
+<script>
+document.getElementById('help-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeHelp()})
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('help-overlay').classList.contains('open'))closeHelp()})
 </script>
 </body>
 </html>
@@ -6405,6 +7039,11 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._json_response(_fetch_wilson_tui_info())
             return
 
+        # GET /api/wilson/update/status — Update-Status abfragen
+        elif path == "/api/wilson/update/status":
+            self._json_response(_wilson_update_status)
+            return
+
         # GET /api/health — aggregierter Service-Status
         elif path == "/api/health":
             self._json_response(_collect_health())
@@ -6716,7 +7355,23 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 self._json_response({"error": "VAULT_ROOT nicht konfiguriert"}, 500); return
             md_full = VAULT_ROOT / md_rel
             if not md_full.exists() or md_full.suffix.lower() != ".md":
-                self._json_response({"error": f"MD nicht gefunden: {md_rel}"}, 404); return
+                # Fallback 1: same directory, same date prefix (YYYYMMDD_ or first 8 chars)
+                md_dir = (VAULT_ROOT / md_rel).parent
+                stem = Path(md_rel).stem
+                date_prefix = stem[:8] if len(stem) >= 8 and stem[:8].isdigit() else None
+                found = None
+                if md_dir.exists() and date_prefix:
+                    candidates = sorted(md_dir.glob(f"{date_prefix}_*.md"))
+                    if candidates:
+                        found = candidates[0]
+                # Fallback 2: vault-wide search by same date prefix
+                if not found and date_prefix:
+                    hits = sorted(VAULT_ROOT.rglob(f"{date_prefix}_*.md"))
+                    if hits:
+                        found = hits[0]
+                if not found:
+                    self._json_response({"error": f"MD nicht gefunden: {md_rel}"}, 404); return
+                md_full = found
             try:
                 md_full.resolve().relative_to(VAULT_ROOT.resolve())
             except ValueError:
@@ -6925,6 +7580,43 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 self.wfile.write(r.content)
             except Exception as e:
                 self._json_response({"error": str(e)}, 502)
+            return
+
+        # GET /db — Dispatcher-DB Dashboard
+        elif path == "/db":
+            self._html_response(_DB_HTML)
+            return
+
+        # GET /api/db/stats — Aggregations über die Dispatcher-Datenbank
+        elif path == "/api/db/stats":
+            with get_db() as con:
+                total = con.execute("SELECT COUNT(*) FROM dokumente").fetchone()[0]
+                today = con.execute(
+                    "SELECT COUNT(*) FROM dokumente WHERE DATE(erstellt_am) = DATE('now')"
+                ).fetchone()[0]
+                last_7d = con.execute(
+                    "SELECT COUNT(*) FROM dokumente WHERE erstellt_am >= datetime('now','-7 days')"
+                ).fetchone()[0]
+                inbox = con.execute(
+                    "SELECT COUNT(*) FROM dokumente WHERE kategorie IS NULL OR kategorie='' OR kategorie='Inbox' OR vault_pfad LIKE '00 Inbox%'"
+                ).fetchone()[0]
+                by_cat = con.execute(
+                    "SELECT COALESCE(NULLIF(kategorie,''),'Inbox') AS kategorie, COUNT(*) AS count "
+                    "FROM dokumente GROUP BY 1 ORDER BY 2 DESC LIMIT 30"
+                ).fetchall()
+                by_year = con.execute(
+                    "SELECT CASE "
+                    "  WHEN rechnungsdatum IS NULL OR LENGTH(rechnungsdatum)<10 OR rechnungsdatum='00.00.0000' THEN '–' "
+                    "  WHEN rechnungsdatum LIKE '__.__.____' THEN SUBSTR(rechnungsdatum,7,4) "
+                    "  WHEN rechnungsdatum LIKE '____-__-__' THEN SUBSTR(rechnungsdatum,1,4) "
+                    "  ELSE '–' END AS year, COUNT(*) AS count "
+                    "FROM dokumente GROUP BY 1 ORDER BY 1 DESC LIMIT 20"
+                ).fetchall()
+            self._json_response({
+                "total": total, "today": today, "last_7d": last_7d, "inbox": inbox,
+                "by_category": [dict(r) for r in by_cat],
+                "by_year": [dict(r) for r in by_year],
+            })
             return
 
         else:
@@ -7368,6 +8060,15 @@ class _ApiHandler(BaseHTTPRequestHandler):
                     self._json_response({"error": "Batch läuft bereits"}, 409); return
             threading.Thread(target=_fm_batch_upgrade_all, daemon=True).start()
             self._json_response({"ok": True, "message": "Batch-Upgrade gestartet"})
+            return
+
+        # POST /api/wilson/update — OpenClaw-Update auf Wilson anstoßen
+        elif path == "/api/wilson/update":
+            if _wilson_update_status["state"] == "running":
+                self._json_response({"ok": False, "msg": "Update läuft bereits."})
+            else:
+                threading.Thread(target=_run_wilson_update, daemon=True).start()
+                self._json_response({"ok": True, "msg": "Update gestartet."})
             return
 
         else:

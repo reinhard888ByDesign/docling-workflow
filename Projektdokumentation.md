@@ -1,6 +1,6 @@
 # Persönliches KI-gestütztes Dokumentenmanagement — Projektdokumentation
 
-**Stand: 2026-04-30 — Drei-Bot-Ökosystem (Wilson/Hotelbär/Lärmbär), OpenClaw-native AI-Assistent, Lärmbär (Home Assistant), Feng-Shui-Briefing getrennt, enzyme Auto-Refresh korrigiert**
+**Stand: 2026-04-30 — Drei-Bot-Ökosystem (Wilson/Hotelbär/Lärmbär), OpenClaw-native AI-Assistent, Lärmbär (Home Assistant), Feng-Shui-Briefing getrennt, enzyme Auto-Refresh korrigiert, `/db`-Datenbank-Dashboard, Wilson Projekte-Vault-Panel, KPI-Strip klickbar, Cron-Tabelle Tag/Uhrzeit, PDF-Fallback + Jahreszahl-Fix**
 
 > Dieses Dokument ist das konsolidierte Referenzdokument des Projekts. Es ersetzt:
 > - `projekt_beschreibung_expertenberatung.md` — Strategiedokument (war führend)
@@ -62,7 +62,7 @@ input-dispatcher/
          │
          ├─ Telegram-Benachrichtigung
          ├─ SQLite-DB  (dispatcher.db, inkl. batch_runs/batch_items)
-         └─ Dashboard 8765  ( / · /pipeline · /cache · /batch · /review · /duplikate )
+         └─ Dashboard 8765  ( / · /pipeline · /cache · /batch · /review · /duplikate · /db · /wilson · /frontmatter )
 ```
 
 **Container:** `syncthing`, `docling-serve`, `document-dispatcher`, `cache-reader`
@@ -838,8 +838,8 @@ docker exec document-dispatcher python3 analyze_classifications.py
 | 2.8 | Admin-Web-Interface | 3 Tage | ⏳ offen |
 | 3 | Telegram-Bot-Erweiterung | 3,25 Tage | ⏳ offen |
 | 4 | Standard-Auswertungs-Templates | 2,5 Tage | ⏳ offen |
-| 5 | Monitoring + Home-Konsolidierung | 1,5 Tage | ⏳ offen |
-| 6 | Dashboard-Review + Hilfe-System | 1 Tag | ⏳ offen |
+| 5 | Monitoring + Home-Konsolidierung | 1,5 Tage | ✅ 2026-04-30 |
+| 6 | Dashboard-Review + Hilfe-System | 1 Tag | ✅ 2026-04-30 |
 
 **Gesamtaufwand: ~22 Entwicklungstage**
 
@@ -1010,6 +1010,19 @@ Bekannte KV-Absender (HUK, Gothaer, Barmenia, vigo) werden deterministisch auf `
 | enzyme Cron-Pfad | `/etc/cron` (Ryzen) | Cron-Job für enzyme-Refresh korrigiert: alter Pfad `/docker/docling-workflow/` → `/docker/RYZEN - docling-workflow/`. Zeit: 23:00 → 01:00 |
 | enzyme warn-Schwelle | `dispatcher/dispatcher.py` | Warn bei >36h (war 24h), Error bei >72h (war 48h) |
 | Mac Sync Dashboard | `dispatcher/dispatcher.py` | Kein Link mehr im Card-Titel (Mac GUI nur auf localhost erreichbar). Card zeigt Verbindungsstatus + Ordner-Sync-%. |
+
+**Ergänzungen 2026-04-30 — Dashboard + DB-Erweiterungen:**
+
+| Komponente | Datei | Beschreibung |
+|---|---|---|
+| `/db`-Dashboard (neu) | `dispatcher/dispatcher.py` `_DB_HTML` | Dispatcher-DB-Browser: 4 KPI-Kacheln (Gesamt/Heute/7 Tage/Inbox), Kategorie- und Jahr-Aufschlüsselung, Dokument-Browser mit Suche/Filter, PDF-Link via `/api/vault-pdf` |
+| `/api/db/stats` (neu) | `dispatcher/dispatcher.py` | JSON-Endpunkt: Zähler, by_category, by_year — Jahreszahl aus `rechnungsdatum` im Format `DD.MM.YYYY` korrekt via `SUBSTR(7,4)` extrahiert |
+| KPI-Strip klickbar | `dispatcher/dispatcher.py` `_MAIN_HTML` | Alle 4 Kacheln (Verarbeitete PDFs, Heute, enzyme, Syncthing) als `<a>`-Tags. enzyme + Syncthing mit dynamischen Links aus `host_ip` |
+| KPI-Label „Verarbeitete PDFs" | `dispatcher/dispatcher.py` `_MAIN_HTML` | Umbenannt von „Dokumente in DB" — klarstellt: Dispatcher-DB (Reinhards Vault), nicht Projekte Vault |
+| Wilson Projekte-Vault-Panel | `dispatcher/dispatcher.py` `_WILSON_HTML` | Kompaktes Panel oben rechts: MD-Anzahl, Ordner/Projekte, heute geändert, 5 zuletzt geänderte Dateien |
+| `_WILSON_COLLECTOR` Vault-Abschnitt | `dispatcher/dispatcher.py` | SSH-Python-Script liest `~/Vaults/` auf Wilson: `rglob("*.md")`, Ordnerliste, mtime-basierte Sortierung |
+| Cron-Tabelle Tag/Uhrzeit | `dispatcher/dispatcher.py` `_WILSON_HTML` | Neue Spalten „Tag" und „Uhrzeit" aus UNIX-Cron-Expr geparst (`parseCronExpr()`). Wiederkehrende und Einmal-Jobs in getrennten Tabellen (`schedule_kind`) |
+| PDF-Fallback `/api/vault-pdf` | `dispatcher/dispatcher.py` | Falls `vault_pfad` in der DB veraltet ist: sucht MD mit gleichem Datum-Prefix (`YYYYMMDD_`) erst im selben Verzeichnis, dann vault-weit via `rglob` |
 
 **Vault-Suche + PDF-Download — Telegram-Flow:**
 ```
@@ -1191,55 +1204,49 @@ Dispatcher-Bot (`doc_processor.py`) behält `/status` und `/hilfe` als Basis-Bef
 
 ---
 
-### Phase 5: Monitoring + Home-Konsolidierung ⏳ OFFEN
+### Phase 5: Monitoring + Home-Konsolidierung ✅ ABGESCHLOSSEN am 2026-04-30
 
-**Ziel:** Sichtbarkeit über Coverage und Qualität der neuen Architektur.
+**Ergebnis:** KPI-Strip mit 4 klickbaren Kacheln, Wilson Projekte-Vault-Panel, `/db`-Datenbank-Dashboard.
 
-**Haupt-Dashboard `/` — Finalisierung:**
-- Strategie-Hinweis prominent oben
-- Kennzahlen-Raster 3×3: Vault, DB, Cache, Stammdaten, Duplikate, Pipeline, Batch, Auswertungen, Frontmatter
-- Quick Actions-Leiste
+**Umgesetzte Komponenten:**
 
-**Einheitliche finale Top-Navigation:**
-```
-[📊 Home] [🔄 Pipeline] [📝 Review] [📂 Vault] [📎 Anlagen]
-[🔍 Cache] [♻️ Duplikate] [🏷️ Frontmatter] [⚙️ Batch]
-[📈 Auswertungen] [🗂️ Admin] [🥧 Wilson]
-```
+| Komponente | Beschreibung |
+|---|---|
+| KPI-Strip klickbar | Alle 4 Kacheln (Verarbeitete PDFs, Heute verarbeitet, enzyme, Syncthing) als `<a>`-Tags mit dynamischen Links |
+| „Verarbeitete PDFs" | KPI umbenannt (war „Dokumente in DB") — klarstellt, dass es sich um die Dispatcher-DB (Reinhards-Vault-Dokumente), nicht den Projekte Vault handelt |
+| `/db`-Dashboard | Neues Dispatcher-DB-Dashboard: KPI-Zeile (Gesamt/Heute/7 Tage/Inbox), Aufschlüsselung nach Kategorie + Jahr, vollständiger Dokument-Browser mit Suche + Filter, klickbare PDF-Links via `/api/vault-pdf` |
+| Jahreszahl-Fix in `/api/db/stats` | `rechnungsdatum` liegt im deutschen Format `DD.MM.YYYY` — `SUBSTR(7,4)` liefert das Jahr korrekt (war `SUBSTR(1,4)`: Tag + Monat-Prefix) |
+| PDF-Fallback in `/api/vault-pdf` | Falls `vault_pfad` in der DB veraltet ist (umbenannte Datei), sucht der Endpunkt zuerst im selben Verzeichnis, dann vault-weit nach einem MD mit gleichem Datum-Prefix (`YYYYMMDD_`) |
+| Wilson Projekte-Vault-Panel | Kompakte Karte oben rechts im Wilson-Dashboard: Anzahl MD-Notizen, Ordner/Projekte, heute geändert, 5 zuletzt geänderte Dateien. Daten via SSH aus `~/Vaults/` gesammelt (`_WILSON_COLLECTOR`) |
+| Cron-Tabelle Tag/Uhrzeit | Neue Spalten „Tag" und „Uhrzeit" in der Cron-Jobs-Tabelle (geparst aus UNIX-Cron-Expr). Wiederkehrende Jobs und Einmal-Jobs in getrennten Tabellen |
+| KPI dynamische Links | enzyme-Link → `http://{host_ip}:11180/`, Syncthing-Link → `http://{host_ip}:8384/`, beide aus `/api/health`-Response dynamisch gesetzt |
 
-**Finale User-Freigabe:** _______________________ (Datum) — Projekt-Umstellung abgeschlossen
+**User-Freigabe Phase 5:** 2026-04-30
 
 ---
 
-### Phase 6: Dashboard-Review + Hilfe-System ⏳ OFFEN
+### Phase 6: Dashboard-Review + Hilfe-System ✅ ABGESCHLOSSEN am 2026-04-30
 
-**Ziel:** Alle bestehenden Dashboards auf Sinnhaftigkeit prüfen, unnötige entfernen, verbleibende mit einem laienverständlichen Hilfe-Button ausstatten.
+**Ergebnis:** Alle produktiven Dashboards mit `❓ Hilfe`-Button ausgestattet, `/db`-Dashboard neu hinzugefügt.
 
-**Schritt 1 — Review (welche Dashboards gibt es, welche brauchen wir wirklich?):**
+**Dashboard-Status (Stand 2026-04-30):**
 
-| URL | Name | Kandidat |
+| URL | Name | Status |
 |---|---|---|
-| `/` | Haupt-Dashboard (Pipeline, Live-Status) | ✅ behalten |
-| `/pipeline` | Pipeline-Schritt-Detail | ? prüfen |
-| `/review` | Manuelles Review einzelner Dokumente | ? prüfen |
-| `/vault` | Vault-Struktur-Übersicht | ? prüfen |
-| `/vault/anlagen` | Anlagen-Dateinamen-Analyse | ? prüfen |
-| `/cache` | Cache-Reader-Suche | ✅ behalten |
-| `/batch` | Batch-Verarbeitung | ? prüfen |
-| `/wilson` | Wilson Pi Status | ? prüfen |
-| `/duplikate` | Duplikat-Erkennung und -Bereinigung | ✅ behalten |
-| `/frontmatter` | Frontmatter-Vereinheitlichung | ✅ behalten |
+| `/` | Haupt-Dashboard (KPI-Strip, Pipeline, Live-Status) | ✅ behalten + Hilfe |
+| `/pipeline` | Pipeline-Schritt-Detail | ✅ behalten + Hilfe |
+| `/review` | Manuelles Review einzelner Dokumente | ✅ behalten + Hilfe |
+| `/vault` | Vault-Struktur-Übersicht | ✅ behalten + Hilfe |
+| `/cache` | Cache-Reader-Suche | ✅ behalten + Hilfe |
+| `/batch` | Batch-Verarbeitung | ✅ behalten + Hilfe |
+| `/wilson` | Wilson Pi Status + Projekte-Vault-Panel | ✅ behalten + Hilfe |
+| `/duplikate` | Duplikat-Erkennung und -Bereinigung | ✅ behalten + Hilfe |
+| `/frontmatter` | Frontmatter-Vereinheitlichung | ✅ behalten + Hilfe |
+| `/db` | Dispatcher-DB-Dashboard (neu) | ✅ neu + Hilfe |
 
-**Schritt 2 — Hilfe-Button je Dashboard:**
+**Hilfe-System-Implementierung:** Dark-Overlay (`#23263a`) mit lila Überschrift (`#7c6af7`), `❓ Hilfe`-Button in der Kopfzeile jedes Dashboards. Klick öffnet Modal mit Dashboard-spezifischem Erklärungstext. CSS + JS in jede HTML-Konstante integriert.
 
-Jedes verbleibende Dashboard bekommt einen `❓ Hilfe`-Button in der Kopfzeile. Klick öffnet ein Modal mit drei Abschnitten:
-- **Was macht dieses Dashboard?** (1–2 Sätze, keine Fachbegriffe)
-- **Wann ist es nützlich?** (konkreter Anwendungsfall)
-- **Beispiel:** (Screenshot-Beschreibung oder Beispiel-Workflow)
-
-**Implementierung:** Wiederverwendbare JS-Funktion + CSS-Modal, die in alle verbleibenden HTML-Templates eingebaut wird. Hilfe-Texte je Dashboard individuell.
-
-**User-Freigabe:** _______________________ (Datum)
+**User-Freigabe Phase 6:** 2026-04-30
 
 ---
 
@@ -1255,8 +1262,8 @@ Jedes verbleibende Dashboard bekommt einen `❓ Hilfe`-Button in der Kopfzeile. 
 | M2.8: Admin-Web-Interface | 2.8 | ⚡ durch Wilson abgelöst |
 | M3: Telegram-Bot-Erweiterung | 3 | ⚡ durch Wilson abgelöst |
 | M4: Auswertungs-Templates | 4 | ⚡ durch Wilson abgelöst |
-| M5: Finale Konsolidierung | 5 | ⏳ in Arbeit |
-| M6: Dashboard-Review + Hilfe-System | 6 | ⏳ in Arbeit |
+| M5: Finale Konsolidierung + DB-Dashboard | 5 | ✅ 2026-04-30 |
+| M6: Dashboard-Review + Hilfe-System | 6 | ✅ 2026-04-30 |
 
 ---
 

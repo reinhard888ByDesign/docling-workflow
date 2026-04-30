@@ -15,25 +15,27 @@ echo "=== Deploy nach Wilson ==="
 ssh "$WILSON" "mkdir -p $SCRIPTS_DIR"
 scp wilson/doc_processor.py  "$WILSON:$SCRIPTS_DIR/doc_processor.py"
 scp wilson/heartbeat.py      "$WILSON:$SCRIPTS_DIR/heartbeat.py"
-scp wilson/ai_assistant.py   "$WILSON:$SCRIPTS_DIR/ai_assistant.py"
+scp wilson/laerenbaer.py     "$WILSON:$SCRIPTS_DIR/laerenbaer.py"
+# ai_assistant.py bleibt als Backup auf Ryzen, wird auf Wilson nicht mehr deployed
 
 # Services
 scp wilson/doc-processor.service  "$WILSON:$SERVICE_DIR/doc-processor.service"
 scp wilson/heartbeat.service      "$WILSON:$SERVICE_DIR/heartbeat.service"
-scp wilson/ai-assistant.service   "$WILSON:$SERVICE_DIR/ai-assistant.service"
+scp wilson/laerenbaer.service     "$WILSON:$SERVICE_DIR/laerenbaer.service"
+# ai-assistant.service: auf Wilson gestoppt + deaktiviert (ersetzt durch OpenClaw Gateway)
 
 # Reload + Restart
 ssh "$WILSON" "
   systemctl --user daemon-reload
   systemctl --user restart doc-processor
   systemctl --user enable --now heartbeat
-  systemctl --user enable --now ai-assistant
+  systemctl --user enable --now laerenbaer
   echo '--- doc-processor ---'
   systemctl --user status doc-processor --no-pager -l | head -10
   echo '--- heartbeat ---'
   systemctl --user status heartbeat --no-pager -l | head -10
-  echo '--- ai-assistant ---'
-  systemctl --user status ai-assistant --no-pager -l | head -10
+  echo '--- laerenbaer ---'
+  systemctl --user status laerenbaer --no-pager -l | head -10
 "
 
 echo "=== Deploy abgeschlossen ==="
