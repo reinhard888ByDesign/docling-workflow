@@ -1131,11 +1131,11 @@ Konfidenz MITTEL/NIEDRIG → geführter Dialog in 4 Schritten:
 
 **Persistenz:** Jeder Dialog-Abschluss erzeugt DB-Eintrag + Lernregel + ggf. neuen Aussteller-Eintrag. Jede Interaktion wird zu Trainingsdaten für zukünftige Automatisierung.
 
-**User-Freigabe:** _______________________ (Datum) — Phase 2.8 erst danach
+**User-Freigabe:** 2026-04-28
 
 ---
 
-### Phase 2.8: Admin-Web-Interface für Stammdaten-DB ⏳ OFFEN
+### Phase 2.8: Admin-Web-Interface für Stammdaten-DB ⚡ TEILWEISE ÜBERHOLT
 
 **Ziel:** Browser-basiertes CRUD-Interface für Aussteller (47), Aliase (181), Lernregeln (11), Kategorie-Vorschläge.
 
@@ -1152,62 +1152,42 @@ GET/POST /admin/kategorie-vorschlaege   Offene Vorschläge aus Phase 2.7
 
 **Zugriff:** Nur im lokalen Netzwerk. Optional: Basic Auth via `DASHBOARD_PASSWORD`.
 
-**User-Freigabe:** _______________________ (Datum) — Phase 3 erst danach
+**Stand 2026-04-30:** Stammdaten-Verwaltung (Aussteller, Lernregeln, Aliase) ist via Wilson (OpenClaw + natürliche Sprache) grundsätzlich möglich. Ein dediziertes Web-CRUD-Interface wurde nicht gebaut und ist nicht priorisiert.
 
 ---
 
-### Phase 3: Telegram-Bot-Erweiterung ⏳ OFFEN
+### Phase 3: Telegram-Bot-Erweiterung ⚡ DURCH WILSON ABGELÖST (2026-04-30)
 
-**Ziel:** Neue Telegram-Befehle für Suche und Auswertung vom Smartphone.
+**Ursprüngliches Ziel:** Strukturierte Dispatcher-Bot-Befehle für Suche und Auswertung.
 
-**Neue Befehle:**
+**Warum abgelöst:** Wilson (OpenClaw Gateway) übernimmt diese Funktionen via natürlicher Sprache und Skills:
 
-| Befehl | Funktion | Ausgabe |
-|---|---|---|
-| `/suche <begriff>` | Volltextsuche via cache-reader | Nummerierte Liste, max. 5 + "Mehr"-Button |
-| `/verarbeite <ids>` | Batch-Modus auf Auswahl | Fortschritt + Ergebnis-Zusammenfassung |
-| `/auswertung <typ> <jahr>` | Template-basiert (Phase 4) | Strukturierte Tabelle + Datei-Anhang |
-| `/inbox` | Aktuelle Inbox-Dokumente | Kurze Liste |
-| `/reocr <id>` | Re-OCR-Fallback für Stub | Fortschritt + neue Klassifikation |
-| `/status` | Pipeline- und Index-Status | Kennzahlen-Übersicht |
+| Geplanter Befehl | Ersatz via Wilson |
+|---|---|
+| `/suche <begriff>` | „Suche nach X" → enzyme-Skill + dispatcher-Skill |
+| `/inbox` | „Zeige Inbox-Dokumente" → dispatcher-Skill |
+| `/status` | „Wie ist der Pipeline-Status?" → dispatcher-Skill |
+| `/auswertung` | Natürlichsprachige Abfrage + enzyme |
+| `/verarbeite <ids>` | Kein direkter Ersatz (noch offen) |
+| `/reocr <id>` | Kein direkter Ersatz (noch offen) |
 
-**OpenClaw-Relay:** HTTP-Client zu Ryzen (Timeout 30 Sek., Retry), Pufferung in lokaler SQLite-Queue.
-
-**User-Freigabe:** _______________________ (Datum) — Phase 4 erst danach
+Dispatcher-Bot (`doc_processor.py`) behält `/status` und `/hilfe` als Basis-Befehle.
 
 ---
 
-### Phase 4: Standard-Auswertungs-Templates ⏳ OFFEN
+### Phase 4: Standard-Auswertungs-Templates ⚡ DURCH WILSON ABGELÖST (2026-04-30)
 
-**Ziel:** Vordefinierte Auswertungen als Ein-Kommando-Befehle.
+**Ursprüngliches Ziel:** Feste Telegram-Befehle mit CSV-Export.
 
-**Template 1: Steuer-Handwerker**
-```
-/steuer-handwerker 2025
-→ Sucht: "Handwerker" OR "Rechnung" in Immobilien-Kategorien
-→ Extrahiert: Betrag, Aussteller, Datum, Objekt
-→ Ausgabe: CSV für Steuerberater
-```
+**Warum abgelöst:** Wilson kann alle drei geplanten Auswertungstypen natürlichsprachig via enzyme + dispatcher-Skill ausführen:
 
-**Template 2: KV-Erstattung pro Person**
-```
-/kv-erstattung Marion 2025
-→ Sucht: Leistungsabrechnung HUK/Gothaer/Barmenia, Adressat=Marion, Jahr=2025
-→ Ausgabe: Tabelle mit Summen (Rechnungsbetrag, erstatteter Betrag)
-```
+| Geplantes Template | Entsprechung |
+|---|---|
+| `/steuer-handwerker 2025` | „Welche Handwerkerrechnungen für Seggiano 2025?" |
+| `/kv-erstattung Marion 2025` | „KV-Leistungsabrechnungen für Marion 2025 mit Summen" |
+| `/italien 2025` | „Alle Italien-Kosten 2025: IMU, TARI, Acquedotto" |
 
-**Template 3: Italien-Jahresübersicht**
-```
-/italien 2025
-→ Sucht: IMU, TARI, Acquedotto, ButanGas, Comune
-→ Ausgabe: Markdown-Tabelle für Vault-Notiz
-```
-
-**Export-Formate:** CSV (UTF-8, Excel-kompatibel), Markdown-Tabelle, PDF-Bericht (weasyprint).
-
-**Neues Dashboard:** `/auswertungen` mit Template-Katalog, Parameter-Formular, Vorschau, Historien der letzten 30 Auswertungen.
-
-**User-Freigabe:** _______________________ (Datum) — Phase 5 erst danach
+**Noch fehlend:** Strukturierter CSV-Export aus Wilson heraus. Kann bei Bedarf als eigenständiges Feature nachgezogen werden.
 
 ---
 
@@ -1270,13 +1250,13 @@ Jedes verbleibende Dashboard bekommt einen `❓ Hilfe`-Button in der Kopfzeile. 
 | M1: Cache-Reader + Dashboard | 1 | ✅ 2026-04-19 |
 | M2: Batch-Modus + Dashboard | 2 | ✅ 2026-04-19/20 (User-Freigabe ausstehend) |
 | M2.5: Duplikat-Management | 2.5 | ✅ 2026-04-27 |
-| M2.6: Frontmatter-Schema | 2.6 | ⏳ offen |
+| M2.6: Frontmatter-Schema | 2.6 | ✅ 2026-04-28 |
 | M2.7: Interaktive Klassifikation | 2.7 | ✅ 2026-04-28 |
-| M2.8: Admin-Web-Interface | 2.8 | ⏳ offen |
-| M3: Telegram-Suche + Wilson-Update | 3 | ⏳ offen |
-| M4: Auswertungen + Dashboard | 4 | ⏳ offen |
-| M5: Finale Konsolidierung | 5 | ⏳ offen |
-| M6: Dashboard-Review + Hilfe-System | 6 | ⏳ offen |
+| M2.8: Admin-Web-Interface | 2.8 | ⚡ durch Wilson abgelöst |
+| M3: Telegram-Bot-Erweiterung | 3 | ⚡ durch Wilson abgelöst |
+| M4: Auswertungs-Templates | 4 | ⚡ durch Wilson abgelöst |
+| M5: Finale Konsolidierung | 5 | ⏳ in Arbeit |
+| M6: Dashboard-Review + Hilfe-System | 6 | ⏳ in Arbeit |
 
 ---
 
