@@ -24,7 +24,14 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-_ADRESSATEN = {"Marion", "Reinhard", "Linoa"}
+# Direkte Adressaten-Namen
+_ADRESSATEN = {"Marion", "Reinhard"}
+
+# Hunde → Besitzer (Linoa gehört Reinhard, Molly gehört Marion)
+_DOG_TO_OWNER: dict[str, str] = {"Linoa": "Reinhard", "Molly": "Marion"}
+
+# Alle Namen die aus Tag-Output herausgefiltert werden (Personen + Hunde)
+_ADRESSATEN_FILTER = _ADRESSATEN | set(_DOG_TO_OWNER.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +107,7 @@ class EnexTagMapper:
         """
         Entfernt Jahreszahlen (2019), Monats-Tags (2023-05),
         Hex-Farben (#ffffffff) und Einzel-Buchstaben aus der Tag-Liste.
-        Beibehaltung von Adressaten (Marion, Reinhard, Linoa).
+        Adressaten und Hundenamen (Marion, Reinhard, Linoa, Molly) werden separat behandelt.
         """
         result = []
         for tag in tags:
@@ -182,7 +189,7 @@ class EnexTagMapper:
                     t for t in note_tags
                     if t.lower() not in rule_tags_set
                     and t.lower() not in tag_output_set
-                    and t not in _ADRESSATEN
+                    and t not in _ADRESSATEN_FILTER
                 ])
                 normalized_tags = tag_output + extra
 
@@ -242,10 +249,12 @@ class EnexTagMapper:
             return False
 
     def _extract_adressat(self, tags: List[str]) -> Optional[str]:
-        """Extrahiert Adressat (Marion/Reinhard/Linoa) aus den Tags."""
+        """Extrahiert Adressat aus Tags. Hunde werden auf ihren Besitzer gemappt."""
         for t in tags:
             if t in _ADRESSATEN:
                 return t
+            if t in _DOG_TO_OWNER:
+                return _DOG_TO_OWNER[t]
         return None
 
     def _kategorie_to_folder(self, kategorie: Optional[str]) -> str:

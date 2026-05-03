@@ -52,7 +52,23 @@ tag_rules:
     typ: leistungsabrechnung
     tag_output: ["Krankenversicherung", "HUK"]
 
-  # --- Krankenversicherung / Veterinär ---
+  # --- Krankenversicherung / Veterinär Molly (Marion) ---
+  - evernote_tags: ["Molly"]
+    match_mode: contains
+    kategorie: krankenversicherung
+    typ: tierarztrechnung
+    adressat_hint: Marion
+    tag_output: ["Krankenversicherung/Tierarzt"]
+
+  # --- Krankenversicherung / Veterinär Linoa (Reinhard) ---
+  - evernote_tags: ["Linoa"]
+    match_mode: contains
+    kategorie: krankenversicherung
+    typ: tierarztrechnung
+    adressat_hint: Reinhard
+    tag_output: ["Krankenversicherung/Tierarzt"]
+
+  # --- Krankenversicherung / Veterinär allgemein ---
   - evernote_tags: ["Tierarzt", "Veterinär", "Clinica", "Amiatina"]
     match_mode: contains
     kategorie: krankenversicherung
@@ -130,7 +146,7 @@ tag_rules:
     tag_output: ["FengShui"]
 
   # --- Familie ---
-  - evernote_tags: ["Familie", "Linoa", "Schule", "Kindergarten", "Kind"]
+  - evernote_tags: ["Familie", "Linoa", "Molly", "Schule", "Kindergarten", "Kind"]
     match_mode: contains
     kategorie: familie
     typ: sonstiges
