@@ -6703,53 +6703,53 @@ _ENEX_HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>🐘 ENEX Import</title>
 <style>
-  :root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--text:#e2e8f0;--muted:#64748b;
-    --accent:#6366f1;--green:#22c55e;--yellow:#eab308;--red:#ef4444;--blue:#3b82f6;
-    --purple:#a855f7;--radius:10px;--nav-h:48px}
+  :root{--bg:#ffffff;--card:#f8f9fb;--border:#e2e8f0;--text:#1e293b;--muted:#64748b;
+    --accent:#6366f1;--green:#16a34a;--yellow:#ca8a04;--red:#dc2626;--blue:#2563eb;
+    --purple:#9333ea;--radius:10px;--nav-h:48px}
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;min-height:100vh}
-  nav{height:var(--nav-h);background:var(--card);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;gap:6px;position:sticky;top:0;z-index:100}
+  nav{height:var(--nav-h);background:var(--bg);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;gap:6px;position:sticky;top:0;z-index:100}
   nav a{color:var(--muted);text-decoration:none;padding:6px 12px;border-radius:6px;font-size:13px;font-weight:500;transition:color .15s,background .15s}
-  nav a:hover{color:var(--text);background:rgba(255,255,255,.05)}
-  nav a.hl{color:var(--text);background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3)}
+  nav a:hover{color:var(--text);background:rgba(0,0,0,.05)}
+  nav a.hl{color:var(--accent);background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25)}
   nav .sep{flex:1}
   nav .refresh-btn{background:none;border:1px solid var(--border);color:var(--muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;transition:color .15s,border-color .15s}
   nav .refresh-btn:hover{color:var(--text);border-color:var(--accent)}
   .page{padding:20px 24px;max-width:1400px;margin:0 auto}
-  h1{font-size:20px;font-weight:600;margin-bottom:4px}
+  h1{font-size:20px;font-weight:700;margin-bottom:4px;color:var(--text)}
   .subtitle{color:var(--muted);font-size:13px;margin-bottom:20px}
   /* Stat cards */
   .stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:24px}
-  .stat{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px}
+  .stat{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;box-shadow:0 1px 3px rgba(0,0,0,.04)}
   .stat-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
   .stat-value{font-size:28px;font-weight:700;line-height:1}
   .stat-sub{font-size:11px;color:var(--muted);margin-top:4px}
   .c-green{color:var(--green)} .c-yellow{color:var(--yellow)} .c-red{color:var(--red)} .c-blue{color:var(--blue)} .c-purple{color:var(--purple)}
   /* Filter bar */
   .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
-  .filter-btn{background:var(--card);border:1px solid var(--border);color:var(--muted);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;transition:all .15s}
+  .filter-btn{background:var(--bg);border:1px solid var(--border);color:var(--muted);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;transition:all .15s}
   .filter-btn:hover{color:var(--text);border-color:var(--accent)}
-  .filter-btn.active{background:rgba(99,102,241,.15);border-color:var(--accent);color:var(--text)}
-  .ocr-btn{margin-left:auto;background:rgba(99,102,241,.15);border:1px solid var(--accent);color:var(--text);padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;transition:all .15s}
-  .ocr-btn:hover{background:var(--accent);color:#fff}
+  .filter-btn.active{background:rgba(99,102,241,.08);border-color:var(--accent);color:var(--accent);font-weight:600}
+  .ocr-btn{margin-left:auto;background:var(--accent);border:1px solid var(--accent);color:#fff;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;transition:all .15s}
+  .ocr-btn:hover{background:#4f46e5}
   .ocr-btn:disabled{opacity:.5;cursor:not-allowed}
   /* Table */
-  .tbl-wrap{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+  .tbl-wrap{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.04)}
   table{width:100%;border-collapse:collapse}
-  th{padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border);background:rgba(255,255,255,.02)}
-  td{padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.04);font-size:13px;vertical-align:middle;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  th{padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border);background:var(--card)}
+  td{padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   tr:last-child td{border-bottom:none}
-  tr:hover td{background:rgba(255,255,255,.02)}
+  tr:hover td{background:var(--card)}
   /* Badges */
   .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
-  .b-pending{background:rgba(234,179,8,.15);color:var(--yellow)}
-  .b-completed{background:rgba(34,197,94,.12);color:var(--green)}
-  .b-failed{background:rgba(239,68,68,.12);color:var(--red)}
-  .b-not_required{background:rgba(100,116,139,.12);color:var(--muted)}
-  .b-pdfminer{background:rgba(59,130,246,.12);color:var(--blue)}
-  .b-docling{background:rgba(168,85,247,.12);color:var(--purple)}
+  .b-pending{background:#fef9c3;color:#854d0e}
+  .b-completed{background:#dcfce7;color:#15803d}
+  .b-failed{background:#fee2e2;color:#b91c1c}
+  .b-not_required{background:#f1f5f9;color:var(--muted)}
+  .b-pdfminer{background:#dbeafe;color:#1d4ed8}
+  .b-docling{background:#f3e8ff;color:#7e22ce}
   .empty{text-align:center;padding:40px;color:var(--muted)}
-  .toast{position:fixed;bottom:24px;right:24px;background:var(--card);border:1px solid var(--border);padding:12px 20px;border-radius:var(--radius);font-size:13px;opacity:0;transform:translateY(8px);transition:all .3s;pointer-events:none;z-index:999}
+  .toast{position:fixed;bottom:24px;right:24px;background:#1e293b;color:#f8fafc;border:1px solid #334155;padding:12px 20px;border-radius:var(--radius);font-size:13px;opacity:0;transform:translateY(8px);transition:all .3s;pointer-events:none;z-index:999}
   .toast.show{opacity:1;transform:none}
   .ts{color:var(--muted);font-size:12px}
   .path{color:var(--muted);font-size:12px;font-family:monospace}
@@ -6763,7 +6763,6 @@ _ENEX_HTML = r"""<!DOCTYPE html>
   <a href="/vault" target="_blank" rel="noopener">📂 Vault</a>
   <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
   <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
-    <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
   <a href="/enex" class="hl">🐘 ENEX</a>
   <span class="sep"></span>
   <button class="refresh-btn" onclick="loadAll()">↺ Aktualisieren</button>
