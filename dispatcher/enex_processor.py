@@ -321,14 +321,14 @@ def make_filename(note: Note, routing: RoutingResult, local_tz: ZoneInfo) -> str
 
     Wenn der Note-Titel bereits mit YYYYMMDD beginnt (Nutzer hat Datum
     schon in den Titel eingetragen), wird der Titel direkt verwendet —
-    kein doppeltes Datum und kein Kategorie-Suffix.
-    Sonst: YYYYMMDD_Quelle_Titel
+    kein doppeltes Datum und kein Kategorie-Suffix. Max-Länge 120.
+    Sonst: YYYYMMDD_Quelle_Titel (Titel auf 60 Zeichen begrenzt)
     """
-    title_clean = sanitize_filename_part(note.title)
+    # Titel beginnt schon mit YYYYMMDD → direkt verwenden (großzügige Max-Länge)
+    if re.match(r'^\d{8}', note.title.strip()):
+        return sanitize_filename_part(note.title, max_len=120)
 
-    # Titel beginnt schon mit YYYYMMDD → direkt verwenden
-    if re.match(r'^\d{8}', title_clean):
-        return title_clean
+    title_clean = sanitize_filename_part(note.title)
 
     local_dt = note.created.astimezone(local_tz)
     date_str = local_dt.strftime("%Y%m%d")
