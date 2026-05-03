@@ -63,7 +63,6 @@ OLLAMA_URL     = os.environ.get("OLLAMA_URL",           "http://ollama:11434")
 OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL",         "qwen2.5:7b")
 OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX",   "8192"))
 OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT",   "300"))
-OLLAMA_TRANSLATE_MODEL = os.environ.get("OLLAMA_TRANSLATE_MODEL", OLLAMA_MODEL)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT_ID",    "")
 API_PORT       = int(os.environ.get("API_PORT", "8765"))
@@ -586,7 +585,7 @@ def save_klassifikation_historie(dok_id: int | None, result: dict, korrektur: bo
                 (
                     dok_id,
                     None if korrektur else OLLAMA_MODEL,
-                    None if korrektur else OLLAMA_TRANSLATE_MODEL,
+                    None,
                     None if korrektur else result.get("_lang"),
                     None if korrektur else result.get("_lang_prob"),
                     None if korrektur else result.get("_duration_ms"),
@@ -2120,6 +2119,7 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
     <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
     <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
+    <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
     <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
@@ -2658,8 +2658,9 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
   .step-row.skip   { opacity: .4; }
   .step-icon { font-size: 16px; line-height: 1; margin-top: 1px; flex-shrink: 0; width: 20px; text-align: center; }
   .step-body { flex: 1; min-width: 0; }
-  .step-label { font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .step-meta  { font-size: 10px; color: var(--muted); margin-top: 1px; }
+  .step-label { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .step-desc  { font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.4; white-space: normal; }
+  .step-meta  { font-size: 11px; color: var(--muted); margin-top: 2px; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
   .pulsing { animation: pulse 1s ease-in-out infinite; }
 
@@ -2729,7 +2730,7 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
   .dcard-head { display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: #f8f9fb; border: 1px solid var(--border); border-radius: 8px; flex-shrink: 0; }
   .dcard-title { font-weight: 700; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
   .dcard-badge { font-size: 10px; padding: 2px 8px; border-radius: 999px; font-weight: 600; white-space: nowrap; background: #d1fae5; color: var(--ok); }
-  .dcard-grid { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(2, 1fr); gap: 8px; min-height: 0; }
+  .dcard-grid { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(2, 1fr); gap: 8px; min-height: 0; overflow: hidden; }
   .dtile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; overflow: hidden; display: flex; flex-direction: column; }
   .dtile.clickable { cursor: pointer; }
   .dtile.clickable:hover { border-color: var(--accent); background: #f5f3ff; }
@@ -2739,11 +2740,12 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
   .content-modal-body { overflow-y:auto;padding:16px 18px;flex:1;font-family:'Menlo','Consolas',monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;line-height:1.6;color:var(--text) }
   .dtile.fresh { animation: freshPulse .7s ease-out; }
   @keyframes freshPulse { 0%{background:#eef2ff;border-color:#a5b4fc} 100%{background:var(--surface);border-color:var(--border)} }
-  .dtile-label { font-size: 9px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 5px; flex-shrink: 0; }
+  .dtile-label { font-size: 9px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 3px; flex-shrink: 0; }
+  .dtile-hint  { font-size: 10px; color: var(--muted); line-height: 1.3; margin-bottom: 6px; flex-shrink: 0; font-style: italic; }
   .drow { display: flex; align-items: baseline; gap: 5px; margin-bottom: 2px; min-width: 0; }
-  .dk { font-size: 10px; font-weight: 600; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+  .dk { font-size: 11px; font-weight: 600; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
   .dk::after { content: ':'; }
-  .dv { font-size: 11px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .dv { font-size: 13px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
   .dv.pending { color: #d1d5db; }
   .dv.mono { font-family: 'Menlo','Consolas',monospace; font-size: 10px; }
   .dv.hoch    { color: var(--ok);   font-weight: 700; }
@@ -2824,12 +2826,14 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
 
         <div class="dtile clickable" id="dcs-ocr" onclick="showContent('ocr')" title="Klicken: Volltext anzeigen">
           <div class="dtile-label">📝 OCR <span style="font-size:8px;opacity:.6">↗</span></div>
+          <div class="dtile-hint">Docling-Texterkennung — Klick zeigt vollständigen Markdown-Text</div>
           <div class="drow"><span class="dk">Zeichen</span><span class="dv" id="dc-ocr-chars">–</span></div>
           <div class="drow"><span class="dk">Übersetzt</span><span class="dv" id="dc-translate-info" style="font-size:9px;color:var(--muted)"></span></div>
         </div>
 
         <div class="dtile" id="dcs-header">
           <div class="dtile-label">🏷️ Header</div>
+          <div class="dtile-hint">Regex-Extraktion aus den ersten Zeilen — Absender, Adresse, Empfänger</div>
           <div class="drow"><span class="dk">Absender</span><span class="dv" id="dc-abs-name">–</span></div>
           <div class="drow"><span class="dk">PLZ/Ort</span><span class="dv" id="dc-abs-plz">–</span></div>
           <div class="drow"><span class="dk">Empfänger</span><span class="dv" id="dc-emp-name">–</span></div>
@@ -2837,6 +2841,7 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
 
         <div class="dtile" id="dcs-idents">
           <div class="dtile-label">🪪 Identifier</div>
+          <div class="dtile-hint">Bekannte IDs: Codice Fiscale, IBAN, IVA — bestimmen Adressat (Reinhard/Marion)</div>
           <div class="drow"><span class="dk">IBAN</span><span class="dv mono" id="dc-iban">–</span></div>
           <div class="drow"><span class="dk">IVA</span><span class="dv mono" id="dc-piva">–</span></div>
           <div class="drow"><span class="dk">CF</span><span class="dv mono" id="dc-cf">–</span></div>
@@ -2846,6 +2851,7 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
 
         <div class="dtile clickable" id="dcs-doctype" onclick="showContent('translate')" title="Klicken: Übersetzung anzeigen">
           <div class="dtile-label">📋 Typ & Sprache <span style="font-size:8px;opacity:.6">↗</span></div>
+          <div class="dtile-hint">Keyword-Erkennung des Dokumenttyps + Sprachcode (DE/IT). qwen2.5:7b klassifiziert mehrsprachig direkt.</div>
           <div class="drow"><span class="dk">Typ</span><span class="dv" id="dc-doctype">–</span></div>
           <div class="drow"><span class="dk">Sprache</span><span class="dv" id="dc-lang">–</span></div>
           <div class="drow"><span class="dk">Übersetzt</span><span class="dv" id="dc-translate">–</span></div>
@@ -2853,6 +2859,7 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
 
         <div class="dtile" id="dcs-llm">
           <div class="dtile-label">🤖 LLM</div>
+          <div class="dtile-hint">qwen2.5:7b — Kategorie, Typ, Absender, Adressat, Datum und Betrag aus dem Dokumentinhalt</div>
           <div class="drow"><span class="dk">Kategorie</span><span class="dv" id="dc-cat">–</span></div>
           <div class="drow"><span class="dk">Typ</span><span class="dv" id="dc-type">–</span></div>
           <div class="drow"><span class="dk">Absender</span><span class="dv" id="dc-absender">–</span></div>
@@ -2864,6 +2871,7 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
 
         <div class="dtile" id="dcs-result">
           <div class="dtile-label">✅ Ergebnis</div>
+          <div class="dtile-hint">Finales Klassifikationsergebnis nach allen Overrides und Lernregeln — Zielordner im Vault</div>
           <div class="drow"><span class="dk">Konfidenz</span><span class="dv" id="dc-konfidenz">–</span></div>
           <div class="drow"><span class="dk">Dok-ID</span><span class="dv" id="dc-dokid">–</span></div>
           <div class="drow"><span class="dk">Vault</span><span class="dv mono" id="dc-vault">–</span></div>
@@ -2876,18 +2884,18 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
 
 <script>
 const STEP_DEF = [
-  { id: 'started',    label: 'Verarbeitung gestartet',           icon: '📄' },
-  { id: 'ocr',        label: 'OCR / Docling',                    icon: '🔍' },
-  { id: 'ocr_quality',label: 'OCR-Qualitäts-Gate',               icon: '📏' },
-  { id: 'header',     label: 'Header-Extraktion',                 icon: '🏷️' },
-  { id: 'identifiers',label: 'Identifier & Personen-Auflösung',  icon: '🪪' },
-  { id: 'doctype',    label: 'Dokumenttyp-Erkennung',             icon: '📋' },
-  { id: 'lang',       label: 'Spracherkennung',                   icon: '🌐' },
-  { id: 'translate',  label: 'Übersetzung',                       icon: '🔤' },
-  { id: 'llm',        label: 'LLM-Klassifikation (Ollama)',       icon: '🤖' },
-  { id: 'overrides',  label: 'Deterministisches Override',        icon: '⚖️' },
-  { id: 'db',         label: 'Datenbank speichern',               icon: '💾' },
-  { id: 'vault',      label: 'Vault-Move',                        icon: '📁' },
+  { id: 'started',    label: 'Verarbeitung gestartet',          icon: '📄', desc: 'PDF im Eingangsordner erkannt und in die Warteschlange eingereiht.' },
+  { id: 'ocr',        label: 'OCR / Docling',                   icon: '🔍', desc: 'Docling wandelt das PDF in durchsuchbaren Markdown um — erkennt Text, Tabellen und Spalten (auch bei gescannten Dokumenten).' },
+  { id: 'ocr_quality',label: 'OCR-Qualitäts-Gate',              icon: '📏', desc: 'Prüft ob der OCR-Text ausreichend lesbar ist. Bei zu wenig Text oder reinen Bilddokumenten → direkt in 00 Inbox.' },
+  { id: 'header',     label: 'Header-Extraktion',                icon: '🏷️', desc: 'Regex-basierte Extraktion von Absender und Empfänger aus den ersten Zeilen (Name, Firma, Adresse) — ohne LLM.' },
+  { id: 'identifiers',label: 'Identifier & Personen-Auflösung', icon: '🪪', desc: 'Sucht nach bekannten IDs: Codice Fiscale, IBAN, Steuernummer, Kfz-Kennzeichen. Ordnet Dokument Reinhard oder Marion zu.' },
+  { id: 'doctype',    label: 'Dokumenttyp-Erkennung',            icon: '📋', desc: 'Keyword-basierte Vorklassifikation (z.B. "Rechnung", "Leistungsabrechnung", "Polizza") — liefert Hint für das LLM.' },
+  { id: 'lang',       label: 'Spracherkennung',                  icon: '🌐', desc: 'Erkennt die Dokumentsprache (DE/IT/EN). qwen2.5:7b klassifiziert mehrsprachig direkt — kein Übersetzungsschritt nötig.' },
+  { id: 'translate',  label: 'Übersetzung',                      icon: '🔤', desc: 'Übersetzungsschritt deaktiviert — qwen2.5:7b versteht Deutsch und Italienisch nativ.' },
+  { id: 'llm',        label: 'LLM-Klassifikation (Ollama)',      icon: '🤖', desc: 'qwen2.5:7b analysiert den Dokumentinhalt und bestimmt Kategorie, Typ, Absender, Adressat, Datum und Betrag.' },
+  { id: 'overrides',  label: 'Deterministisches Override',       icon: '⚖️', desc: 'Feste Regeln überschreiben LLM-Ergebnis: bekannte Absender (HUK→Marion, Gothaer→Reinhard), Codice Fiscale, Lernregeln.' },
+  { id: 'db',         label: 'Datenbank speichern',              icon: '💾', desc: 'Klassifikationsergebnis wird in dispatcher.db gespeichert (Kategorie, Konfidenz, Modell, Dauer). Basis für Review-Dashboard.' },
+  { id: 'vault',      label: 'Vault-Move',                       icon: '📁', desc: 'PDF und MD-Datei werden in den richtigen Vault-Ordner verschoben. Bei niedriger Konfidenz oder Fehler → 00 Inbox.' },
 ];
 
 const STEP_IDS = STEP_DEF.map(s => s.id);
@@ -2916,6 +2924,8 @@ function onDocStep(data) {
     updateQueueBar();
     document.getElementById('fn-display').textContent = filename;
     document.getElementById('fn-display').className = 'fn-name';
+    const ib = document.getElementById('idle-banner');
+    if (ib) ib.style.display = 'none';
     resetDocCard();
     set('dc-filename', filename);
     document.getElementById('doc-card').style.display = '';
@@ -3203,7 +3213,7 @@ function updateDocCard(stepId, step) {
 
     case 'translate':
       if (step.status === 'skip') {
-        set('dc-translate', 'Deutsch – kein Übersetzen');
+        set('dc-translate', '–');
         const ti1 = document.getElementById('dc-translate-info');
         if (ti1) ti1.textContent = '';
       } else if (ex) {
@@ -5140,6 +5150,7 @@ nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
     <a href="/cache" class="hl">🔍 Cache</a>
     <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
+    <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
     <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
@@ -6493,6 +6504,7 @@ table.docs tr:hover td{background:#fafbfc}
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
     <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
     <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
+    <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/db" class="hl">🗄️ DB</a>
   </nav>
@@ -6684,6 +6696,226 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElement
 """
 
 
+_ENEX_HTML = r"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🐘 ENEX Import</title>
+<style>
+  :root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--text:#e2e8f0;--muted:#64748b;
+    --accent:#6366f1;--green:#22c55e;--yellow:#eab308;--red:#ef4444;--blue:#3b82f6;
+    --purple:#a855f7;--radius:10px;--nav-h:48px}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;min-height:100vh}
+  nav{height:var(--nav-h);background:var(--card);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;gap:6px;position:sticky;top:0;z-index:100}
+  nav a{color:var(--muted);text-decoration:none;padding:6px 12px;border-radius:6px;font-size:13px;font-weight:500;transition:color .15s,background .15s}
+  nav a:hover{color:var(--text);background:rgba(255,255,255,.05)}
+  nav a.hl{color:var(--text);background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3)}
+  nav .sep{flex:1}
+  nav .refresh-btn{background:none;border:1px solid var(--border);color:var(--muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;transition:color .15s,border-color .15s}
+  nav .refresh-btn:hover{color:var(--text);border-color:var(--accent)}
+  .page{padding:20px 24px;max-width:1400px;margin:0 auto}
+  h1{font-size:20px;font-weight:600;margin-bottom:4px}
+  .subtitle{color:var(--muted);font-size:13px;margin-bottom:20px}
+  /* Stat cards */
+  .stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:24px}
+  .stat{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px}
+  .stat-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
+  .stat-value{font-size:28px;font-weight:700;line-height:1}
+  .stat-sub{font-size:11px;color:var(--muted);margin-top:4px}
+  .c-green{color:var(--green)} .c-yellow{color:var(--yellow)} .c-red{color:var(--red)} .c-blue{color:var(--blue)} .c-purple{color:var(--purple)}
+  /* Filter bar */
+  .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+  .filter-btn{background:var(--card);border:1px solid var(--border);color:var(--muted);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;transition:all .15s}
+  .filter-btn:hover{color:var(--text);border-color:var(--accent)}
+  .filter-btn.active{background:rgba(99,102,241,.15);border-color:var(--accent);color:var(--text)}
+  .ocr-btn{margin-left:auto;background:rgba(99,102,241,.15);border:1px solid var(--accent);color:var(--text);padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;transition:all .15s}
+  .ocr-btn:hover{background:var(--accent);color:#fff}
+  .ocr-btn:disabled{opacity:.5;cursor:not-allowed}
+  /* Table */
+  .tbl-wrap{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+  table{width:100%;border-collapse:collapse}
+  th{padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border);background:rgba(255,255,255,.02)}
+  td{padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.04);font-size:13px;vertical-align:middle;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  tr:hover td{background:rgba(255,255,255,.02)}
+  /* Badges */
+  .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
+  .b-pending{background:rgba(234,179,8,.15);color:var(--yellow)}
+  .b-completed{background:rgba(34,197,94,.12);color:var(--green)}
+  .b-failed{background:rgba(239,68,68,.12);color:var(--red)}
+  .b-not_required{background:rgba(100,116,139,.12);color:var(--muted)}
+  .b-pdfminer{background:rgba(59,130,246,.12);color:var(--blue)}
+  .b-docling{background:rgba(168,85,247,.12);color:var(--purple)}
+  .empty{text-align:center;padding:40px;color:var(--muted)}
+  .toast{position:fixed;bottom:24px;right:24px;background:var(--card);border:1px solid var(--border);padding:12px 20px;border-radius:var(--radius);font-size:13px;opacity:0;transform:translateY(8px);transition:all .3s;pointer-events:none;z-index:999}
+  .toast.show{opacity:1;transform:none}
+  .ts{color:var(--muted);font-size:12px}
+  .path{color:var(--muted);font-size:12px;font-family:monospace}
+</style>
+</head>
+<body>
+<nav>
+  <a href="/">🏠 Home</a>
+  <a href="/pipeline" target="_blank" rel="noopener">⚡ Pipeline</a>
+  <a href="/review" target="_blank" rel="noopener">📋 Review</a>
+  <a href="/vault" target="_blank" rel="noopener">📂 Vault</a>
+  <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
+  <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
+    <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
+  <a href="/enex" class="hl">🐘 ENEX</a>
+  <span class="sep"></span>
+  <button class="refresh-btn" onclick="loadAll()">↺ Aktualisieren</button>
+</nav>
+
+<div class="page">
+  <h1>🐘 ENEX Import</h1>
+  <p class="subtitle">Evernote-Exporte · Phase 1 Sofortimport · Phase 2 OCR-Nachtlauf</p>
+
+  <div class="stats" id="stats">
+    <div class="stat"><div class="stat-label">Gesamt importiert</div><div class="stat-value" id="s-total">—</div></div>
+    <div class="stat"><div class="stat-label">⏳ OCR ausstehend</div><div class="stat-value c-yellow" id="s-pending">—</div></div>
+    <div class="stat"><div class="stat-label">✅ OCR abgeschlossen</div><div class="stat-value c-green" id="s-completed">—</div></div>
+    <div class="stat"><div class="stat-label">📄 Kein PDF</div><div class="stat-value" id="s-not_required">—</div><div class="stat-sub">kein OCR nötig</div></div>
+    <div class="stat"><div class="stat-label">❌ OCR Fehler</div><div class="stat-value c-red" id="s-failed">—</div></div>
+  </div>
+
+  <div class="toolbar">
+    <button class="filter-btn active" onclick="setFilter('all')">Alle</button>
+    <button class="filter-btn" onclick="setFilter('pending')">⏳ Ausstehend</button>
+    <button class="filter-btn" onclick="setFilter('completed')">✅ Abgeschlossen</button>
+    <button class="filter-btn" onclick="setFilter('not_required')">📄 Kein PDF</button>
+    <button class="filter-btn" onclick="setFilter('failed')">❌ Fehler</button>
+    <button class="ocr-btn" id="ocr-btn" onclick="triggerOcr()">🌙 OCR-Worker jetzt starten</button>
+  </div>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Dateiname</th>
+          <th>Vault-Pfad</th>
+          <th>Kategorie</th>
+          <th>OCR-Status</th>
+          <th>OCR-Quelle</th>
+          <th>Importiert am</th>
+          <th>OCR am</th>
+        </tr>
+      </thead>
+      <tbody id="tbl-body">
+        <tr><td colspan="8" class="empty">Lädt…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let currentFilter = 'all';
+
+function setFilter(f) {
+  currentFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  loadQueue();
+}
+
+async function loadStats() {
+  try {
+    const d = await (await fetch('/api/enex/stats')).json();
+    document.getElementById('s-total').textContent       = d.total ?? '—';
+    document.getElementById('s-pending').textContent     = d.pending ?? '—';
+    document.getElementById('s-completed').textContent   = d.completed ?? '—';
+    document.getElementById('s-not_required').textContent = d.not_required ?? '—';
+    document.getElementById('s-failed').textContent      = d.failed ?? '—';
+  } catch(e) { console.error('stats:', e); }
+}
+
+function statusBadge(s) {
+  const labels = {pending:'⏳ ausstehend', completed:'✅ fertig',
+                  failed:'❌ Fehler', not_required:'📄 kein PDF', null:'—'};
+  const cls = {pending:'b-pending', completed:'b-completed',
+               failed:'b-failed', not_required:'b-not_required'};
+  return `<span class="badge ${cls[s]||''}">${labels[s]||s||'—'}</span>`;
+}
+
+function sourceBadge(s) {
+  if (!s) return '—';
+  return `<span class="badge ${s==='pdfminer'?'b-pdfminer':'b-docling'}">${s}</span>`;
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  try { return new Date(iso).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'}); }
+  catch { return iso.slice(0,16).replace('T',' '); }
+}
+
+function shortPath(p) {
+  if (!p) return '—';
+  const parts = p.split('/');
+  return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : p;
+}
+
+async function loadQueue() {
+  try {
+    const url = '/api/enex/queue?filter=' + currentFilter + '&limit=200';
+    const rows = await (await fetch(url)).json();
+    const tbody = document.getElementById('tbl-body');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">Keine Einträge</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td class="ts">${r.id}</td>
+        <td title="${r.dateiname||''}">${(r.dateiname||'—').replace(/\.md$/,'')}</td>
+        <td class="path" title="${r.vault_pfad||''}">${shortPath(r.vault_pfad)}</td>
+        <td>${r.kategorie_id||'—'}</td>
+        <td>${statusBadge(r.ocr_status)}</td>
+        <td>${sourceBadge(r.ocr_source)}</td>
+        <td class="ts">${fmtDate(r.erstellt_am)}</td>
+        <td class="ts">${fmtDate(r.ocr_processed_at)}</td>
+      </tr>`).join('');
+  } catch(e) { console.error('queue:', e); }
+}
+
+function showToast(msg, ms=3000) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), ms);
+}
+
+async function triggerOcr() {
+  const btn = document.getElementById('ocr-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Wird gestartet…';
+  try {
+    const r = await fetch('/api/enex/ocr/trigger', {method:'POST'});
+    const d = await r.json();
+    showToast(d.message || '✅ OCR-Worker gestartet', 4000);
+  } catch(e) {
+    showToast('❌ Fehler: ' + e.message, 4000);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🌙 OCR-Worker jetzt starten';
+    setTimeout(loadAll, 2000);
+  }
+}
+
+async function loadAll() { await Promise.all([loadStats(), loadQueue()]); }
+
+// Auto-refresh alle 30 Sek.
+loadAll();
+setInterval(loadAll, 30000);
+</script>
+</body>
+</html>
+"""
+
 class _ApiHandler(BaseHTTPRequestHandler):
 
     def _json_response(self, data, status=200):
@@ -6708,6 +6940,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -6719,8 +6952,60 @@ class _ApiHandler(BaseHTTPRequestHandler):
             return
 
         # GET /pipeline — Pipeline-Step-Dashboard
+        # GET /api/enex/stats — Zusammenfassung ENEX-Importe
+        elif path == "/api/enex/stats":
+            try:
+                with get_db() as con:
+                    def _count(where):
+                        return con.execute(
+                            f"SELECT COUNT(*) FROM dokumente WHERE import_source='enex' AND {where}"
+                        ).fetchone()[0]
+                    total        = con.execute("SELECT COUNT(*) FROM dokumente WHERE import_source='enex'").fetchone()[0]
+                    pending      = _count("ocr_status='pending'")
+                    completed    = _count("ocr_status='completed'")
+                    failed       = _count("ocr_status='failed'")
+                    not_required = _count("ocr_status='not_required'")
+                self._json_response({
+                    "total": total, "pending": pending, "completed": completed,
+                    "failed": failed, "not_required": not_required,
+                })
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+        # GET /api/enex/queue — ENEX-Dokumente (filter: all|pending|completed|failed|not_required)
+        elif path == "/api/enex/queue":
+            try:
+                status_filter = params.get("filter", ["all"])[0]
+                try:
+                    limit = int(params.get("limit", ["200"])[0])
+                except ValueError:
+                    limit = 200
+                with get_db() as con:
+                    if status_filter == "all":
+                        rows = con.execute(
+                            "SELECT id, dateiname, vault_pfad, kategorie_id, typ_id, "
+                            "ocr_status, ocr_source, ocr_processed_at, erstellt_am, enex_tags "
+                            "FROM dokumente WHERE import_source='enex' ORDER BY id DESC LIMIT ?",
+                            (limit,)
+                        ).fetchall()
+                    else:
+                        rows = con.execute(
+                            "SELECT id, dateiname, vault_pfad, kategorie_id, typ_id, "
+                            "ocr_status, ocr_source, ocr_processed_at, erstellt_am, enex_tags "
+                            "FROM dokumente WHERE import_source='enex' AND ocr_status=? "
+                            "ORDER BY id DESC LIMIT ?",
+                            (status_filter, limit)
+                        ).fetchall()
+                self._json_response([dict(r) for r in rows])
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
         elif path == "/pipeline":
             self._html_response(_PIPELINE_HTML)
+            return
+
+        elif path == "/enex":
+            self._html_response(_ENEX_HTML)
             return
 
         # GET /review — Review Dashboard
@@ -8062,9 +8347,19 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 self._json_response({"ok": True, "msg": "Update gestartet."})
             return
 
+        # POST /api/enex/ocr/trigger — Manuellen OCR-Worker starten
+        elif path == "/api/enex/ocr/trigger":
+            def _run():
+                subprocess.run(
+                    ["python", "/app/enex_ocr_worker.py", "--force-window", "--limit", "10"],
+                    capture_output=True
+                )
+            threading.Thread(target=_run, daemon=True).start()
+            self._json_response({"message": "✅ OCR-Worker gestartet (bis zu 10 Dokumente, Zeitfenster ignoriert)"})
+            return
+
         else:
             self._json_response({"error": "Unbekannter Endpunkt"}, 404)
-
     def do_DELETE(self):
         path = urlparse(self.path).path
         if path.startswith("/api/lernregeln/"):
@@ -8187,47 +8482,6 @@ def detect_document_language(md_content: str) -> tuple[str, float]:
         return ("de", 0.0)
 
 
-def translate_to_german(md_content: str, source_lang: str) -> str | None:
-    """Übersetzt md_content nach Deutsch via Ollama. Behält Zahlen/Datümer/Eigennamen literal.
-    Gibt None bei Fehler — Aufrufer arbeitet dann mit Original weiter."""
-    text = sanitize_for_ollama(md_content)[:6000]
-    prompt = f"""Du bist ein Fachübersetzer. Übersetze den folgenden Text wörtlich nach Deutsch.
-
-REGELN:
-- Eigennamen, Firmennamen, Adressen, IBANs, E-Mails, URLs: NICHT übersetzen, exakt übernehmen.
-- Zahlen, Datümer, Beträge, Währungen: exakt übernehmen (keine Umrechnung, keine Formatänderung).
-- Tabellen-Struktur und Zeilenumbrüche beibehalten.
-- KEINE Erklärung, KEINE Kommentare, KEIN "Hier ist die Übersetzung". Nur der übersetzte Text.
-
-Quellsprache: {source_lang}
-Zieltext (Deutsch):
-
----
-{text}
----"""
-    log.info(f"Translate-Modell: {OLLAMA_TRANSLATE_MODEL}")
-    try:
-        r = requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": OLLAMA_TRANSLATE_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.1, "num_ctx": 8192},
-            },
-            timeout=300,
-        )
-        if r.status_code != 200:
-            log.error(f"Translate Ollama Fehler {r.status_code}: {r.text[:200]}")
-            return None
-        translated = r.json().get("response", "").strip()
-        if not translated or len(translated) < 50:
-            log.warning(f"Translate-Output zu kurz ({len(translated)} chars) — verwerfe")
-            return None
-        return translated
-    except Exception as e:
-        log.error(f"Translate-Fehler: {e}")
-        return None
 
 
 def extract_document_header(md_content: str) -> dict:
@@ -8490,8 +8744,10 @@ def resolve_absender(identifiers: dict, header: dict | None) -> dict | None:
         return None
 
     def _mk_result(entry: dict, via: str) -> dict:
+        aliases = entry.get("aliases") or []
         return {
             "id": entry.get("id"),
+            "name": aliases[0] if aliases else entry.get("id"),
             "kategorie_hint": entry.get("kategorie_hint"),
             "typ_hint": entry.get("typ_hint"),
             "adressat_default": entry.get("adressat_default"),
@@ -8814,6 +9070,9 @@ NEGATIV-REGELN (häufige Fehlerquellen — strikt beachten):
 
     prompt = f"""Analysiere das folgende Dokument und klassifiziere es anhand der vorgegebenen Kategorien.
 
+Das Dokument kann auf Deutsch oder Italienisch verfasst sein. Analysiere den Inhalt sprachunabhängig.
+Häufige italienische Dokumenttypen: "Fattura"=Rechnung, "Rogito"=Notarvertrag, "Visura Catastale"=Katasterauszug, "Acquedotto"/"Fognaria"=Wasserversorgung/Kanalisation, "Comune"=Gemeindeverwaltung, "INPS"/"INAIL"=Sozialversicherung.
+
 Verfügbare Kategorien und Typen:
 {cat_desc}
 {kv_rules}
@@ -9002,8 +9261,15 @@ def build_clean_filename(result: dict, original_stem: str) -> str:
         parts.append(tier_clean)
 
     if len(parts) == 1:
-        # Kein Absender → Original-Stem verwenden
-        return _sanitize_name_part(original_stem)
+        # Kein Absender → date_str beibehalten, Datum-Prefix aus Stem entfernen
+        stem_body = re.sub(r'^\d{8}[_\s\-]+', '', original_stem).strip()
+        stem_body = re.sub(r'[_\s]*\d{3}$', '', stem_body)  # Scanner-Suffix _001
+        clean_stem = _sanitize_name_part(stem_body) if stem_body else ""
+        if len(clean_stem) > 50:
+            clean_stem = clean_stem[:50].rsplit("_", 1)[0]
+        if clean_stem:
+            return f"{date_str}_{clean_stem}"
+        return date_str
 
     return "_".join(parts)
 
@@ -9453,17 +9719,7 @@ def rescan_archived_pdf(pdf_path: Path, language_filter: str | None = None):
             _rescan_advance()
             return
 
-    if lang != "de" and prob >= 0.85:
-        t1 = datetime.now()
-        translated = translate_to_german(md_content, lang)
-        dur_tr = (datetime.now() - t1).total_seconds() * 1000
-        if translated:
-            md_content = translated
-            _step_emit(pdf_path.name, "translate", "Übersetzung", "done",
-                       extracted={"chars": len(md_content), "ocr_chars": ocr_len_orig,
-                                  "input_limit": 6000}, duration_ms=dur_tr)
-    else:
-        _step_emit(pdf_path.name, "translate", "Übersetzung", "skip")
+    _step_emit(pdf_path.name, "translate", "Übersetzung", "skip")
 
     # Deterministische Extraktion
     header    = extract_document_header(md_content)
@@ -9516,6 +9772,10 @@ def rescan_archived_pdf(pdf_path: Path, language_filter: str | None = None):
         if absender_match.get("adressat_default") and not adressat_match:
             result["adressat"] = absender_match["adressat_default"]
             result["konfidenz_adressat"] = "hoch"
+        if absender_match.get("name") and not result.get("absender"):
+            result["absender"] = absender_match["name"]
+            result["konfidenz_absender"] = "hoch"
+            log.info(f"Absender aus Absender-DB gesetzt: {result['absender']} (id={absender_match['id']})")
 
     result = apply_keyword_rules(result, md_content, categories)
     result = apply_lernregeln_from_db(result, md_content, result.get("absender"), categories)
@@ -9621,136 +9881,32 @@ def rescan_archived_pdf(pdf_path: Path, language_filter: str | None = None):
 
 
 def process_enex_file(enex_path: Path):
-    """Verarbeitet eine Evernote-ENEX-Datei.
-
-    Track A: PDF-Anhänge → TEMP_DIR/enex_extracted/ → file_queue (normaler Dispatcher-Flow)
-    Track B: Native Text-Notes (kein PDF) → direkt als MD in 00 Inbox/
-    Track C: Bilder (JPG/PNG/TIFF) → img2pdf → file_queue
-             Andere Formate → enex_skipped.log
-    """
+    """Verarbeitet eine Evernote-ENEX-Datei via enex_processor (Phase 1)."""
     try:
-        from lxml import etree
-    except ImportError:
-        log.error("lxml nicht installiert — ENEX-Verarbeitung nicht möglich")
+        from enex_processor import process_enex_file as _process
+    except ImportError as e:
+        log.error(f"enex_processor nicht verfügbar: {e}")
         return
 
-    import base64
-
-    log.info(f"ENEX: {enex_path.name}")
-    skipped_log = TEMP_DIR / "enex_skipped.log"
-    extract_dir = TEMP_DIR / "enex_extracted"
-    extract_dir.mkdir(parents=True, exist_ok=True)
-    done_dir    = TEMP_DIR / "enex_done"
+    done_dir = TEMP_DIR / "enex_done"
     done_dir.mkdir(parents=True, exist_ok=True)
 
-    notebook_name = enex_path.stem
-
     try:
-        tree = etree.parse(str(enex_path))
+        stats = _process(enex_path)
+        log.info(
+            f"ENEX abgeschlossen: {enex_path.name} — "
+            f"{stats.get('imported', 0)} importiert | "
+            f"{stats.get('duplicate', 0)} Duplikate | "
+            f"{stats.get('error', 0)} Fehler | "
+            f"{stats.get('pdf_pending', 0)} PDFs → OCR"
+        )
     except Exception as e:
-        log.error(f"ENEX Parse-Fehler: {enex_path.name}: {e}")
-        return
+        log.error(f"ENEX-Verarbeitung fehlgeschlagen: {enex_path.name}: {e}", exc_info=True)
 
-    notes = tree.findall(".//note")
-    log.info(f"ENEX {enex_path.name}: {len(notes)} Notizen")
-
-    for note in notes:
-        title   = (note.findtext("title") or "untitled")[:80]
-        created = note.findtext("created") or ""   # YYYYMMDDTHHMMSSZ
-        date_prefix = created[:8] if len(created) >= 8 else ""
-        tags = [t.text for t in note.findall("tag") if t.text]
-
-        resources = note.findall(".//resource")
-        has_pdf = False
-
-        for res in resources:
-            mime = res.findtext("mime") or ""
-            data_el = res.find("data")
-            if data_el is None or not data_el.text:
-                continue
-            raw = base64.b64decode(data_el.text.strip())
-
-            fn_el = res.find(".//resource-attributes/file-name")
-            orig_name = fn_el.text if fn_el is not None and fn_el.text else "anhang"
-            safe_title = re.sub(r"[^\w\-]", "_", title)[:60]
-            stem = f"{date_prefix}_{safe_title}" if date_prefix else safe_title
-
-            if mime == "application/pdf":
-                has_pdf = True
-                dest = extract_dir / f"{stem}.pdf"
-                # Kollisionsvermeidung
-                c = 2
-                while dest.exists():
-                    dest = extract_dir / f"{stem}_{c}.pdf"
-                    c += 1
-                dest.write_bytes(raw)
-                log.info(f"ENEX Track A: {dest.name}")
-                file_queue.put(dest)  # Außerhalb Watcher-Scope → kein Double-Fire
-
-            elif mime.startswith("image/"):
-                try:
-                    import img2pdf
-                    img_tmp = TEMP_DIR / f"{stem}_img.{mime.split('/')[-1]}"
-                    img_tmp.write_bytes(raw)
-                    pdf_dest = extract_dir / f"{stem}.pdf"
-                    c = 2
-                    while pdf_dest.exists():
-                        pdf_dest = extract_dir / f"{stem}_{c}.pdf"
-                        c += 1
-                    pdf_dest.write_bytes(img2pdf.convert(str(img_tmp)))
-                    img_tmp.unlink(missing_ok=True)
-                    log.info(f"ENEX Track C (img): {pdf_dest.name}")
-                    file_queue.put(pdf_dest)
-                    has_pdf = True
-                except Exception as e:
-                    log.warning(f"ENEX img2pdf fehlgeschlagen: {orig_name}: {e}")
-                    with open(skipped_log, "a") as f:
-                        f.write(f"{enex_path.name}\t{title}\t{orig_name}\t{mime}\timg2pdf_error: {e}\n")
-            else:
-                # Track C — Andere Formate überspringen
-                log.info(f"ENEX übersprungen ({mime}): {orig_name}")
-                with open(skipped_log, "a") as f:
-                    f.write(f"{enex_path.name}\t{title}\t{orig_name}\t{mime}\tunsupported\n")
-
-        # Track B — Native Text-Note (kein PDF-Anhang)
-        if not has_pdf and VAULT_ROOT:
-            enml = note.findtext("content") or ""
-            try:
-                enml_tree = etree.fromstring(enml.encode("utf-8"))
-                text = " ".join(enml_tree.itertext()).strip()
-            except Exception:
-                text = re.sub(r"<[^>]+>", " ", enml).strip()
-
-            safe_title = re.sub(r"[^\w\-äöüÄÖÜß ]", "_", title)[:80]
-            md_filename = f"{date_prefix}_{safe_title}.md" if date_prefix else f"{safe_title}.md"
-            inbox_dir = VAULT_ROOT / "00 Inbox"
-            inbox_dir.mkdir(parents=True, exist_ok=True)
-            dest_md = inbox_dir / md_filename
-            c = 2
-            while dest_md.exists():
-                dest_md = inbox_dir / f"{md_filename[:-3]}_{c}.md"
-                c += 1
-
-            tag_list = "\n".join(f"  - {t}" for t in ["evernote"] + tags)
-            frontmatter = (
-                f"---\n"
-                f"source: evernote\n"
-                f"notebook: \"{notebook_name}\"\n"
-                f"tags:\n{tag_list}\n"
-                f"erstellt_am: \"{created[:8] or 'unbekannt'}\"\n"
-                f"---\n\n"
-                f"# {title}\n\n{text}\n"
-            )
-            dest_md.write_text(frontmatter, encoding="utf-8")
-            log.info(f"ENEX Track B: {dest_md.name}")
-
-    # ENEX nach Verarbeitung in done/ verschieben
     try:
         shutil.move(str(enex_path), str(done_dir / enex_path.name))
     except Exception as e:
         log.warning(f"ENEX verschieben nach done/ fehlgeschlagen: {e}")
-
-    log.info(f"ENEX abgeschlossen: {enex_path.name}")
 
 
 def process_file(file_path: Path):
@@ -10010,36 +10166,14 @@ def process_file(file_path: Path):
     except Exception as e:
         log.warning(f"Dokumenttyp-Artefakt konnte nicht geschrieben werden: {e}")
 
-    # 3. Sprach-Erkennung + ggf. Übersetzungs-Pass (Klassifikation arbeitet auf Deutsch)
+    # 3. Sprach-Erkennung (qwen2.5:7b klassifiziert DE + IT direkt — kein Übersetzungs-Pass)
     classify_input = md_content
     _t0 = time.monotonic()
     lang, lang_prob = detect_document_language(md_content)
     _step_emit(_fn, "lang", "Spracherkennung", "done",
                extracted={"lang": lang, "prob": round(lang_prob, 3)},
                duration_ms=(time.monotonic() - _t0) * 1000)
-    if lang != "de" and lang_prob >= 0.85:
-        log.info(f"Nicht-deutsches Dokument erkannt: {lang} (p={lang_prob:.2f}) — übersetze nach DE")
-        _step_emit(_fn, "translate", f"Übersetzung {lang}→DE", "running")
-        _t0 = time.monotonic()
-        translated = translate_to_german(md_content, lang)
-        if translated:
-            classify_input = translated
-            _step_emit(_fn, "translate", f"Übersetzung {lang}→DE", "done",
-                       extracted={"chars": len(translated), "ocr_chars": ocr_chars,
-                                  "input_limit": 6000, "preview": translated[:400]},
-                       duration_ms=(time.monotonic() - _t0) * 1000)
-            trans_path = temp_md.with_suffix(f".translation.{OLLAMA_TRANSLATE_MODEL.replace(':', '_').replace('/', '_')}.md")
-            trans_path.write_text(
-                f"<!-- Übersetzung {lang}→de via {OLLAMA_TRANSLATE_MODEL} -->\n\n{translated}",
-                encoding="utf-8",
-            )
-            log.info(f"Übersetzung ok ({len(translated)} chars) → {trans_path.name}")
-        else:
-            _step_emit(_fn, "translate", f"Übersetzung {lang}→DE", "error",
-                       error="Übersetzung fehlgeschlagen — klassifiziere auf Originaltext")
-            log.warning("Übersetzung fehlgeschlagen — klassifiziere auf Originaltext")
-    else:
-        _step_emit(_fn, "translate", "Übersetzung", "skip")
+    _step_emit(_fn, "translate", "Übersetzung", "skip")
 
     # 4. Klassifizierung via Ollama
     categories = load_categories()
@@ -10098,6 +10232,11 @@ def process_file(file_path: Path):
             )
         # adressat_default ist eine Regel, kein Ratespiel → Konfidenz auf hoch setzen.
         result["konfidenz_adressat"] = "hoch"
+    # Absender-Fallback: wenn LLM keinen Absender extrahiert hat, ersten Alias nutzen
+    if result and absender_match and absender_match.get("name") and not result.get("absender"):
+        result["absender"] = absender_match["name"]
+        result["konfidenz_absender"] = "hoch"
+        log.info(f"Absender aus Absender-DB gesetzt: {result['absender']} (id={absender_match['id']})")
 
     # Datum-Konfidenz hochsetzen bei bekanntem Absender + Leistungsabrechnung:
     # LAs enthalten viele Behandlungsdaten → LLM zögert, wählt aber immer das Abrechnungsdatum.
@@ -10406,6 +10545,7 @@ class DocumentHandler(FileSystemEventHandler):
         suffix = path.suffix.lower()
         if suffix == ".pdf":
             log.info(f"In Queue (PDF): {path.name}")
+            _step_emit(path.name, "started", "Verarbeitung gestartet", "done")
             file_queue.put(path)
         elif suffix == ".enex":
             log.info(f"In Queue (ENEX): {path.name}")

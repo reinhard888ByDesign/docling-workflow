@@ -1,0 +1,161 @@
+# enex-tags.yaml — Konfiguration für den ENEX-Import (Weg 3)
+# Ablageort auf dem Ryzen: dispatcher-config/enex-tags.yaml
+#
+# Drei Abschnitte:
+#   prefix_map  — Routing via Dateiname-Präfix (nn_*.enex), kein LLM nötig
+#   tag_rules   — Routing via Evernote-Tags (Fallback wenn kein Präfix)
+#   tag_filter  — Tags die NIE ins Frontmatter übernommen werden
+
+# ---------------------------------------------------------------------------
+# PRÄFIX-TABELLE
+# Dateiname-Schema: {NN}_{Freitext}[__{typ-id}].enex
+# Beispiel: 49_KV_Marion_2023__arztrechnung.enex → 49 Krankenversicherung
+# ---------------------------------------------------------------------------
+prefix_map:
+  "00": { vault_folder: "00 Inbox",                  kategorie: null }
+  "10": { vault_folder: "10 Persönlich",              kategorie: persoenlich }
+  "20": { vault_folder: "20 Familie",                 kategorie: familie }
+  "30": { vault_folder: "30 FengShui",                kategorie: fengshui }
+  "40": { vault_folder: "40 Finanzen",                kategorie: finanzen }
+  "49": { vault_folder: "49 Krankenversicherung",     kategorie: krankenversicherung }
+  "50": { vault_folder: "50 Immobilien eigen",        kategorie: immobilien_eigen }
+  "51": { vault_folder: "51 Immobilien vermietet",    kategorie: immobilien_vermietet }
+  "55": { vault_folder: "55 Garten",                  kategorie: garten }
+  "60": { vault_folder: "60 Fahrzeuge",               kategorie: fahrzeuge }
+  "70": { vault_folder: "70 Italien",                 kategorie: italien }
+  "80": { vault_folder: "80 Business",                kategorie: business }
+  "82": { vault_folder: "82 Digitales",               kategorie: digitales }
+  "85": { vault_folder: "85 Wissen",                  kategorie: wissen }
+  "90": { vault_folder: "90 Reisen",                  kategorie: reisen }
+  "95": { vault_folder: "95 Bedienungsanleitungen",   kategorie: bedienungsanleitungen }
+  "99": { vault_folder: "99 Archiv",                  kategorie: archiv }
+
+# ---------------------------------------------------------------------------
+# TAG-REGELN (Fallback wenn kein Präfix im Dateinamen)
+# match_mode: exact   → Tag muss exakt übereinstimmen
+# match_mode: contains → Tag darf im Note-Tag enthalten sein
+# Reihenfolge: erster Match gewinnt
+# ---------------------------------------------------------------------------
+tag_rules:
+
+  # --- Krankenversicherung / Arztrechnung ---
+  - evernote_tags: ["Arztrechnung", "Arzt", "GOÄ", "Liquidation", "Facharzt", "Praxis"]
+    match_mode: contains
+    kategorie: krankenversicherung
+    typ: arztrechnung
+    tag_output: ["Krankenversicherung/Arztrechnung"]
+
+  # --- Krankenversicherung / HUK-Erstattung ---
+  - evernote_tags: ["Leistungsabrechnung", "HUK", "Erstattung", "PKV"]
+    match_mode: contains
+    kategorie: krankenversicherung
+    typ: leistungsabrechnung
+    tag_output: ["Krankenversicherung", "HUK"]
+
+  # --- Krankenversicherung / Veterinär ---
+  - evernote_tags: ["Tierarzt", "Veterinär", "Clinica", "Amiatina"]
+    match_mode: contains
+    kategorie: krankenversicherung
+    typ: tierarztrechnung
+    tag_output: ["Krankenversicherung/Tierarzt"]
+
+  # --- Finanzen / Steuern ---
+  - evernote_tags: ["Steuerbescheid", "Finanzamt", "Agenzia", "IRPEF", "Steuer"]
+    match_mode: contains
+    kategorie: finanzen
+    typ: steuerbescheid
+    tag_output: ["Finanzen/Steuern"]
+
+  # --- Finanzen / Kontoauszug ---
+  - evernote_tags: ["Kontoauszug", "Depot", "Dividende", "Kapitalertrag"]
+    match_mode: contains
+    kategorie: finanzen
+    typ: kontoauszug
+    tag_output: ["Finanzen"]
+
+  # --- Immobilien / Seggiano Handwerker ---
+  - evernote_tags: ["Handwerker", "Acquedotto", "Fognaria", "Ferroli", "Buderus", "Idraulico"]
+    match_mode: contains
+    kategorie: immobilien_eigen
+    typ: handwerker_rechnung
+    tag_output: ["Immobilien/Seggiano", "Handwerker"]
+
+  # --- Immobilien / Seggiano allgemein ---
+  - evernote_tags: ["Seggiano", "Rogito", "Comune", "Kataster", "Visura"]
+    match_mode: contains
+    kategorie: immobilien_eigen
+    typ: sonstiges
+    tag_output: ["Immobilien/Seggiano"]
+
+  # --- Immobilien / Deutschland ---
+  - evernote_tags: ["Immobilien", "Wohnung", "Haus", "Miete", "Nebenkosten", "Hausverwaltung"]
+    match_mode: contains
+    kategorie: immobilien_eigen
+    typ: sonstiges
+    tag_output: ["Immobilien"]
+
+  # --- Fahrzeuge ---
+  - evernote_tags: ["KFZ", "Werkstatt", "TÜV", "Fahrzeug", "Auto", "Reparatur", "Inspektion"]
+    match_mode: contains
+    kategorie: fahrzeuge
+    typ: sonstiges
+    tag_output: ["Fahrzeuge"]
+
+  # --- Reisen ---
+  - evernote_tags: ["Hotel", "Flug", "Booking", "Agriturismo", "Urlaub", "Reise", "AirBnB"]
+    match_mode: contains
+    kategorie: reisen
+    typ: sonstiges
+    tag_output: ["Reisen"]
+
+  # --- Business ---
+  - evernote_tags: ["Business", "Beratung", "Buchhaltung", "Rechnung", "Invoice", "Honorar"]
+    match_mode: contains
+    kategorie: business
+    typ: sonstiges
+    tag_output: ["Business"]
+
+  # --- Italien (allgemein, ohne Seggiano-Spezifika) ---
+  - evernote_tags: ["Italien", "Italy", "INPS", "INAIL", "Codice Fiscale"]
+    match_mode: contains
+    kategorie: italien
+    typ: sonstiges
+    tag_output: ["Italien"]
+
+  # --- FengShui ---
+  - evernote_tags: ["FengShui", "Feng Shui", "Kua", "BaZi", "Qi"]
+    match_mode: contains
+    kategorie: fengshui
+    typ: sonstiges
+    tag_output: ["FengShui"]
+
+  # --- Familie ---
+  - evernote_tags: ["Familie", "Linoa", "Schule", "Kindergarten", "Kind"]
+    match_mode: contains
+    kategorie: familie
+    typ: sonstiges
+    tag_output: ["Familie"]
+
+# ---------------------------------------------------------------------------
+# TAG-FILTER
+# Tags die übereinstimmen werden NIE ins Frontmatter übernommen.
+# Syntax: Python-Regex, ^...$ für exakte Matches
+# ---------------------------------------------------------------------------
+tag_filter:
+  remove_patterns:
+    - "^\\d{4}$"              # Vierstellige Jahreszahlen: 2019, 2020, 2023
+    - "^\\d{4}-\\d{2}$"       # Monat-Jahr: 2023-05, 2022-12
+    - "^\\d{4}-\\d{2}-\\d{2}$" # Vollständige Daten: 2023-05-15
+    - "^#[0-9a-fA-F]{6,8}$"  # Hex-Farbcodes: #ffffffff, #000000
+    - "^[a-zA-Z]$"            # Einzelne Buchstaben (Evernote-Relikte)
+    - "^\\s*$"                 # Leere Tags
+
+# ---------------------------------------------------------------------------
+# FALLBACK
+# Wird verwendet wenn kein Präfix und keine tag_rule greift.
+# ---------------------------------------------------------------------------
+fallback:
+  kategorie: null
+  typ: enex_import
+  vault_folder: "00 Inbox"
+  tag_output: []

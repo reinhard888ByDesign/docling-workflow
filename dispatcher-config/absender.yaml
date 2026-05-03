@@ -64,6 +64,19 @@ absender:
     kategorie_hint: italien
     typ_hint: fahrzeug
 
+  # ── Italien: Behörden & Konsortien ──────────────────────────────────────
+  - id: consorzio_bonifica_toscana
+    aliases:
+      - "Consorzio Bonifica 6 Toscana"
+      - "Consorzio Bonifica 6 Toscana Sud"
+      - "CONSORZIO BONIFICA 6 TOSCANA"
+      - "Bonifica 6 Toscana"
+    part_iva:
+      - "01547070530"
+    land: IT
+    kategorie_hint: finanzen
+    adressat_default: Reinhard
+
   # ── Italien: Versorger ───────────────────────────────────────────────────
   - id: butangas
     aliases:

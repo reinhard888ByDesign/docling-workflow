@@ -16,12 +16,15 @@ persons:
     cod_fiscale:
       - "JNNRHRG2TO8Z112E"   # OCR aus doc2 LP_PRATICHE_AUTO (geboren 08.12.1962); OCR liest O statt 0
       - "JNNRHRG2T08Z112E"   # OCR-Variante (0 statt O)
+      - "JNNRHR62T08Z112E"   # OCR-Variante (G → 6, Docling aus Consorzio-Bonifica-Docs)
     steuer_id_de: []         # vom User zu ergänzen
 
   marion:
     name: "Marion Micaela Janning"
     cod_fiscale:
       - "JNNMNMG1T5121121"   # OCR aus doc1 CLINICA VETERINARIA
+      - "JNNMNM61T51Z112I"   # OCR-Variante (G → 6, I statt L, Docling aus Consorzio-Bonifica-Docs)
+      - "JNNMNM61T51Z112L"   # OCR-Variante (G → 6, L statt I)
     steuer_id_de: []
 
   linoa:
