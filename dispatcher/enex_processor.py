@@ -534,7 +534,47 @@ def process_note(
     # 4. Dateiname generieren
     stem = make_filename(note, routing, TIMEZONE)
 
-    # 5. PDF-Duplikat-Check und PDF-Ablage
+    # 5. MD bereits vorhanden? → merge statt _1 anlegen (vor PDF-Schreiben prüfen!)
+    md_filename = f"{stem}.md"
+    md_dest = vault_dir / md_filename
+
+    if md_dest.exists():
+        logger.info("MD bereits vorhanden: %s — merge statt Duplikat anlegen", md_filename)
+        relative_path = str(md_dest.relative_to(VAULT_PATH))
+        existing_db = conn.execute(
+            "SELECT id FROM dokumente WHERE vault_pfad = ? OR dateiname = ?",
+            (relative_path, md_filename),
+        ).fetchone()
+        merge_enex_into_frontmatter(md_dest, note, routing, TIMEZONE)
+        if existing_db:
+            merge_enex_into_db(conn, existing_db["id"], note, routing)
+        else:
+            # Datei existiert, aber kein DB-Eintrag (z.B. nach gescheitertem ersten Import)
+            _pdf_md5 = note.pdf_resources[0].md5 if note.pdf_resources else None
+            _local_dt = note.created.astimezone(TIMEZONE)
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO dokumente
+                    (dateiname, vault_pfad, kategorie, typ, adressat,
+                     rechnungsdatum, pdf_hash, erstellt_am,
+                     import_source, enex_tags, note_hash, ocr_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    md_filename, relative_path,
+                    routing.kategorie, routing.typ, routing.adressat_hint,
+                    _local_dt.strftime("%Y-%m-%d"), _pdf_md5,
+                    datetime.now(timezone.utc).isoformat(),
+                    "enex", json.dumps(note.tags, ensure_ascii=False),
+                    note.note_hash,
+                    "pending" if _pdf_md5 else "not_required",
+                ),
+            )
+            conn.commit()
+            logger.info("DB-Eintrag nachträglich angelegt: %s", md_filename)
+        return "merged", relative_path
+
+    # 6. PDF-Duplikat-Check und PDF-Ablage
     pdf_filename: Optional[str] = None
     pdf_md5: Optional[str] = None
 
@@ -557,33 +597,12 @@ def process_note(
 
         pdf_filename = f"{stem}.pdf"
         pdf_dest = ANLAGEN_FOLDER / pdf_filename
-        # Eindeutigen Namen sicherstellen
-        counter = 1
-        while pdf_dest.exists():
-            pdf_filename = f"{stem}_{counter}.pdf"
-            pdf_dest = ANLAGEN_FOLDER / pdf_filename
-            counter += 1
-
-        pdf_dest.write_bytes(pdf_res.data)
-        logger.debug("PDF gespeichert: %s", pdf_dest)
-
-    # 6. Markdown-Dateiname — existiert die Datei bereits → merge statt _1 anlegen
-    md_filename = f"{stem}.md"
-    md_dest = vault_dir / md_filename
-
-    if md_dest.exists():
-        logger.info("MD bereits vorhanden: %s — merge statt Duplikat anlegen", md_filename)
-        relative_path = str(md_dest.relative_to(VAULT_PATH))
-        existing_db = conn.execute(
-            "SELECT id FROM dokumente WHERE vault_pfad = ? OR dateiname = ?",
-            (relative_path, md_filename),
-        ).fetchone()
-        merge_enex_into_frontmatter(md_dest, note, routing, TIMEZONE)
-        if existing_db:
-            merge_enex_into_db(conn, existing_db["id"], note, routing)
+        if pdf_dest.exists():
+            # PDF schon auf Disk (z.B. aus gescheitertem Import) — wiederverwenden
+            logger.debug("PDF bereits vorhanden, wiederverwendet: %s", pdf_filename)
         else:
-            logger.warning("Kein DB-Eintrag für %s — nur Frontmatter gemerged", md_filename)
-        return "merged", relative_path
+            pdf_dest.write_bytes(pdf_res.data)
+            logger.debug("PDF gespeichert: %s", pdf_dest)
 
     # 7. ENML → Markdown
     image_fnames = [r.filename for r in note.image_resources] if IMPORT_IMAGES else []
