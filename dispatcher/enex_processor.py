@@ -84,6 +84,7 @@ CURRENT_YEAR = datetime.now().year
 REQUIRED_COLUMNS = {
     "import_source":    "TEXT DEFAULT NULL",
     "enex_tags":        "TEXT DEFAULT NULL",
+    "note_hash":        "TEXT DEFAULT NULL",
     "ocr_status":       "TEXT DEFAULT NULL",
     "ocr_processed_at": "TEXT DEFAULT NULL",
     "ocr_source":       "TEXT DEFAULT NULL",
@@ -139,10 +140,10 @@ def merge_enex_into_db(
 ) -> None:
     """
     Aktualisiert einen bestehenden DB-Eintrag mit ENEX-Metadaten.
-    Überschreibt nur Felder die bisher NULL sind (adressat, kategorie_id, typ_id).
+    Überschreibt nur Felder die bisher NULL sind (adressat, kategorie, typ).
     """
     existing = conn.execute(
-        "SELECT adressat, kategorie_id, typ_id, import_source FROM dokumente WHERE id = ?",
+        "SELECT adressat, kategorie, typ, import_source FROM dokumente WHERE id = ?",
         (existing_id,),
     ).fetchone()
     if not existing:
@@ -157,10 +158,10 @@ def merge_enex_into_db(
     # Felder nur setzen wenn bisher leer
     if not existing["adressat"] and routing.adressat_hint:
         updates["adressat"] = routing.adressat_hint
-    if not existing["kategorie_id"] and routing.kategorie:
-        updates["kategorie_id"] = routing.kategorie
-    if not existing["typ_id"] and routing.typ:
-        updates["typ_id"] = routing.typ
+    if not existing["kategorie"] and routing.kategorie:
+        updates["kategorie"] = routing.kategorie
+    if not existing["typ"] and routing.typ:
+        updates["typ"] = routing.typ
 
     set_clause = ", ".join(f"{k} = ?" for k in updates)
     conn.execute(
@@ -609,7 +610,7 @@ def process_note(
     conn.execute(
         """
         INSERT INTO dokumente
-            (dateiname, vault_pfad, kategorie_id, typ_id, adressat,
+            (dateiname, vault_pfad, kategorie, typ, adressat,
              rechnungsdatum, pdf_hash, erstellt_am,
              import_source, enex_tags, note_hash, ocr_status)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

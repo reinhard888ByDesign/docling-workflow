@@ -6715,45 +6715,64 @@ _ENEX_HTML = r"""<!DOCTYPE html>
   nav .sep{flex:1}
   nav .refresh-btn{background:none;border:1px solid var(--border);color:var(--muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;transition:color .15s,border-color .15s}
   nav .refresh-btn:hover{color:var(--text);border-color:var(--accent)}
-  .page{padding:20px 24px;max-width:1400px;margin:0 auto}
-  h1{font-size:20px;font-weight:700;margin-bottom:4px;color:var(--text)}
+  .page{padding:20px 24px;max-width:1600px;margin:0 auto}
+  h1{font-size:20px;font-weight:700;margin-bottom:4px}
   .subtitle{color:var(--muted);font-size:13px;margin-bottom:20px}
   /* Stat cards */
-  .stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:24px}
-  .stat{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;box-shadow:0 1px 3px rgba(0,0,0,.04)}
-  .stat-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
-  .stat-value{font-size:28px;font-weight:700;line-height:1}
-  .stat-sub{font-size:11px;color:var(--muted);margin-top:4px}
+  .stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:24px}
+  .stat{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+  .stat-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+  .stat-value{font-size:26px;font-weight:700;line-height:1}
+  .stat-sub{font-size:10px;color:var(--muted);margin-top:3px}
   .c-green{color:var(--green)} .c-yellow{color:var(--yellow)} .c-red{color:var(--red)} .c-blue{color:var(--blue)} .c-purple{color:var(--purple)}
-  /* Filter bar */
-  .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
-  .filter-btn{background:var(--bg);border:1px solid var(--border);color:var(--muted);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;transition:all .15s}
+  /* Toolbar */
+  .toolbar{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+  .filter-btn{background:var(--bg);border:1px solid var(--border);color:var(--muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;transition:all .15s}
   .filter-btn:hover{color:var(--text);border-color:var(--accent)}
   .filter-btn.active{background:rgba(99,102,241,.08);border-color:var(--accent);color:var(--accent);font-weight:600}
-  .ocr-btn{margin-left:auto;background:var(--accent);border:1px solid var(--accent);color:#fff;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;transition:all .15s}
+  .ocr-btn{margin-left:auto;background:var(--accent);border:none;color:#fff;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;transition:background .15s}
   .ocr-btn:hover{background:#4f46e5}
   .ocr-btn:disabled{opacity:.5;cursor:not-allowed}
   /* Table */
   .tbl-wrap{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.04)}
-  table{width:100%;border-collapse:collapse}
-  th{padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border);background:var(--card)}
-  td{padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  table{width:100%;border-collapse:collapse;table-layout:fixed}
+  col.c-id     {width:46px}
+  col.c-doc    {width:22%}
+  col.c-vault  {width:18%}
+  col.c-meta   {width:16%}
+  col.c-addr   {width:70px}
+  col.c-tags   {width:auto}
+  col.c-ocr    {width:120px}
+  col.c-dates  {width:150px}
+  th{padding:9px 12px;text-align:left;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);background:var(--card);white-space:nowrap}
+  td{padding:0;border-bottom:1px solid var(--border);vertical-align:top}
   tr:last-child td{border-bottom:none}
-  tr:hover td{background:var(--card)}
+  tr:hover td{background:#fafbff}
+  /* Two-row cell layout */
+  .cell{padding:8px 12px}
+  .row1{font-size:13px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row2{font-size:11px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row2.mono{font-family:monospace;font-size:10px}
+  /* Tag pills */
+  .tag-list{display:flex;flex-wrap:wrap;gap:3px;padding:8px 12px}
+  .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:500;background:#f1f5f9;color:#475569;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis}
+  .tag.enex{background:#e0e7ff;color:#4338ca}
   /* Badges */
   .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
-  .b-pending{background:#fef9c3;color:#854d0e}
-  .b-completed{background:#dcfce7;color:#15803d}
-  .b-failed{background:#fee2e2;color:#b91c1c}
+  .b-pending    {background:#fef9c3;color:#854d0e}
+  .b-completed  {background:#dcfce7;color:#15803d}
+  .b-failed     {background:#fee2e2;color:#b91c1c}
   .b-not_required{background:#f1f5f9;color:var(--muted)}
-  .b-merged{background:#ecfdf5;color:#065f46}
-  .b-pdfminer{background:#dbeafe;color:#1d4ed8}
-  .b-docling{background:#f3e8ff;color:#7e22ce}
-  .empty{text-align:center;padding:40px;color:var(--muted)}
+  .b-merged     {background:#d1fae5;color:#065f46}
+  .b-pdfminer   {background:#dbeafe;color:#1d4ed8}
+  .b-docling    {background:#f3e8ff;color:#7e22ce}
+  /* adressat pill */
+  .pill-r{background:#fce7f3;color:#9d174d;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600}
+  .pill-m{background:#ede9fe;color:#5b21b6;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600}
+  .pill-l{background:#fef3c7;color:#92400e;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600}
+  .empty{text-align:center;padding:40px;color:var(--muted);font-size:13px}
   .toast{position:fixed;bottom:24px;right:24px;background:#1e293b;color:#f8fafc;border:1px solid #334155;padding:12px 20px;border-radius:var(--radius);font-size:13px;opacity:0;transform:translateY(8px);transition:all .3s;pointer-events:none;z-index:999}
   .toast.show{opacity:1;transform:none}
-  .ts{color:var(--muted);font-size:12px}
-  .path{color:var(--muted);font-size:12px;font-family:monospace}
 </style>
 </head>
 <body>
@@ -6773,36 +6792,42 @@ _ENEX_HTML = r"""<!DOCTYPE html>
   <h1>🐘 ENEX Import</h1>
   <p class="subtitle">Evernote-Exporte · Phase 1 Sofortimport · Phase 2 OCR-Nachtlauf</p>
 
-  <div class="stats" id="stats">
-    <div class="stat"><div class="stat-label">Gesamt importiert</div><div class="stat-value" id="s-total">—</div></div>
+  <div class="stats">
+    <div class="stat"><div class="stat-label">Gesamt</div><div class="stat-value" id="s-total">—</div></div>
     <div class="stat"><div class="stat-label">⏳ OCR ausstehend</div><div class="stat-value c-yellow" id="s-pending">—</div></div>
-    <div class="stat"><div class="stat-label">✅ OCR abgeschlossen</div><div class="stat-value c-green" id="s-completed">—</div></div>
+    <div class="stat"><div class="stat-label">✅ OCR fertig</div><div class="stat-value c-green" id="s-completed">—</div></div>
     <div class="stat"><div class="stat-label">🔀 Gemerged</div><div class="stat-value c-green" id="s-merged">—</div><div class="stat-sub">PDF bereits vorhanden</div></div>
-    <div class="stat"><div class="stat-label">📄 Kein PDF</div><div class="stat-value" id="s-not_required">—</div><div class="stat-sub">kein OCR nötig</div></div>
-    <div class="stat"><div class="stat-label">❌ OCR Fehler</div><div class="stat-value c-red" id="s-failed">—</div></div>
+    <div class="stat"><div class="stat-label">📄 Kein PDF</div><div class="stat-value" id="s-not_required">—</div></div>
+    <div class="stat"><div class="stat-label">❌ Fehler</div><div class="stat-value c-red" id="s-failed">—</div></div>
   </div>
 
   <div class="toolbar">
-    <button class="filter-btn active" onclick="setFilter('all')">Alle</button>
-    <button class="filter-btn" onclick="setFilter('pending')">⏳ Ausstehend</button>
-    <button class="filter-btn" onclick="setFilter('completed')">✅ Abgeschlossen</button>
-    <button class="filter-btn" onclick="setFilter('not_required')">📄 Kein PDF</button>
-    <button class="filter-btn" onclick="setFilter('failed')">❌ Fehler</button>
-    <button class="ocr-btn" id="ocr-btn" onclick="triggerOcr()">🌙 OCR-Worker jetzt starten</button>
+    <button class="filter-btn active" onclick="setFilter('all',event)">Alle</button>
+    <button class="filter-btn" onclick="setFilter('pending',event)">⏳ Ausstehend</button>
+    <button class="filter-btn" onclick="setFilter('completed',event)">✅ OCR fertig</button>
+    <button class="filter-btn" onclick="setFilter('merged',event)">🔀 Gemerged</button>
+    <button class="filter-btn" onclick="setFilter('not_required',event)">📄 Kein PDF</button>
+    <button class="filter-btn" onclick="setFilter('failed',event)">❌ Fehler</button>
+    <button class="ocr-btn" id="ocr-btn" onclick="triggerOcr()">🌙 OCR-Worker starten</button>
   </div>
 
   <div class="tbl-wrap">
     <table>
+      <colgroup>
+        <col class="c-id"><col class="c-doc"><col class="c-vault">
+        <col class="c-meta"><col class="c-addr"><col class="c-tags">
+        <col class="c-ocr"><col class="c-dates">
+      </colgroup>
       <thead>
         <tr>
           <th>#</th>
-          <th>Dateiname</th>
-          <th>Vault-Pfad</th>
-          <th>Kategorie</th>
-          <th>OCR-Status</th>
-          <th>OCR-Quelle</th>
-          <th>Importiert am</th>
-          <th>OCR am</th>
+          <th>Dateiname · Evernote-Titel</th>
+          <th>Vault-Pfad · Datum</th>
+          <th>Kategorie · Typ</th>
+          <th>Adr.</th>
+          <th>Evernote-Tags</th>
+          <th>OCR-Status · Quelle</th>
+          <th>Importiert · OCR am</th>
         </tr>
       </thead>
       <tbody id="tbl-body">
@@ -6817,48 +6842,73 @@ _ENEX_HTML = r"""<!DOCTYPE html>
 <script>
 let currentFilter = 'all';
 
-function setFilter(f) {
+function setFilter(f, ev) {
   currentFilter = f;
   document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-  event.target.classList.add('active');
+  if (ev && ev.target) ev.target.classList.add('active');
   loadQueue();
 }
 
 async function loadStats() {
   try {
     const d = await (await fetch('/api/enex/stats')).json();
-    document.getElementById('s-total').textContent        = d.total ?? '—';
-    document.getElementById('s-pending').textContent      = d.pending ?? '—';
-    document.getElementById('s-completed').textContent    = d.completed ?? '—';
-    document.getElementById('s-merged').textContent       = d.merged ?? '—';
+    document.getElementById('s-total').textContent        = d.total        ?? '—';
+    document.getElementById('s-pending').textContent      = d.pending      ?? '—';
+    document.getElementById('s-completed').textContent    = d.completed    ?? '—';
+    document.getElementById('s-merged').textContent       = d.merged       ?? '—';
     document.getElementById('s-not_required').textContent = d.not_required ?? '—';
-    document.getElementById('s-failed').textContent       = d.failed ?? '—';
+    document.getElementById('s-failed').textContent       = d.failed       ?? '—';
   } catch(e) { console.error('stats:', e); }
 }
 
+const OCR_LABELS = {
+  pending:      '⏳ ausstehend',
+  completed:    '✅ OCR fertig',
+  merged:       '🔀 gemerged',
+  failed:       '❌ Fehler',
+  not_required: '📄 kein PDF',
+};
+const OCR_CLS = {
+  pending:'b-pending', completed:'b-completed', merged:'b-merged',
+  failed:'b-failed', not_required:'b-not_required',
+};
+
 function statusBadge(s) {
-  const labels = {pending:'⏳ ausstehend', completed:'✅ fertig', merged:'🔀 gemerged',
-                  failed:'❌ Fehler', not_required:'📄 kein PDF'};
-  const cls    = {pending:'b-pending', completed:'b-completed', merged:'b-merged',
-                  failed:'b-failed', not_required:'b-not_required'};
-  return `<span class="badge ${cls[s]||''}">${labels[s]||s||'—'}</span>`;
+  return `<span class="badge ${OCR_CLS[s]||''}">${OCR_LABELS[s]||s||'—'}</span>`;
 }
-
 function sourceBadge(s) {
-  if (!s) return '—';
-  return `<span class="badge ${s==='pdfminer'?'b-pdfminer':'b-docling'}">${s}</span>`;
+  if (!s) return '';
+  return `<span class="badge ${s==='pdfminer'?'b-pdfminer':'b-docling'}" style="margin-top:3px;display:block">${s}</span>`;
 }
-
+function adressatPill(a) {
+  if (!a) return '—';
+  const cls = a==='Reinhard'?'pill-r':a==='Marion'?'pill-m':a==='Linoa'?'pill-l':'';
+  return `<span class="${cls||'badge'}">${a}</span>`;
+}
 function fmtDate(iso) {
   if (!iso) return '—';
   try { return new Date(iso).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'}); }
   catch { return iso.slice(0,16).replace('T',' '); }
 }
-
+function fmtDay(iso) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleDateString('de-DE',{dateStyle:'short'}); }
+  catch { return iso.slice(0,10); }
+}
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
 function shortPath(p) {
   if (!p) return '—';
   const parts = p.split('/');
   return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : p;
+}
+function renderTags(raw) {
+  if (!raw) return '<span style="color:var(--muted);font-size:11px;padding:8px 12px;display:block">—</span>';
+  let tags;
+  try { tags = JSON.parse(raw); } catch { return `<span class="tag">${esc(raw)}</span>`; }
+  if (!tags.length) return '<span style="color:var(--muted);font-size:11px;padding:8px 12px;display:block">—</span>';
+  return '<div class="tag-list">' + tags.map(t => `<span class="tag enex" title="${esc(t)}">${esc(t)}</span>`).join('') + '</div>';
 }
 
 async function loadQueue() {
@@ -6866,51 +6916,68 @@ async function loadQueue() {
     const url = '/api/enex/queue?filter=' + currentFilter + '&limit=200';
     const rows = await (await fetch(url)).json();
     const tbody = document.getElementById('tbl-body');
-    if (!rows.length) {
+    if (!Array.isArray(rows) || !rows.length) {
       tbody.innerHTML = '<tr><td colspan="8" class="empty">Keine Einträge</td></tr>';
       return;
     }
-    tbody.innerHTML = rows.map(r => `
-      <tr>
-        <td class="ts">${r.id}</td>
-        <td title="${r.dateiname||''}">${(r.dateiname||'—').replace(/\.md$/,'')}</td>
-        <td class="path" title="${r.vault_pfad||''}">${shortPath(r.vault_pfad)}</td>
-        <td>${r.kategorie_id||'—'}</td>
-        <td>${statusBadge(r.ocr_status)}</td>
-        <td>${sourceBadge(r.ocr_source)}</td>
-        <td class="ts">${fmtDate(r.erstellt_am)}</td>
-        <td class="ts">${fmtDate(r.ocr_processed_at)}</td>
-      </tr>`).join('');
+    tbody.innerHTML = rows.map(r => {
+      const fname  = esc((r.dateiname||'').replace(/\.md$/,''));
+      const etitle = esc(r.evernote_title||'');
+      const vpath  = esc(shortPath(r.vault_pfad||''));
+      const vpathFull = esc(r.vault_pfad||'');
+      const kat    = esc(r.kategorie||'—');
+      const typ    = esc(r.typ||'');
+      const datum  = esc(r.rechnungsdatum||'');
+      return `<tr>
+        <td><div class="cell"><div class="row1" style="font-size:11px;color:var(--muted)">${r.id}</div></div></td>
+        <td><div class="cell">
+          <div class="row1" title="${fname}">${fname||'—'}</div>
+          <div class="row2" title="${etitle}">${etitle||'<em style=\'opacity:.5\'>kein Evernote-Titel</em>'}</div>
+        </div></td>
+        <td><div class="cell">
+          <div class="row1 mono" title="${vpathFull}">${vpath}</div>
+          <div class="row2">${datum}</div>
+        </div></td>
+        <td><div class="cell">
+          <div class="row1">${kat}</div>
+          <div class="row2">${typ}</div>
+        </div></td>
+        <td><div class="cell" style="padding-top:10px">${adressatPill(r.adressat)}</div></td>
+        <td>${renderTags(r.enex_tags)}</td>
+        <td><div class="cell">
+          ${statusBadge(r.ocr_status)}
+          ${sourceBadge(r.ocr_source)}
+        </div></td>
+        <td><div class="cell">
+          <div class="row1" style="font-size:11px">${fmtDate(r.erstellt_am)}</div>
+          <div class="row2">${r.ocr_processed_at ? fmtDate(r.ocr_processed_at) : '—'}</div>
+        </div></td>
+      </tr>`;
+    }).join('');
   } catch(e) { console.error('queue:', e); }
 }
 
 function showToast(msg, ms=3000) {
   const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.classList.add('show');
+  t.textContent = msg; t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), ms);
 }
 
 async function triggerOcr() {
   const btn = document.getElementById('ocr-btn');
-  btn.disabled = true;
-  btn.textContent = '⏳ Wird gestartet…';
+  btn.disabled = true; btn.textContent = '⏳ Wird gestartet…';
   try {
-    const r = await fetch('/api/enex/ocr/trigger', {method:'POST'});
-    const d = await r.json();
+    const d = await (await fetch('/api/enex/ocr/trigger', {method:'POST'})).json();
     showToast(d.message || '✅ OCR-Worker gestartet', 4000);
   } catch(e) {
     showToast('❌ Fehler: ' + e.message, 4000);
   } finally {
-    btn.disabled = false;
-    btn.textContent = '🌙 OCR-Worker jetzt starten';
+    btn.disabled = false; btn.textContent = '🌙 OCR-Worker starten';
     setTimeout(loadAll, 2000);
   }
 }
 
 async function loadAll() { await Promise.all([loadStats(), loadQueue()]); }
-
-// Auto-refresh alle 30 Sek.
 loadAll();
 setInterval(loadAll, 30000);
 </script>
@@ -6983,19 +7050,20 @@ class _ApiHandler(BaseHTTPRequestHandler):
                     limit = int(params.get("limit", ["200"])[0])
                 except ValueError:
                     limit = 200
+                _cols = ("id, dateiname, vault_pfad, kategorie, typ, adressat, "
+                         "rechnungsdatum, ocr_status, ocr_source, ocr_processed_at, "
+                         "erstellt_am, enex_tags")
                 with get_db() as con:
                     if status_filter == "all":
                         rows = con.execute(
-                            "SELECT id, dateiname, vault_pfad, kategorie_id, typ_id, "
-                            "ocr_status, ocr_source, ocr_processed_at, erstellt_am, enex_tags "
-                            "FROM dokumente WHERE import_source='enex' ORDER BY id DESC LIMIT ?",
+                            f"SELECT {_cols} FROM dokumente "
+                            "WHERE import_source='enex' ORDER BY id DESC LIMIT ?",
                             (limit,)
                         ).fetchall()
                     else:
                         rows = con.execute(
-                            "SELECT id, dateiname, vault_pfad, kategorie_id, typ_id, "
-                            "ocr_status, ocr_source, ocr_processed_at, erstellt_am, enex_tags "
-                            "FROM dokumente WHERE import_source='enex' AND ocr_status=? "
+                            f"SELECT {_cols} FROM dokumente "
+                            "WHERE import_source='enex' AND ocr_status=? "
                             "ORDER BY id DESC LIMIT ?",
                             (status_filter, limit)
                         ).fetchall()
