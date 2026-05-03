@@ -567,14 +567,23 @@ def process_note(
         pdf_dest.write_bytes(pdf_res.data)
         logger.debug("PDF gespeichert: %s", pdf_dest)
 
-    # 6. Markdown-Dateiname (Eindeutigkeit sicherstellen)
+    # 6. Markdown-Dateiname — existiert die Datei bereits → merge statt _1 anlegen
     md_filename = f"{stem}.md"
     md_dest = vault_dir / md_filename
-    counter = 1
-    while md_dest.exists():
-        md_filename = f"{stem}_{counter}.md"
-        md_dest = vault_dir / md_filename
-        counter += 1
+
+    if md_dest.exists():
+        logger.info("MD bereits vorhanden: %s — merge statt Duplikat anlegen", md_filename)
+        relative_path = str(md_dest.relative_to(VAULT_PATH))
+        existing_db = conn.execute(
+            "SELECT id FROM dokumente WHERE vault_pfad = ? OR dateiname = ?",
+            (relative_path, md_filename),
+        ).fetchone()
+        merge_enex_into_frontmatter(md_dest, note, routing, TIMEZONE)
+        if existing_db:
+            merge_enex_into_db(conn, existing_db["id"], note, routing)
+        else:
+            logger.warning("Kein DB-Eintrag für %s — nur Frontmatter gemerged", md_filename)
+        return "merged", relative_path
 
     # 7. ENML → Markdown
     image_fnames = [r.filename for r in note.image_resources] if IMPORT_IMAGES else []
