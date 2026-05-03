@@ -317,13 +317,22 @@ def sanitize_filename_part(text: str, max_len: int = 60) -> str:
 
 def make_filename(note: Note, routing: RoutingResult, local_tz: ZoneInfo) -> str:
     """
-    Erzeugt den Vault-Dateinamen: YYYYMMDD_Quelle_Titel
-    ohne Erweiterung (wird vom Aufrufer ergänzt).
+    Erzeugt den Vault-Dateinamen ohne Erweiterung.
+
+    Wenn der Note-Titel bereits mit YYYYMMDD beginnt (Nutzer hat Datum
+    schon in den Titel eingetragen), wird der Titel direkt verwendet —
+    kein doppeltes Datum und kein Kategorie-Suffix.
+    Sonst: YYYYMMDD_Quelle_Titel
     """
+    title_clean = sanitize_filename_part(note.title)
+
+    # Titel beginnt schon mit YYYYMMDD → direkt verwenden
+    if re.match(r'^\d{8}', title_clean):
+        return title_clean
+
     local_dt = note.created.astimezone(local_tz)
     date_str = local_dt.strftime("%Y%m%d")
 
-    # Quelle: kurzer Kategorie-Name oder "Evernote"
     source_map = {
         "krankenversicherung": "KV",
         "immobilien_eigen":    "Immobilien",
@@ -338,8 +347,6 @@ def make_filename(note: Note, routing: RoutingResult, local_tz: ZoneInfo) -> str
         "italien":             "Italien",
     }
     source = source_map.get(routing.kategorie or "", "Evernote")
-
-    title_clean = sanitize_filename_part(note.title)
     return f"{date_str}_{source}_{title_clean}"
 
 
