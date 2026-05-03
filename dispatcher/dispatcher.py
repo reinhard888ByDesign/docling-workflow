@@ -6746,6 +6746,7 @@ _ENEX_HTML = r"""<!DOCTYPE html>
   .b-completed{background:#dcfce7;color:#15803d}
   .b-failed{background:#fee2e2;color:#b91c1c}
   .b-not_required{background:#f1f5f9;color:var(--muted)}
+  .b-merged{background:#ecfdf5;color:#065f46}
   .b-pdfminer{background:#dbeafe;color:#1d4ed8}
   .b-docling{background:#f3e8ff;color:#7e22ce}
   .empty{text-align:center;padding:40px;color:var(--muted)}
@@ -6776,6 +6777,7 @@ _ENEX_HTML = r"""<!DOCTYPE html>
     <div class="stat"><div class="stat-label">Gesamt importiert</div><div class="stat-value" id="s-total">—</div></div>
     <div class="stat"><div class="stat-label">⏳ OCR ausstehend</div><div class="stat-value c-yellow" id="s-pending">—</div></div>
     <div class="stat"><div class="stat-label">✅ OCR abgeschlossen</div><div class="stat-value c-green" id="s-completed">—</div></div>
+    <div class="stat"><div class="stat-label">🔀 Gemerged</div><div class="stat-value c-green" id="s-merged">—</div><div class="stat-sub">PDF bereits vorhanden</div></div>
     <div class="stat"><div class="stat-label">📄 Kein PDF</div><div class="stat-value" id="s-not_required">—</div><div class="stat-sub">kein OCR nötig</div></div>
     <div class="stat"><div class="stat-label">❌ OCR Fehler</div><div class="stat-value c-red" id="s-failed">—</div></div>
   </div>
@@ -6825,19 +6827,20 @@ function setFilter(f) {
 async function loadStats() {
   try {
     const d = await (await fetch('/api/enex/stats')).json();
-    document.getElementById('s-total').textContent       = d.total ?? '—';
-    document.getElementById('s-pending').textContent     = d.pending ?? '—';
-    document.getElementById('s-completed').textContent   = d.completed ?? '—';
+    document.getElementById('s-total').textContent        = d.total ?? '—';
+    document.getElementById('s-pending').textContent      = d.pending ?? '—';
+    document.getElementById('s-completed').textContent    = d.completed ?? '—';
+    document.getElementById('s-merged').textContent       = d.merged ?? '—';
     document.getElementById('s-not_required').textContent = d.not_required ?? '—';
-    document.getElementById('s-failed').textContent      = d.failed ?? '—';
+    document.getElementById('s-failed').textContent       = d.failed ?? '—';
   } catch(e) { console.error('stats:', e); }
 }
 
 function statusBadge(s) {
-  const labels = {pending:'⏳ ausstehend', completed:'✅ fertig',
-                  failed:'❌ Fehler', not_required:'📄 kein PDF', null:'—'};
-  const cls = {pending:'b-pending', completed:'b-completed',
-               failed:'b-failed', not_required:'b-not_required'};
+  const labels = {pending:'⏳ ausstehend', completed:'✅ fertig', merged:'🔀 gemerged',
+                  failed:'❌ Fehler', not_required:'📄 kein PDF'};
+  const cls    = {pending:'b-pending', completed:'b-completed', merged:'b-merged',
+                  failed:'b-failed', not_required:'b-not_required'};
   return `<span class="badge ${cls[s]||''}">${labels[s]||s||'—'}</span>`;
 }
 
@@ -6964,9 +6967,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
                     completed    = _count("ocr_status='completed'")
                     failed       = _count("ocr_status='failed'")
                     not_required = _count("ocr_status='not_required'")
+                    merged       = _count("ocr_status='merged'")
                 self._json_response({
                     "total": total, "pending": pending, "completed": completed,
-                    "failed": failed, "not_required": not_required,
+                    "failed": failed, "not_required": not_required, "merged": merged,
                 })
             except Exception as e:
                 self._json_response({"error": str(e)}, 500)

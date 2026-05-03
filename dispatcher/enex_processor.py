@@ -120,17 +120,180 @@ def is_duplicate_by_hash(conn: sqlite3.Connection, note_hash: str) -> bool:
     return row is not None
 
 
-def is_duplicate_by_pdf_hash(conn: sqlite3.Connection, md5: str) -> bool:
-    """Prüft auf MD5(PDF)-Duplikat."""
-    row = conn.execute(
-        "SELECT id FROM dokumente WHERE pdf_hash = ?", (md5,)
+def find_existing_by_pdf_hash(conn: sqlite3.Connection, md5: str) -> Optional[sqlite3.Row]:
+    """Gibt die komplette DB-Zeile zurück wenn ein PDF-Hash-Treffer existiert."""
+    return conn.execute(
+        "SELECT * FROM dokumente WHERE pdf_hash = ?", (md5,)
     ).fetchone()
-    return row is not None
 
 
-def is_duplicate_by_filename(vault_path: Path, relative_md_path: str) -> bool:
-    """Prüft ob die MD-Datei bereits im Vault existiert."""
-    return (vault_path / relative_md_path).exists()
+# ---------------------------------------------------------------------------
+# ENEX-Merge in existierendes Dokument
+# ---------------------------------------------------------------------------
+
+def merge_enex_into_db(
+    conn: sqlite3.Connection,
+    existing_id: int,
+    note: "Note",
+    routing: "RoutingResult",
+) -> None:
+    """
+    Aktualisiert einen bestehenden DB-Eintrag mit ENEX-Metadaten.
+    Überschreibt nur Felder die bisher NULL sind (adressat, kategorie_id, typ_id).
+    """
+    existing = conn.execute(
+        "SELECT adressat, kategorie_id, typ_id, import_source FROM dokumente WHERE id = ?",
+        (existing_id,),
+    ).fetchone()
+    if not existing:
+        return
+
+    updates: dict = {
+        "import_source": "enex",
+        "enex_tags":     json.dumps(note.tags, ensure_ascii=False),
+        "note_hash":     note.note_hash,
+        "ocr_status":    "merged",   # Docling-OCR war bereits vorhanden
+    }
+    # Felder nur setzen wenn bisher leer
+    if not existing["adressat"] and routing.adressat_hint:
+        updates["adressat"] = routing.adressat_hint
+    if not existing["kategorie_id"] and routing.kategorie:
+        updates["kategorie_id"] = routing.kategorie
+    if not existing["typ_id"] and routing.typ:
+        updates["typ_id"] = routing.typ
+
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    conn.execute(
+        f"UPDATE dokumente SET {set_clause} WHERE id = ?",
+        (*updates.values(), existing_id),
+    )
+    conn.commit()
+    logger.info("DB aktualisiert (id=%d): ENEX-Metadaten gemerged", existing_id)
+
+
+def merge_enex_into_frontmatter(
+    md_path: Path,
+    note: "Note",
+    routing: "RoutingResult",
+    local_tz: "ZoneInfo",
+) -> bool:
+    """
+    Liest eine bestehende Markdown-Datei und ergänzt/aktualisiert ENEX-Metadaten
+    im Frontmatter, ohne bestehende Dispatcher-Felder zu überschreiben.
+
+    Merge-Regeln:
+    - import_quelle: enex  → wird gesetzt (immer)
+    - evernote_title       → wird gesetzt wenn nicht vorhanden
+    - tags                 → ENEX-Tags werden zu bestehenden Tags addiert (Union)
+    - adressat             → nur gesetzt wenn bisher leer
+    - Datum_original       → nur gesetzt wenn bisher leer
+
+    Returns True bei Erfolg.
+    """
+    if not md_path.exists():
+        logger.warning("Frontmatter-Merge: MD nicht gefunden: %s", md_path)
+        return False
+
+    try:
+        content = md_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        logger.error("Frontmatter-Merge: Lesen fehlgeschlagen: %s", exc)
+        return False
+
+    # Frontmatter-Block extrahieren
+    fm_match = re.match(r'^---\r?\n(.*?)\r?\n---\r?\n', content, re.DOTALL)
+    if not fm_match:
+        # Kein Frontmatter vorhanden → neu anlegen
+        fm_text = _build_minimal_frontmatter(note, routing, local_tz)
+        content = fm_text + content
+        md_path.write_text(content, encoding="utf-8")
+        logger.info("Frontmatter-Merge: neues Frontmatter angelegt in %s", md_path.name)
+        return True
+
+    raw_fm   = fm_match.group(1)
+    rest     = content[fm_match.end():]
+
+    try:
+        fm: dict = yaml.safe_load(raw_fm) or {}
+    except yaml.YAMLError as exc:
+        logger.warning("Frontmatter-Merge: YAML-Parse-Fehler in %s: %s", md_path.name, exc)
+        fm = {}
+
+    changed = False
+
+    # import_quelle
+    if fm.get("import_quelle") != "enex":
+        fm["import_quelle"] = "enex"
+        changed = True
+
+    # evernote_title (original Evernote-Titel)
+    if "evernote_title" not in fm and note.title:
+        fm["evernote_title"] = note.title
+        changed = True
+
+    # tags: Union bestehender Tags + normalisierte ENEX-Tags
+    existing_tags: list = fm.get("tags") or []
+    if isinstance(existing_tags, str):
+        existing_tags = [existing_tags]
+    enex_tags = routing.normalized_tags or []
+    merged_tags = list(existing_tags)
+    for t in enex_tags:
+        if t not in merged_tags:
+            merged_tags.append(t)
+    if merged_tags != list(existing_tags):
+        fm["tags"] = merged_tags
+        changed = True
+
+    # adressat: nur wenn bisher leer
+    if not fm.get("adressat") and routing.adressat_hint:
+        fm["adressat"] = routing.adressat_hint
+        changed = True
+
+    # Datum_original: nur wenn bisher leer
+    if not fm.get("Datum_original") and note.created:
+        fm["Datum_original"] = note.created.astimezone(local_tz).strftime("%Y-%m-%d")
+        changed = True
+
+    if not changed:
+        logger.debug("Frontmatter-Merge: keine Änderungen nötig in %s", md_path.name)
+        return True
+
+    # Frontmatter neu serialisieren — yaml.dump mit unicode-safe, kein Flow-Style
+    new_fm_yaml = yaml.dump(
+        fm,
+        allow_unicode=True,
+        default_flow_style=False,
+        sort_keys=False,
+    ).rstrip("\n")
+    new_content = f"---\n{new_fm_yaml}\n---\n{rest}"
+
+    try:
+        md_path.write_text(new_content, encoding="utf-8")
+        logger.info("Frontmatter-Merge: %s aktualisiert (%d Tags, adressat=%s)",
+                    md_path.name, len(fm.get("tags", [])), fm.get("adressat"))
+        return True
+    except Exception as exc:
+        logger.error("Frontmatter-Merge: Schreiben fehlgeschlagen: %s", exc)
+        return False
+
+
+def _build_minimal_frontmatter(
+    note: "Note",
+    routing: "RoutingResult",
+    local_tz: "ZoneInfo",
+) -> str:
+    """Minimales Frontmatter wenn das Dokument noch keines hat."""
+    fm: dict = {
+        "evernote_title": note.title,
+        "import_quelle":  "enex",
+        "tags":           routing.normalized_tags or [],
+    }
+    if note.created:
+        fm["Datum_original"] = note.created.astimezone(local_tz).strftime("%Y-%m-%d")
+    if routing.adressat_hint:
+        fm["adressat"] = routing.adressat_hint
+    raw = yaml.dump(fm, allow_unicode=True, default_flow_style=False, sort_keys=False).rstrip("\n")
+    return f"---\n{raw}\n---\n"
 
 
 # ---------------------------------------------------------------------------
@@ -378,9 +541,18 @@ def process_note(
         pdf_res = note.pdf_resources[0]
         pdf_md5 = pdf_res.md5
 
-        if is_duplicate_by_pdf_hash(conn, pdf_md5):
-            logger.info("PDF-Duplikat übersprungen: %r", note.title)
-            return "duplicate", ""
+        existing_row = find_existing_by_pdf_hash(conn, pdf_md5)
+        if existing_row is not None:
+            logger.info(
+                "PDF-Duplikat gefunden (id=%d, %s) — merge ENEX-Metadaten",
+                existing_row["id"], existing_row["dateiname"],
+            )
+            merge_enex_into_db(conn, existing_row["id"], note, routing)
+            vault_pfad = existing_row["vault_pfad"] if existing_row["vault_pfad"] else ""
+            if vault_pfad:
+                md_full = VAULT_PATH / vault_pfad
+                merge_enex_into_frontmatter(md_full, note, routing, TIMEZONE)
+            return "merged", vault_pfad
 
         pdf_filename = f"{stem}.pdf"
         pdf_dest = ANLAGEN_FOLDER / pdf_filename
@@ -492,7 +664,7 @@ def process_enex_file(enex_path: str | Path) -> dict:
     logger.info("=" * 60)
     logger.info("ENEX-Import: %s", enex_path.name)
 
-    stats = {"imported": 0, "duplicate": 0, "error": 0, "total": 0, "pdf_pending": 0}
+    stats = {"imported": 0, "merged": 0, "duplicate": 0, "error": 0, "total": 0, "pdf_pending": 0}
 
     # Konfiguration laden
     mapper = EnexTagMapper(ENEX_TAGS_CONFIG)
@@ -526,8 +698,8 @@ def process_enex_file(enex_path: str | Path) -> dict:
 
     # Zusammenfassung
     logger.info(
-        "Fertig: %d importiert | %d Duplikate | %d Fehler | %d PDFs für Nachtlauf",
-        stats["imported"], stats["duplicate"], stats["error"], stats["pdf_pending"]
+        "Fertig: %d importiert | %d gemerged | %d Duplikate | %d Fehler | %d PDFs für Nachtlauf",
+        stats["imported"], stats["merged"], stats["duplicate"], stats["error"], stats["pdf_pending"]
     )
 
     # Telegram-Benachrichtigung
@@ -537,6 +709,7 @@ def process_enex_file(enex_path: str | Path) -> dict:
             f"📄 {enex_path.name}\n"
             f"📊 {stats['total']} Notizen | "
             f"✅ {stats['imported']} importiert | "
+            f"🔀 {stats['merged']} gemerged | "
             f"♻️ {stats['duplicate']} Duplikate | "
             f"❌ {stats['error']} Fehler\n"
             f"📎 {stats['pdf_pending']} PDFs → OCR-Nachtlauf vorgemerkt"
