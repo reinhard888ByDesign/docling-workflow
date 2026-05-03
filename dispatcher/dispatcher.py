@@ -10635,6 +10635,26 @@ class DocumentHandler(FileSystemEventHandler):
 PdfHandler = DocumentHandler
 
 
+class EnexHandler(FileSystemEventHandler):
+    """Watchdog-Handler für WATCH_DIR/enex/: verarbeitet ausschließlich .enex-Dateien."""
+
+    def _enqueue(self, path: Path):
+        if path.suffix.lower() != ".enex":
+            return
+        if path.name.startswith("."):  # macOS-Ressource-Forks und SMB-Temp-Dateien
+            return
+        log.info(f"In Queue (ENEX/enex-Ordner): {path.name}")
+        file_queue.put(("enex", path))
+
+    def on_created(self, event):
+        if not event.is_directory:
+            self._enqueue(Path(event.src_path))
+
+    def on_moved(self, event):
+        if not event.is_directory:
+            self._enqueue(Path(event.dest_path))
+
+
 # ── Batch-Modus ────────────────────────────────────────────────────────────────
 
 def _vault_relative_path(abs_path: Path) -> str | None:
@@ -11653,11 +11673,21 @@ def main():
     threading.Thread(target=start_api_server, daemon=True).start()
     threading.Thread(target=tg_poll, daemon=True).start()
 
-    # Vorhandene PDFs in WATCH_DIR verarbeiten
+    # Vorhandene PDFs und ENEX in WATCH_DIR (Root) verarbeiten
     for f in WATCH_DIR.glob("*.pdf"):
         file_queue.put(f)
     for f in WATCH_DIR.glob("*.enex"):
         file_queue.put(("enex", f))
+
+    # Vorhandene ENEX-Dateien im dedizierten enex/-Unterordner verarbeiten
+    enex_dir = WATCH_DIR / "enex"
+    enex_dir.mkdir(parents=True, exist_ok=True)
+    enex_files = sorted(enex_dir.glob("*.enex"))
+    if enex_files:
+        log.info(f"Startup-Scan enex/: {len(enex_files)} Datei(en) gefunden")
+        for f in enex_files:
+            if not f.name.startswith("."):
+                file_queue.put(("enex", f))
 
     # Auto-Batch-Rescan entfernt 2026-04-19 (flache Archiv-Architektur):
     # Bestandsdokumente werden nicht mehr beim Start rescanniert.
@@ -11665,8 +11695,9 @@ def main():
 
     observer = Observer()
     observer.schedule(DocumentHandler(), str(WATCH_DIR), recursive=False)
+    observer.schedule(EnexHandler(), str(enex_dir), recursive=False)
     observer.start()
-    log.info("Dispatcher aktiv — warte auf Dokumente.")
+    log.info(f"Dispatcher aktiv — warte auf Dokumente (ENEX-Ordner: {enex_dir})")
 
     try:
         while True:
