@@ -2147,6 +2147,7 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
     <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
     <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
     <a href="/db" target="_blank" rel="noopener">🗄️ DB</a>
+    <a href="/backup" target="_blank" rel="noopener">💾 Backup</a>
   </nav>
   <div class="sse-wrap">
     <span class="sse-dot" id="sse-dot"></span>Live
@@ -7223,6 +7224,133 @@ document.addEventListener('keydown', e => {
 </html>
 """
 
+_BACKUP_HTML = r"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Backup · Dispatcher</title>
+<style>
+  :root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;--ok:#3fb950;--warn:#d29922;--err:#f85149}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);font-size:14px;padding:0 0 40px}
+  header{display:flex;align-items:center;gap:14px;padding:14px 24px;border-bottom:1px solid var(--border);background:var(--card);position:sticky;top:0;z-index:10}
+  header h1{font-size:16px;font-weight:600}
+  .back{font-size:12px;color:var(--accent);text-decoration:none;padding:3px 10px;border:1px solid var(--border);border-radius:6px}
+  .main{max-width:960px;margin:28px auto;padding:0 20px;display:grid;gap:20px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px}
+  .card h2{font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:14px}
+  .kpi-row{display:flex;gap:12px;flex-wrap:wrap}
+  .kpi{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 18px;min-width:140px}
+  .kpi-label{font-size:11px;color:var(--muted);margin-bottom:4px}
+  .kpi-value{font-size:18px;font-weight:700}
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)} .accent{color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;color:var(--muted);font-weight:500;padding:6px 10px;border-bottom:1px solid var(--border)}
+  td{padding:7px 10px;border-bottom:1px solid #21262d}
+  tr:last-child td{border-bottom:none}
+  .btn{padding:7px 16px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:600}
+  .btn-primary{background:var(--accent);color:#000}
+  .btn-primary:hover{opacity:.85}
+  .btn-primary:disabled{opacity:.4;cursor:not-allowed}
+  .log-box{background:#010409;border:1px solid var(--border);border-radius:6px;padding:14px;font-family:monospace;font-size:11px;line-height:1.6;max-height:360px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+  .status-msg{margin-top:10px;font-size:12px;color:var(--muted)}
+  .badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:700}
+  .badge-ok{background:#1a3a1a;color:var(--ok)} .badge-warn{background:#3a2a00;color:var(--warn)} .badge-err{background:#3a0a0a;color:var(--err)}
+</style>
+</head>
+<body>
+<header>
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+  <h1>Backup</h1>
+  <a href="/" class="back">← Übersicht</a>
+  <button class="btn btn-primary" id="run-btn" onclick="triggerBackup()" style="margin-left:auto">▶ Jetzt sichern</button>
+  <span id="run-status" class="status-msg"></span>
+</header>
+<div class="main">
+  <div class="kpi-row" id="kpis">
+    <div class="kpi"><div class="kpi-label">Letztes Backup</div><div class="kpi-value accent" id="kpi-last">…</div></div>
+    <div class="kpi"><div class="kpi-label">Dauer</div><div class="kpi-value" id="kpi-dur">…</div></div>
+    <div class="kpi"><div class="kpi-label">Vault-Größe</div><div class="kpi-value" id="kpi-vault">…</div></div>
+    <div class="kpi"><div class="kpi-label">Nächstes Backup</div><div class="kpi-value accent" id="kpi-next">…</div></div>
+    <div class="kpi"><div class="kpi-label">Status</div><div class="kpi-value" id="kpi-status">…</div></div>
+  </div>
+  <div class="card">
+    <h2>Snapshots (7 tägliche)</h2>
+    <table>
+      <thead><tr><th>Snapshot</th><th>Datum</th><th>Größe</th><th>Vault</th></tr></thead>
+      <tbody id="snap-table"><tr><td colspan="4" style="color:var(--muted)">Laden…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h2>Log (letzte Einträge)</h2>
+    <div class="log-box" id="log-box">Laden…</div>
+  </div>
+</div>
+<script>
+async function load() {
+  try {
+    const d = await (await fetch('/api/backup/status')).json();
+
+    document.getElementById('kpi-last').textContent   = d.last_backup   || '—';
+    document.getElementById('kpi-dur').textContent    = d.last_duration  || '—';
+    document.getElementById('kpi-vault').textContent  = d.last_vault_size|| '—';
+    document.getElementById('kpi-next').textContent   = d.next_run       || '—';
+
+    const st = document.getElementById('kpi-status');
+    if (d.running) {
+      st.innerHTML = '<span class="badge badge-warn">⏳ Läuft</span>';
+    } else if (d.last_ok) {
+      st.innerHTML = '<span class="badge badge-ok">✓ OK</span>';
+    } else {
+      st.innerHTML = '<span class="badge badge-err">✗ Fehler</span>';
+    }
+
+    const tbody = document.getElementById('snap-table');
+    if (d.snapshots && d.snapshots.length) {
+      tbody.innerHTML = d.snapshots.map(s => `
+        <tr>
+          <td><strong>${s.name}</strong></td>
+          <td>${s.date || '—'}</td>
+          <td>${s.size || '—'}</td>
+          <td>${s.vault_size || '—'}</td>
+        </tr>`).join('');
+    } else {
+      tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">Noch keine Snapshots vorhanden</td></tr>';
+    }
+
+    const logEl = document.getElementById('log-box');
+    logEl.textContent = (d.log_lines || []).join('\n') || '(leer)';
+    logEl.scrollTop = logEl.scrollHeight;
+
+  } catch(e) {
+    document.getElementById('log-box').textContent = 'Fehler beim Laden: ' + e;
+  }
+}
+
+async function triggerBackup() {
+  const btn = document.getElementById('run-btn');
+  const st  = document.getElementById('run-status');
+  btn.disabled = true;
+  st.textContent = 'Starte Backup…';
+  try {
+    const r = await fetch('/api/backup/run', {method:'POST'});
+    const d = await r.json();
+    st.textContent = d.msg || d.error || '';
+    setTimeout(load, 3000);
+  } catch(e) {
+    st.textContent = 'Fehler: ' + e;
+    btn.disabled = false;
+  }
+}
+
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>
+"""
+
 class _ApiHandler(BaseHTTPRequestHandler):
 
     def _json_response(self, data, status=200):
@@ -7427,6 +7555,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
 
         elif path == "/enex":
             self._html_response(_ENEX_HTML)
+            return
+
+        elif path == "/backup":
+            self._html_response(_BACKUP_HTML)
             return
 
         # GET /review — Review Dashboard
@@ -8297,6 +8429,92 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 self._json_response({"error": str(e)}, 502)
             return
 
+        # GET /api/backup/status — Backup-Status (Snapshots, Log, Timer)
+        elif path == "/api/backup/status":
+            import subprocess, glob as _glob
+            BACKUP_TARGET = "/mnt/ryzen-drive/backups/ryzen"
+            LOG_FILE = "/home/reinhard/.local/var/log/ryzen-backup.log"
+
+            result = {"running": False, "last_ok": False, "last_backup": None,
+                      "last_duration": None, "last_vault_size": None,
+                      "next_run": None, "snapshots": [], "log_lines": []}
+
+            # Timer: nächster Lauf
+            try:
+                tp = subprocess.run(
+                    ["systemctl", "--user", "show", "ryzen-backup.timer",
+                     "--property=NextElapseUSecRealtime"],
+                    capture_output=True, text=True, timeout=5)
+                val = tp.stdout.strip().split("=", 1)[-1]
+                if val and val != "infinity":
+                    # Format: "Thu 2026-05-08 03:01:45 CEST"
+                    sp2 = subprocess.run(
+                        ["systemd-analyze", "calendar", "--iterations=1", "*-*-* 03:00:00"],
+                        capture_output=True, text=True, timeout=5)
+                    result["next_run"] = "03:00 Uhr täglich"
+            except Exception:
+                result["next_run"] = "03:00 Uhr täglich"
+
+            # Service läuft gerade?
+            try:
+                sp = subprocess.run(
+                    ["systemctl", "--user", "is-active", "ryzen-backup.service"],
+                    capture_output=True, text=True, timeout=5)
+                result["running"] = sp.stdout.strip() == "active"
+            except Exception:
+                pass
+
+            # Log parsen
+            try:
+                log_path = Path(LOG_FILE)
+                if log_path.exists():
+                    lines = log_path.read_text(errors="replace").splitlines()
+                    result["log_lines"] = lines[-60:]
+                    # Letzten "Backup abgeschlossen"-Eintrag suchen
+                    for line in reversed(lines):
+                        if "Backup abgeschlossen" in line:
+                            result["last_ok"] = True
+                            # "2026-05-07 09:39:41 [OK]    ... in 187s — Vault: 9.5G"
+                            import re as _re
+                            m = _re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line)
+                            if m:
+                                result["last_backup"] = m.group(1)
+                            m2 = _re.search(r"in (\d+)s", line)
+                            if m2:
+                                secs = int(m2.group(1))
+                                result["last_duration"] = f"{secs//60}m {secs%60}s" if secs >= 60 else f"{secs}s"
+                            m3 = _re.search(r"Vault:\s*(\S+)", line)
+                            if m3:
+                                result["last_vault_size"] = m3.group(1)
+                            break
+            except Exception as e:
+                result["log_lines"] = [f"Log-Fehler: {e}"]
+
+            # Snapshots
+            try:
+                import datetime as _dt
+                for i in range(7):
+                    snap_path = Path(BACKUP_TARGET) / f"daily.{i}"
+                    if snap_path.exists():
+                        mtime = snap_path.stat().st_mtime
+                        date_str = _dt.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+                        # nur Vault-Unterverzeichnis messen (schneller als ganzen Snapshot)
+                        vault_sub = snap_path / "reinhards-vault"
+                        vsz = subprocess.run(["du", "-sh", "--exclude=Anlagen", str(vault_sub)],
+                            capture_output=True, text=True, timeout=30)
+                        vault_size = vsz.stdout.split("\t")[0] if vsz.returncode == 0 else "?"
+                        result["snapshots"].append({
+                            "name": f"daily.{i}" + (" (aktuell)" if i == 0 else ""),
+                            "date": date_str,
+                            "size": "—",
+                            "vault_size": vault_size,
+                        })
+            except Exception:
+                pass
+
+            self._json_response(result)
+            return
+
         # GET /db — Dispatcher-DB Dashboard
         elif path == "/db":
             self._html_response(_DB_HTML)
@@ -8339,6 +8557,21 @@ class _ApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+
+        # POST /api/backup/run — Backup manuell starten
+        if path == "/api/backup/run":
+            import subprocess
+            try:
+                r = subprocess.run(
+                    ["systemctl", "--user", "start", "ryzen-backup.service"],
+                    capture_output=True, text=True, timeout=10)
+                if r.returncode == 0:
+                    self._json_response({"msg": "Backup gestartet — läuft im Hintergrund"})
+                else:
+                    self._json_response({"error": r.stderr.strip() or "Fehler beim Starten"}, 500)
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
 
         # POST /api/batch/start — neuen Batch-Lauf im Hintergrund starten
         if path == "/api/batch/start":
