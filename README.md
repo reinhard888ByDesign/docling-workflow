@@ -2,130 +2,122 @@
 
 Vollautomatischer, lokaler Dokumenten-Import-Workflow ohne Cloud-Abhängigkeit.
 
-PDFs, DOCX, PPTX und HTML-Dateien werden per Syncthing auf den Server übertragen, von Docling in Markdown konvertiert, von Ollama analysiert und strukturiert im Obsidian Vault abgelegt — inklusive automatischem RAG-Ingest in Open WebUI (Qdrant).
+PDFs und ENEX-Dateien (Evernote-Export) werden per Syncthing auf den Ryzen-Server übertragen, per Docling OCR verarbeitet, per DeepSeek-API klassifiziert und strukturiert im Obsidian Vault abgelegt.
 
 ## Architektur
 
 ```
-Mac / iPhone
-    │
-    │  Syncthing
-    ▼
-input-docs/          ← Watcher überwacht diesen Ordner
-    │
-    ▼
-Docling-Serve        PDF/DOCX/PPTX/HTML → Markdown
-    │
-    ▼
-Ollama (lokal)       Markdown → JSON-Metadaten
-    │                datum, absender, thema, kategorie, tags,
-    │                zusammenfassung, todos, betrag, faellig
-    ▼
-obsidian-vault/Converted/   YYYYMMDD_Absender_Thema.md
-obsidian-vault/Originale/   YYYYMMDD_Absender_Thema.pdf   ← gleicher Dateiname
-    │
-    ├──► Obsidian (Vault auf Mac via Syncthing)
-    └──► Open WebUI → Qdrant (RAG)
+Mac / iPhone / Scanner / Evernote-Export
+         │
+         │  Syncthing
+         ▼
+ input-dispatcher/          ← Dispatcher überwacht diesen Ordner
+ input-dispatcher/enex/     ← ENEX-Dateien (Evernote-Export)
+         │
+         ├── Wilson (Pi)    ← Physischer Eingang (Scanner → Pi → Ryzen)
+         │
+         ▼
+ Dispatcher (dispatcher.py, Port 8765)
+         │
+         ├── Docling-Serve  PDF → Markdown (OCR)
+         ├── DeepSeek API   Markdown → JSON-Metadaten (LLM)
+         └── Telegram       Bestätigungen + Benachrichtigungen
+         │
+         ▼
+ Vault/YYYYMMDD_Absender_Thema.md    ← Metadaten + OCR-Volltext
+ Vault/Anlagen/YYYYMMDD_...pdf       ← Original-PDF
+         │
+         └──► Obsidian (Mac/iPhone via Syncthing)
+              enzyme MCP → Claude Code / Open WebUI (Suche)
 ```
+
+## Dashboards
+
+| URL | Funktion |
+|-----|----------|
+| `http://ryzen:8765/` | Übersicht aller Dienste (Health, Logs) |
+| `http://ryzen:8765/pipeline` | Verarbeitungs-Queue + Schritt-Statistiken |
+| `http://ryzen:8765/enex` | ENEX-Import-Übersicht + Dokument-Anzeige |
+| `http://ryzen:8765/db` | Datenbank-Verwaltung (Aussteller, Kategorien) |
+| `http://ryzen:8765/vault` | Vault-Struktur-Übersicht |
+
+## Dienste (Docker)
+
+| Container | Funktion | Port |
+|-----------|----------|------|
+| `dispatcher` | Kern-Service: Queue, OCR-Routing, Klassifikation, Web-UI | 8765 |
+| `docling-serve` | PDF → Markdown OCR | intern |
+| `enex-ocr-worker` | Hintergrund-OCR für ENEX-Importe | intern |
+| `cache-reader` | Vault-Index-Cache für schnelle Suche | intern |
+| `syncthing` | Datei-Sync Mac ↔ Ryzen | 8384 |
+
+Wilson auf dem Pi (`~/raspberry/wilson/`) ist kein Docker-Container, sondern ein systemd-Dienst.
 
 ## Voraussetzungen
 
 - Docker + Docker Compose
-- Laufender Ollama-Stack (siehe `../ollama/docker-compose.yml`):
-  - `ollama` mit ROCm oder CUDA
-  - `qdrant`
-  - `open-webui`
-- Netzwerk `ollama-net` muss existieren
+- DeepSeek API Key (`DEEPSEEK_API_KEY` in `.env`)
+- Telegram Bot Token + Chat-ID (für Benachrichtigungen)
+- enzyme-MCP-Server (optional, für Vault-Suche via Claude Code)
 
-## Schnellstart
+## Start
 
 ```bash
-# 1. Repo klonen
-git clone https://github.com/reinhard888ByDesign/docling-workflow
-cd docling-workflow
-
-# 2. Umgebungsvariablen anpassen (docker-compose.yml → watcher-Service)
-#    WEBUI_API_KEY, OLLAMA_MODEL, etc.
-
-# 3. Starten
 docker compose up -d
-
-# 4. Bestehende Dateien einmalig ingestieren
-python3 ingest_vault.py
 ```
 
-## Konfiguration
-
-Alle Einstellungen werden als Umgebungsvariablen im `watcher`-Service gesetzt:
-
-| Variable | Standard | Beschreibung |
-|----------|---------|-------------|
-| `WATCH_DIR` | `/data/input-docs` | Eingangsordner (überwacht) |
-| `OUTPUT_DIR` | `/data/obsidian-vault/Converted` | Zielordner für .md-Dateien |
-| `ORIGINALS_DIR` | `/data/obsidian-vault/Originale` | Archiv der Originaldokumente |
-| `DOCLING_URL` | `http://docling-serve:5001` | Docling Serve API |
-| `OLLAMA_URL` | `http://ollama:11434` | Ollama API |
-| `OLLAMA_MODEL` | `qwen2.5:7b` | Modell für Metadaten-Extraktion |
-| `WEBUI_URL` | `http://open-webui:8080` | Open WebUI API |
-| `WEBUI_API_KEY` | *(leer)* | API-Key für RAG-Ingest |
-| `KNOWLEDGE_NAME` | `Vault` | Name der Knowledge Base in Open WebUI |
-
-## Erzeugtes Frontmatter
+## Erzeugtes Frontmatter (Dispatcher-Dokumente)
 
 ```yaml
 ---
 datum: 2026-01-08
 absender: PVS
+adressat: Reinhard
 thema: Arztrechnung Liquidation Januar
 kategorie: Rechnung
 tags:
   - PVS
   - Arztrechnung
-  - 2026
 zusammenfassung: "Die PVS stellt eine Liquidation für ärztliche Leistungen aus."
 betrag: "1.271,06 EUR"
 faellig: 2026-01-31
-quelle: 20260108_PVS_Arztrechnung_Liquidation_Januar.pdf
-original: "[[Originale/20260108_PVS_Arztrechnung_Liquidation_Januar.pdf]]"
-erstellt: 2026-03-27
-geaendert: 2026-03-27
+ocr_status: completed
+original: '[[Anlagen/20260108_PVS_Arztrechnung_Liquidation_Januar.pdf]]'
 ---
 ```
 
-## Unterstützte Formate
+## Erzeugtes Frontmatter (ENEX-Importe)
 
-`.pdf` · `.docx` · `.doc` · `.pptx` · `.html`
-
-## Open WebUI RAG
-
-Für den Chat `vault-assistant`-Modell verwenden — es hat die Vault Knowledge Base
-automatisch eingebunden und antwortet auf Deutsch in Stichpunkten.
-
-Erstellt via:
-```bash
-ollama create vault-assistant -f ollama/Modelfile.vault
+```yaml
+---
+title: Cartier Uhrenreparatur
+source: evernote
+imported: 2026-02-08 18:29:33
+Datum_original: '2001-12-27'
+original: '[[Anlagen/20011227-Cartier_Uhrenreparatur-76cf60c1.pdf]]'
+# oder bei mehreren Anhängen:
+anlagen:
+  - '[[Anlagen/...-hash1.pdf]]'
+  - '[[Anlagen/...-hash2.pdf]]'
+---
 ```
 
-## Bulk-Ingest bestehender Dateien
+## Unterstützte Eingangsformate
+
+`.pdf` · `.docx` · `.xlsx` · `.pptx` · `.enex`
+
+## Dispatcher neu bauen (nach Code-Änderungen)
 
 ```bash
-WEBUI_URL=http://localhost:3000 \
-WEBUI_API_KEY=sk-... \
-VAULT_PATH=/pfad/zum/vault/Converted \
-python3 ingest_vault.py
+cd /home/reinhard/docker/RYZEN\ -\ docling-workflow
+docker stop dispatcher && docker rm dispatcher
+docker build -t dispatcher ./dispatcher
+docker compose up -d dispatcher
 ```
 
-## Wartung
+## Logs
 
 ```bash
-# Watcher neu bauen (nach Code-Änderungen)
-docker compose up -d --build watcher
-
-# Logs
-docker logs docling-watcher -f
-
-# Qdrant zurücksetzen (nach Embedding-Modell-Wechsel)
-curl -X DELETE http://localhost:6333/collections/open-webui_knowledge
-curl -X DELETE http://localhost:6333/collections/open-webui_files
-python3 ingest_vault.py
+docker logs dispatcher -f
+docker logs enex-ocr-worker -f
 ```

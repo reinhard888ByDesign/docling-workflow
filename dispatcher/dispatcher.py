@@ -295,6 +295,9 @@ def init_db():
             con.execute("ALTER TABLE dokumente ADD COLUMN vault_pfad TEXT")
         if "anlagen_dateiname" not in cols_dok:
             con.execute("ALTER TABLE dokumente ADD COLUMN anlagen_dateiname TEXT")
+        if "ocr_error" not in cols_dok:
+            con.execute("ALTER TABLE dokumente ADD COLUMN ocr_error TEXT")
+            log.info("Migration: Spalte ocr_error in dokumente hinzugefügt")
         # lernregeln-Tabelle
         con.execute("""
             CREATE TABLE IF NOT EXISTS lernregeln (
@@ -1716,6 +1719,26 @@ def _collect_health() -> dict:
     except Exception as e:
         services["wilson_pi"] = {"label": f"Wilson / OpenClaw (Pi)", "status": "error", "error": str(e)}
 
+    # 9 — Molly Medikationsplan (Host-Port 8080)
+    _molly_hosts = ["host.docker.internal", "172.17.0.1", "192.168.86.195"]
+    for _h in _molly_hosts:
+        try:
+            r = requests.get(f"http://{_h}:8080/health", timeout=4)
+            if r.status_code == 200:
+                md = r.json()
+                services["molly"] = {
+                    "label": "Molly Medikation",
+                    "status": md.get("status", "ok"),
+                    "uptime_str": md.get("uptime_str", ""),
+                    "pid": md.get("pid", 0),
+                    "port": md.get("port", 8080),
+                }
+                break
+        except Exception:
+            continue
+    else:
+        services["molly"] = {"label": "Molly Medikation", "status": "error", "error": "Port 8080 nicht erreichbar"}
+
     host_ip = os.environ.get("HOST_IP", "localhost")
 
     return {
@@ -2275,10 +2298,12 @@ const SVC = {
     desc: 'Semantische Suchschicht über den Obsidian Vault. Indexiert alle Vault-MD-Dateien als Katalysatoren und Entitäten, stellt Vault-Inhalte als MCP-Tools für Claude Code (CLI) und Open WebUI bereit. Ermöglicht natürlichsprachliche Suche über 1.000+ Dokumente.' },
   open_webui:   { icon:'💬', label:'Open WebUI',        urlFn: ip => `http://${ip}:3000/`,
     desc: 'Browser-Interface für Gespräche mit den lokalen Ollama-Modellen und dem Vault-Assistenten. Ermöglicht natürlichsprachliche Vault-Suche über den enzyme-MCP-Server.' },
+  molly:        { icon:'🐾', label:'Molly Medikation',  urlFn: ip => `http://${ip}:8080/`,
+    desc: 'Medikationsplan für Molly (Labrador, 11 J.). Zeigt Tagesdosen für Altadol, Deltacortene, Gabapentin und Tobradex. Mit Abhaken-Funktion und Erledigt-Tracking.' },
 };
 
 // Card render order = same as flow
-const CARD_ORDER = ['wilson_pi','syncthing','syncthing_mac','docling_serve','ollama','dispatcher','enzyme','open_webui'];
+const CARD_ORDER = ['wilson_pi','syncthing','syncthing_mac','docling_serve','ollama','dispatcher','enzyme','open_webui','molly'];
 
 let _hostIp = 'localhost';
 
@@ -2346,6 +2371,17 @@ function renderCard(key, svc) {
         <a href="${enzymeUrl}" target="_blank" style="font-size:12px;color:var(--accent);text-decoration:none;border:1px solid var(--border);padding:4px 10px;border-radius:6px">API-Docs ↗</a>
         <span id="enzyme-refresh-status" style="font-size:12px;color:var(--muted)"></span>
       </div>`;
+  } else if (key === 'molly') {
+    const mollyUrl = SVC.molly.urlFn(_hostIp);
+    body = `
+      <div class="metric"><span class="metric-label">Uptime</span><span class="metric-value">${svc.uptime_str||'—'}</span></div>
+      <div class="metric"><span class="metric-label">PID</span><span class="metric-value" style="font-size:11px">${svc.pid||'—'}</span></div>
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+        <a href="${mollyUrl}" target="_blank" style="font-size:12px;color:var(--accent);text-decoration:none;border:1px solid var(--border);padding:4px 10px;border-radius:6px">Öffnen ↗</a>
+        <button onclick="mollyAction('restart')" style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid #e8b830;background:transparent;color:#b08830;cursor:pointer;font-weight:600">⟳ Neustart</button>
+        <button onclick="mollyAction('kill')" style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--err);background:transparent;color:var(--err);cursor:pointer;font-weight:600">■ Stop</button>
+      </div>
+      <div id="molly-action-status" style="font-size:11px;color:var(--muted);margin-top:4px"></div>`;
   }
 
   const errHtml = svc.error ? `<div class="err-msg">⚠ ${svc.error}</div>` : '';
@@ -2446,6 +2482,19 @@ async function triggerEnzymeRefresh() {
     if (st) st.textContent='Fehler';
     if (btn){btn.disabled=false;btn.textContent='⟳ Aktualisieren';}
   }
+}
+
+async function mollyAction(action) {
+  const st = document.getElementById('molly-action-status');
+  if (st) st.textContent = action==='restart' ? 'Neustart …' : 'Beenden …';
+  try {
+    const r = await fetch('/api/molly/' + action, {method:'POST'});
+    const d = await r.json();
+    if (st) st.textContent = d.msg || d.error || '';
+  } catch(e) {
+    if (st) st.textContent = 'Fehler: nicht erreichbar';
+  }
+  setTimeout(() => loadAll(), 3000);
 }
 
 // Categories
@@ -2766,6 +2815,7 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
   <h1>Dispatcher · Pipeline</h1>
   <a href="/vault" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600" title="Vault-Struktur">📁 Vault</a>
+  <a href="/enex" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600" title="ENEX Import">🐘 ENEX</a>
   <a href="#stats" onclick="showStats();return false;" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600;margin-left:auto" title="Schritt-Statistiken">📊 Statistiken</a>
   <button class="help-btn" onclick="openHelp()">❓ Hilfe</button>
   <span class="sse-dot" id="sse-dot"></span>
@@ -3602,6 +3652,7 @@ _VAULT_HTML = r"""<!DOCTYPE html>
   <a href="/" class="back-link">← Dashboard</a>
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
   <h1>Vault - Struktur</h1>
+  <a href="/enex" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600" title="ENEX Import">🐘 ENEX</a>
   <button class="help-btn" onclick="openHelp()">❓ Hilfe</button>
   <span class="ts" id="ts"></span>
 </header>
@@ -4034,6 +4085,7 @@ button.primary:disabled{opacity:.4;cursor:not-allowed}
     <a href="/">Haupt</a>
     <a href="/pipeline">Pipeline</a>
     <a href="/vault">Vault</a>
+    <a href="/enex">🐘 ENEX</a>
     <span id="rules-toggle" style="margin-left:12px;cursor:pointer;color:var(--accent);font-size:12px" onclick="toggleRulesView()">📚 Lernregeln anzeigen</span>
     <button class="help-btn" onclick="openHelp()" style="margin-left:auto;font-size:11px;padding:3px 10px;border:1px solid #2a2d3a;border-radius:6px;background:transparent;color:#888;cursor:pointer;font-weight:600">❓ Hilfe</button>
   </div>
@@ -4515,6 +4567,7 @@ _WILSON_HTML = r"""<!DOCTYPE html>
   <span style="font-size:20px">🥧</span>
   <h1>Wilson · OpenClaw Dashboard</h1>
   <a href="/vault" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600;margin-left:auto" title="Vault-Struktur">📁 Vault</a>
+  <a href="/enex" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600" title="ENEX Import">🐘 ENEX</a>
   <button class="help-btn" onclick="openHelp()">❓ Hilfe</button>
   <span class="badge" id="overall-badge">Laden…</span>
   <span class="ts" id="ts">–</span>
@@ -5499,6 +5552,7 @@ table.items tr.item-error td.err-cell{color:var(--err)}
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
     <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
     <a href="/batch" class="hl">🧰 Batch</a>
+    <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
     <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
@@ -5881,6 +5935,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
     <a href="/vault">📁 Vault</a>
     <a href="/cache">🔍 Cache</a>
     <a href="/batch">🧰 Batch</a>
+    <a href="/enex">🐘 ENEX</a>
     <a href="/wilson">🥧 Wilson</a>
     <a href="/frontmatter">🏷️ Frontmatter</a>
     <a href="/db">🗄️ DB</a>
@@ -6254,6 +6309,7 @@ pre{background:#0f1117;border:1px solid var(--border);border-radius:6px;padding:
     <a href="/vault">📁 Vault</a>
     <a href="/cache">🔍 Cache</a>
     <a href="/batch">🧰 Batch</a>
+    <a href="/enex">🐘 ENEX</a>
     <a href="/wilson">🥧 Wilson</a>
     <a href="/duplikate">&#127366; Duplikate</a>
     <a href="/db">🗄️ DB</a>
@@ -6742,7 +6798,7 @@ _ENEX_HTML = r"""<!DOCTYPE html>
   col.c-meta   {width:16%}
   col.c-addr   {width:70px}
   col.c-tags   {width:auto}
-  col.c-ocr    {width:120px}
+  col.c-ocr    {width:200px}
   col.c-dates  {width:150px}
   th{padding:9px 12px;text-align:left;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);background:var(--card);white-space:nowrap}
   td{padding:0;border-bottom:1px solid var(--border);vertical-align:top}
@@ -6766,6 +6822,31 @@ _ENEX_HTML = r"""<!DOCTYPE html>
   .b-merged     {background:#d1fae5;color:#065f46}
   .b-pdfminer   {background:#dbeafe;color:#1d4ed8}
   .b-docling    {background:#f3e8ff;color:#7e22ce}
+  /* rescan button + error detail */
+  .rescan-btn{font-size:10px;padding:2px 8px;margin-top:5px;display:inline-block;border:1px solid #fca5a5;border-radius:6px;background:#fff1f2;color:#b91c1c;cursor:pointer;font-weight:600;transition:all .15s;white-space:nowrap}
+  .rescan-btn:hover{background:#fee2e2}
+  .rescan-btn:disabled{opacity:.5;cursor:not-allowed}
+  .err-detail{font-size:10px;color:#b91c1c;margin-top:4px;line-height:1.4;cursor:help;word-break:break-word}
+  a.doc-link{color:var(--accent);text-decoration:none;font-weight:500}
+  a.doc-link:hover{text-decoration:underline}
+  .view-btn{font-size:10px;padding:2px 8px;margin-top:3px;display:inline-block;border:1px solid #93c5fd;border-radius:6px;background:#eff6ff;color:#1d4ed8;cursor:pointer;font-weight:600;transition:all .15s;white-space:nowrap;margin-left:3px}
+  .view-btn:hover{background:#dbeafe}
+  .del-btn{font-size:10px;padding:2px 8px;margin-top:3px;display:inline-block;border:1px solid #fca5a5;border-radius:6px;background:#fff1f2;color:#b91c1c;cursor:pointer;font-weight:600;transition:all .15s;white-space:nowrap;margin-left:3px}
+  .del-btn:hover{background:#fee2e2}
+  .del-btn:disabled{opacity:.5;cursor:not-allowed}
+  /* doc modal */
+  .doc-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9998;align-items:center;justify-content:center}
+  .doc-overlay.open{display:flex}
+  .doc-box{background:#1e2130;border-radius:12px;padding:24px 28px;max-width:700px;width:96%;max-height:85vh;display:flex;flex-direction:column;gap:12px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+  .doc-box h3{font-size:14px;font-weight:700;color:#e2e8f0;flex-shrink:0}
+  .doc-box pre{flex:1;overflow-y:auto;background:#0f1117;color:#a5b4fc;font-size:11px;padding:14px;border-radius:8px;white-space:pre-wrap;word-break:break-word;line-height:1.6;min-height:0}
+  .doc-box .doc-empty{color:#64748b;font-size:13px;text-align:center;padding:30px}
+  .doc-footer{display:flex;justify-content:flex-end;gap:8px;flex-shrink:0}
+  .doc-close-btn{padding:6px 18px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:12px;font-weight:600}
+  .doc-close-btn:hover{background:#1e293b;color:#e2e8f0}
+  .doc-del-btn{padding:6px 18px;border-radius:6px;border:none;background:#dc2626;color:#fff;cursor:pointer;font-size:12px;font-weight:600}
+  .doc-del-btn:hover{background:#b91c1c}
+  .doc-del-btn:disabled{opacity:.5;cursor:not-allowed}
   /* adressat pill */
   .pill-r{background:#fce7f3;color:#9d174d;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600}
   .pill-m{background:#ede9fe;color:#5b21b6;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600}
@@ -6773,6 +6854,22 @@ _ENEX_HTML = r"""<!DOCTYPE html>
   .empty{text-align:center;padding:40px;color:var(--muted);font-size:13px}
   .toast{position:fixed;bottom:24px;right:24px;background:#1e293b;color:#f8fafc;border:1px solid #334155;padding:12px 20px;border-radius:var(--radius);font-size:13px;opacity:0;transform:translateY(8px);transition:all .3s;pointer-events:none;z-index:999}
   .toast.show{opacity:1;transform:none}
+  /* help button */
+  .help-btn{font-size:11px;padding:4px 11px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;transition:all .15s;white-space:nowrap}
+  .help-btn:hover{border-color:var(--accent);color:var(--accent)}
+  /* help modal */
+  .help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center}
+  .help-overlay.open{display:flex}
+  .help-box{background:#23263a;border-radius:14px;padding:28px 32px;max-width:580px;width:94%;max-height:88vh;overflow-y:auto;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.4);color:#e8eaf0}
+  .help-box h2{font-size:15px;font-weight:700;color:#7c6af7;margin-bottom:18px}
+  .help-box h3{font-size:11px;font-weight:700;color:#8a8fb0;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;margin-top:16px}
+  .help-box p{font-size:13px;line-height:1.65;color:#c8cad8;margin-bottom:6px}
+  .help-box ul{padding-left:16px;margin-bottom:6px}
+  .help-box li{font-size:13px;line-height:1.65;color:#c8cad8;margin-bottom:4px}
+  .help-box code{background:#1a1d2e;color:#a5b4fc;padding:1px 6px;border-radius:4px;font-size:12px}
+  .help-close{position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:#8a8fb0;line-height:1;padding:2px}
+  .help-close:hover{color:#e8eaf0}
+  .help-badge{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600;margin-right:4px;vertical-align:middle}
 </style>
 </head>
 <body>
@@ -6809,6 +6906,7 @@ _ENEX_HTML = r"""<!DOCTYPE html>
     <button class="filter-btn" onclick="setFilter('not_required',event)">📄 Kein PDF</button>
     <button class="filter-btn" onclick="setFilter('failed',event)">❌ Fehler</button>
     <button class="ocr-btn" id="ocr-btn" onclick="triggerOcr()">🌙 OCR-Worker starten</button>
+    <button class="help-btn" onclick="openHelp()">❓ Hilfe</button>
   </div>
 
   <div class="tbl-wrap">
@@ -6931,12 +7029,12 @@ async function loadQueue() {
       return `<tr>
         <td><div class="cell"><div class="row1" style="font-size:11px;color:var(--muted)">${r.id}</div></div></td>
         <td><div class="cell">
-          <div class="row1" title="${fname}">${fname||'—'}</div>
-          <div class="row2" title="${etitle}">${etitle||'<em style=\'opacity:.5\'>kein Evernote-Titel</em>'}</div>
+          <div class="row1" title="${fname}"><a class="doc-link" href="/enex/doc/${r.id}" target="_blank" rel="noopener">${fname||'—'}</a></div>
+          <div class="row2" title="${etitle}">${etitle||'<em style="opacity:.5">kein Evernote-Titel</em>'}</div>
         </div></td>
         <td><div class="cell">
           <div class="row1 mono" title="${vpathFull}">${vpath}</div>
-          <div class="row2">${datum}</div>
+          <div class="row2">${datum}${r.anlagen_dateiname ? ` &nbsp;<a href="/enex/doc/${r.id}/pdf" target="_blank" rel="noopener" style="color:var(--blue);font-size:10px;text-decoration:none;font-weight:600" title="${esc(r.anlagen_dateiname)}">📄 PDF</a>` : ''}</div>
         </div></td>
         <td><div class="cell">
           <div class="row1">${kat}</div>
@@ -6945,8 +7043,16 @@ async function loadQueue() {
         <td><div class="cell" style="padding-top:10px">${adressatPill(r.adressat)}</div></td>
         <td>${renderTags(r.enex_tags)}</td>
         <td><div class="cell">
-          ${statusBadge(r.ocr_status)}
+          <span class="badge ${OCR_CLS[r.ocr_status]||''}" ${r.ocr_status==='failed'&&r.ocr_error?`title="${esc(r.ocr_error)}"`:''}>
+            ${OCR_LABELS[r.ocr_status]||r.ocr_status||'—'}
+          </span>
+          ${r.ocr_status==='failed'&&r.ocr_error?`<div class="err-detail" title="${esc(r.ocr_error)}">${esc(r.ocr_error)}</div>`:''}
           ${sourceBadge(r.ocr_source)}
+          ${r.ocr_status==='failed'?`<div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:4px">
+            <button class="rescan-btn" onclick="rescanDoc(${r.id},this)">↻ Rescan</button>
+            <button class="del-btn" onclick="deleteDoc(${r.id},'${esc(r.dateiname||'')}',this)">🗑 Löschen</button>
+          </div>`:''}
+
         </div></td>
         <td><div class="cell">
           <div class="row1" style="font-size:11px">${fmtDate(r.erstellt_am)}</div>
@@ -6977,10 +7083,142 @@ async function triggerOcr() {
   }
 }
 
+async function rescanDoc(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '⏳…'; }
+  try {
+    const d = await (await fetch('/api/enex/rescan/' + id, {method:'POST'})).json();
+    if (d.status === 'started') {
+      showToast('↻ Rescan gestartet: ' + (d.dateiname || id), 4000);
+      setTimeout(loadAll, 4000);
+    } else {
+      showToast('❌ ' + (d.error || JSON.stringify(d)), 4000);
+      if (btn) { btn.disabled = false; btn.textContent = '↻ Rescan'; }
+    }
+  } catch(e) {
+    showToast('❌ Fehler: ' + e.message, 4000);
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Rescan'; }
+  }
+}
+
 async function loadAll() { await Promise.all([loadStats(), loadQueue()]); }
 loadAll();
 setInterval(loadAll, 30000);
+
+function openHelp()  { document.getElementById('help-overlay').classList.add('open'); }
+function closeHelp() { document.getElementById('help-overlay').classList.remove('open'); }
+
+let _docModal = null; // {id, dateiname}
+function closeDocModal() {
+  document.getElementById('doc-overlay').classList.remove('open');
+  _docModal = null;
+}
+
+async function showDoc(id, dateiname) {
+  _docModal = {id, dateiname};
+  const overlay = document.getElementById('doc-overlay');
+  const title   = document.getElementById('doc-title');
+  const pre     = document.getElementById('doc-content');
+  const delBtn  = document.getElementById('doc-del-btn');
+  title.textContent = dateiname || ('Dokument #' + id);
+  pre.textContent   = '⏳ Lädt…';
+  delBtn.disabled   = false;
+  overlay.classList.add('open');
+  try {
+    const d = await (await fetch('/api/enex/doc/' + id + '/content')).json();
+    if (d.error) { pre.textContent = '❌ ' + d.error; return; }
+    if (!d.exists) {
+      pre.innerHTML = '<span style="color:#64748b">Datei nicht mehr im Vault vorhanden.</span>';
+    } else {
+      pre.textContent = d.content || '(leer)';
+    }
+  } catch(e) {
+    pre.textContent = '❌ Fehler: ' + e.message;
+  }
+}
+
+async function deleteDoc(id, dateiname, btn) {
+  const label = dateiname || ('Dokument #' + id);
+  if (!confirm('⚠️ Dokument wirklich löschen?\n\n' + label + '\n\nDie Markdown-Datei im Vault und der Datenbank-Eintrag werden entfernt. Diese Aktion kann nicht rückgängig gemacht werden.')) return;
+  if (btn) { btn.disabled = true; btn.textContent = '⏳…'; }
+  try {
+    const resp = await fetch('/api/enex/doc/' + id, {method:'DELETE'});
+    const d = await resp.json();
+    if (d.status === 'deleted') {
+      showToast('🗑 Gelöscht: ' + (d.dateiname || label), 4000);
+      closeDocModal();
+      setTimeout(loadAll, 500);
+    } else {
+      showToast('❌ ' + (d.error || JSON.stringify(d)), 4000);
+      if (btn) { btn.disabled = false; btn.textContent = '🗑 Löschen'; }
+    }
+  } catch(e) {
+    showToast('❌ Fehler: ' + e.message, 4000);
+    if (btn) { btn.disabled = false; btn.textContent = '🗑 Löschen'; }
+  }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeHelp(); closeDocModal(); }
+});
 </script>
+
+<div id="doc-overlay" class="doc-overlay" onclick="if(event.target===this)closeDocModal()">
+  <div class="doc-box">
+    <h3 id="doc-title"></h3>
+    <pre id="doc-content"></pre>
+    <div class="doc-footer">
+      <button class="doc-close-btn" onclick="closeDocModal()">Schließen</button>
+      <button class="doc-del-btn" id="doc-del-btn" onclick="if(_docModal)deleteDoc(_docModal.id,_docModal.dateiname,this)">🗑 Löschen</button>
+    </div>
+  </div>
+</div>
+
+<div id="help-overlay" class="help-overlay" onclick="if(event.target===this)closeHelp()">
+  <div class="help-box">
+    <button class="help-close" onclick="closeHelp()">✕</button>
+    <h2>❓ ENEX Import — Hilfe</h2>
+
+    <h3>Was ist dieses Dashboard?</h3>
+    <p>Zeigt alle Dokumente, die aus Evernote-Exporten (.enex) importiert wurden. Der Import läuft in zwei Phasen:</p>
+    <ul>
+      <li><strong>Phase 1 — Sofortimport:</strong> Der ENEX-Parser extrahiert Notizen und legt .md-Dateien im Vault an. PDF-Anhänge werden im <code>Anlagen/</code>-Ordner abgelegt.</li>
+      <li><strong>Phase 2 — OCR-Nachtlauf:</strong> Täglich 00:00–07:00 Uhr liest der OCR-Worker alle ausstehenden PDFs ein und ergänzt den Markdown-Text.</li>
+    </ul>
+
+    <h3>OCR-Status — Bedeutung</h3>
+    <ul>
+      <li><span class="help-badge" style="background:#fef9c3;color:#854d0e">⏳ ausstehend</span> PDF gefunden, OCR noch nicht durchgeführt — wird nächste Nacht verarbeitet.</li>
+      <li><span class="help-badge" style="background:#dcfce7;color:#15803d">✅ OCR fertig</span> Text erfolgreich extrahiert (via pdfminer oder Docling).</li>
+      <li><span class="help-badge" style="background:#d1fae5;color:#065f46">🔀 gemerged</span> Dokument war per PDF-Hash bereits im Vault — kein Duplikat angelegt.</li>
+      <li><span class="help-badge" style="background:#f1f5f9;color:#64748b">📄 kein PDF</span> Die Evernote-Notiz enthielt keinen PDF-Anhang — OCR nicht erforderlich.</li>
+      <li><span class="help-badge" style="background:#fee2e2;color:#b91c1c">❌ Fehler</span> OCR fehlgeschlagen. Der Fehlertext steht direkt unter dem Badge in der Tabelle.</li>
+    </ul>
+
+    <h3>Fehlermeldungen — was bedeuten sie?</h3>
+    <ul>
+      <li><code>Kein PDF gefunden</code> — Die PDF-Anlage fehlt im <code>Anlagen/</code>-Verzeichnis des Vaults. Möglicherweise wurde die Datei verschoben oder der Import war unvollständig.</li>
+      <li><code>Docling Timeout nach Xs</code> — Das PDF ist zu groß (typisch &gt;20 MB) oder der Docling-Service war beim Nachtlauf überlastet. Rescan zu einem ruhigeren Zeitpunkt hilft.</li>
+      <li><code>Docling: leere Antwort</code> — Docling konnte keinen Text extrahieren. Ursachen: korruptes PDF, rein grafische Seiten ohne erkennbaren Text, oder beschädigter Anhang.</li>
+      <li><code>MD-Datei konnte nicht aktualisiert werden</code> — Interner Schreibfehler. Die .md-Datei im Vault existiert nicht mehr oder ist nicht beschreibbar.</li>
+    </ul>
+    <p style="font-size:11px;color:#8a8fb0;margin-top:4px">Hinweis: Fehler vor dem 4. Mai 2026 haben noch keinen Fehlertext — der wurde erst ab diesem Datum gespeichert. Rescan befüllt ihn neu.</p>
+
+    <h3>Rescan-Button</h3>
+    <p>Bei Dokumenten mit Status <span class="help-badge" style="background:#fee2e2;color:#b91c1c">❌ Fehler</span> erscheint ein <strong>↻ Rescan</strong>-Button. Er setzt den Status auf „ausstehend" zurück und startet den OCR-Worker sofort für genau dieses eine Dokument — ohne das Nacht-Zeitfenster abwarten zu müssen.</p>
+
+    <h3>OCR-Quellen</h3>
+    <ul>
+      <li><span class="help-badge" style="background:#dbeafe;color:#1d4ed8">pdfminer</span> Schnelle Extraktion für born-digital PDFs (unter 1 Sekunde). Wird bevorzugt, wenn genug Text vorhanden ist.</li>
+      <li><span class="help-badge" style="background:#f3e8ff;color:#7e22ce">docling</span> KI-OCR für Scan-PDFs (2–10 Minuten je Dokument). Wird eingesetzt, wenn pdfminer zu wenig Text liefert.</li>
+    </ul>
+
+    <h3>Manueller OCR-Worker</h3>
+    <p>Der Button <strong>🌙 OCR-Worker starten</strong> startet den Worker sofort (Zeitfenster wird ignoriert) und verarbeitet bis zu 10 ausstehende Dokumente der Reihe nach.</p>
+
+    <h3>Filter</h3>
+    <p>Die Filter-Buttons oben begrenzen die Tabelle auf einen bestimmten Status. Besonders nützlich: <strong>❌ Fehler</strong> zeigt nur Problemdokumente — hier sind Rescan-Buttons für alle angezeigt.</p>
+  </div>
+</div>
 </body>
 </html>
 """
@@ -7052,7 +7290,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
                     limit = 200
                 _cols = ("id, dateiname, vault_pfad, kategorie, typ, adressat, "
                          "rechnungsdatum, ocr_status, ocr_source, ocr_processed_at, "
-                         "erstellt_am, enex_tags")
+                         "erstellt_am, enex_tags, ocr_error, anlagen_dateiname")
                 with get_db() as con:
                     if status_filter == "all":
                         rows = con.execute(
@@ -7071,6 +7309,118 @@ class _ApiHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._json_response({"error": str(e)}, 500)
             return
+        # GET /api/enex/doc/<id>/content — Vault-MD-Datei eines ENEX-Dokuments anzeigen
+        elif path.startswith("/api/enex/doc/") and path.endswith("/content"):
+            try:
+                doc_id = int(path.split("/")[-2])
+            except (ValueError, IndexError):
+                self._json_response({"error": "Ungültige ID"}, 400); return
+            with get_db() as con:
+                row = con.execute(
+                    "SELECT dateiname, vault_pfad FROM dokumente WHERE id=? AND import_source='enex'",
+                    (doc_id,)
+                ).fetchone()
+            if not row:
+                self._json_response({"error": "Dokument nicht gefunden"}, 404); return
+            if not row["vault_pfad"] or not VAULT_ROOT:
+                self._json_response({"exists": False, "content": "", "dateiname": row["dateiname"]}); return
+            md_file = VAULT_ROOT / row["vault_pfad"]
+            if not md_file.exists():
+                self._json_response({"exists": False, "content": "", "dateiname": row["dateiname"]}); return
+            try:
+                content = md_file.read_text(encoding="utf-8", errors="replace")[:12000]
+                self._json_response({"exists": True, "content": content, "dateiname": row["dateiname"]})
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+
+        # GET /enex/doc/<id> — Vault-MD-Datei in separatem Fenster anzeigen
+        elif path.startswith("/enex/doc/") and not path.endswith("/pdf"):
+            try:
+                doc_id = int(path.split("/")[-1])
+            except (ValueError, IndexError):
+                self._html_response("<h1>Ungültige ID</h1>"); return
+            with get_db() as con:
+                row = con.execute(
+                    "SELECT dateiname, vault_pfad, kategorie, ocr_status, ocr_error FROM dokumente WHERE id=? AND import_source='enex'",
+                    (doc_id,)
+                ).fetchone()
+            if not row:
+                self._html_response("<h1>Dokument nicht gefunden</h1>"); return
+            content = ""
+            exists = False
+            pdf_name = None
+            if row["vault_pfad"] and VAULT_ROOT:
+                md_file = VAULT_ROOT / row["vault_pfad"]
+                if md_file.exists():
+                    exists = True
+                    content = md_file.read_text(encoding="utf-8", errors="replace")
+                    import re as _re
+                    m = _re.search(r"original:\s*'?\[\[Anlagen/([^\]]+)\]\]'?", content)
+                    if m:
+                        candidate = VAULT_ROOT / "Anlagen" / m.group(1)
+                        if candidate.exists():
+                            pdf_name = m.group(1)
+            title_html = row["dateiname"].replace('"', '&quot;').replace("'", "&#39;")
+            content_html = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            not_found_note = "" if exists else '<p style="color:#f87171;margin-bottom:12px">⚠️ Datei nicht im Vault gefunden.</p>'
+            pdf_btn = f'<a href="/enex/doc/{doc_id}/pdf" target="_blank" style="display:inline-block;margin-bottom:16px;padding:7px 18px;background:#2563eb;color:#fff;border-radius:7px;text-decoration:none;font-size:13px;font-weight:600">📄 PDF öffnen</a>' if pdf_name else ""
+            self._html_response(f"""<!DOCTYPE html><html lang="de"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title_html}</title>
+<style>
+  *{{box-sizing:border-box;margin:0;padding:0}}
+  body{{background:#0f1117;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;padding:24px;min-height:100vh}}
+  h1{{font-size:15px;font-weight:700;color:#a5b4fc;margin-bottom:4px;word-break:break-all}}
+  .meta{{font-size:11px;color:#64748b;margin-bottom:14px}}
+  pre{{white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.7;color:#cbd5e1;font-family:'SF Mono',ui-monospace,monospace}}
+</style></head><body>
+<h1>{title_html}</h1>
+<div class="meta">{row["vault_pfad"] or "—"} &nbsp;·&nbsp; {row["kategorie"] or "—"} &nbsp;·&nbsp; OCR: {row["ocr_status"] or "—"}</div>
+{not_found_note}{pdf_btn}
+<pre>{content_html or "(leer)"}</pre>
+</body></html>""")
+            return
+
+        # GET /enex/doc/<id>/pdf — PDF-Anlage direkt servieren
+        elif path.startswith("/enex/doc/") and path.endswith("/pdf"):
+            try:
+                doc_id = int(path.split("/")[-2])
+            except (ValueError, IndexError):
+                self.send_error(400, "Ungültige ID"); return
+            if not VAULT_ROOT:
+                self.send_error(503, "Vault nicht konfiguriert"); return
+            with get_db() as con:
+                row = con.execute(
+                    "SELECT vault_pfad, anlagen_dateiname FROM dokumente WHERE id=? AND import_source='enex'",
+                    (doc_id,)
+                ).fetchone()
+            if not row:
+                self.send_error(404, "Dokument nicht gefunden"); return
+            # PDF-Pfad: erst DB-Spalte, dann Frontmatter der MD-Datei
+            pdf_name = row["anlagen_dateiname"]
+            if not pdf_name and row["vault_pfad"]:
+                md_file = VAULT_ROOT / row["vault_pfad"]
+                if md_file.exists():
+                    import re as _re
+                    m = _re.search(r"original:\s*'?\[\[Anlagen/([^\]]+)\]\]'?",
+                                   md_file.read_text(encoding="utf-8", errors="replace"))
+                    if m:
+                        pdf_name = m.group(1)
+            if not pdf_name:
+                self.send_error(404, "Kein PDF-Anhang"); return
+            pdf_path = VAULT_ROOT / "Anlagen" / pdf_name
+            if not pdf_path.exists():
+                self.send_error(404, f"PDF nicht gefunden: {pdf_name}"); return
+            data = pdf_path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Disposition", f'inline; filename="{pdf_name.replace(chr(34), "")}"')
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
         elif path == "/pipeline":
             self._html_response(_PIPELINE_HTML)
             return
@@ -7394,6 +7744,24 @@ class _ApiHandler(BaseHTTPRequestHandler):
         # GET /api/health — aggregierter Service-Status
         elif path == "/api/health":
             self._json_response(_collect_health())
+            return
+
+        # POST /api/molly/restart — Molly Medikationsplan neu starten
+        elif path == "/api/molly/restart":
+            try:
+                r = requests.post("http://host.docker.internal:8080/restart", timeout=5)
+                self._json_response({"ok": True, "msg": r.json().get("msg", "Neustart …")})
+            except Exception as e:
+                self._json_response({"ok": False, "error": str(e)}, status=500)
+            return
+
+        # POST /api/molly/kill   — Molly Medikationsplan beenden
+        elif path == "/api/molly/kill":
+            try:
+                r = requests.post("http://host.docker.internal:8080/kill", timeout=5)
+                self._json_response({"ok": True, "msg": r.json().get("msg", "Beendet …")})
+            except Exception as e:
+                self._json_response({"ok": False, "error": str(e)}, status=500)
             return
 
         # GET /api/events — Server-Sent Events stream
@@ -8421,7 +8789,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
         # POST /api/enex/ocr/trigger — Manuellen OCR-Worker starten
         elif path == "/api/enex/ocr/trigger":
             def _run():
-                subprocess.run(
+                import subprocess as _sp
+                _sp.run(
                     ["python", "/app/enex_ocr_worker.py", "--force-window", "--limit", "10"],
                     capture_output=True
                 )
@@ -8429,10 +8798,60 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._json_response({"message": "✅ OCR-Worker gestartet (bis zu 10 Dokumente, Zeitfenster ignoriert)"})
             return
 
+        # POST /api/enex/rescan/<id> — Einzeldokument erneut per OCR verarbeiten
+        elif path.startswith("/api/enex/rescan/"):
+            try:
+                rescan_doc_id = int(path.split("/")[-1])
+            except ValueError:
+                self._json_response({"error": "Ungültige ID"}, 400); return
+            with get_db() as con:
+                row = con.execute(
+                    "SELECT id, dateiname FROM dokumente WHERE id=? AND import_source='enex'",
+                    (rescan_doc_id,)
+                ).fetchone()
+                if not row:
+                    self._json_response({"error": "Dokument nicht gefunden"}, 404); return
+                con.execute(
+                    "UPDATE dokumente SET ocr_status='pending', ocr_error=NULL, ocr_processed_at=NULL WHERE id=?",
+                    (rescan_doc_id,)
+                )
+            def _rescan_run(did=rescan_doc_id):
+                import subprocess as _sp
+                _sp.run(
+                    ["python", "/app/enex_ocr_worker.py", "--force-window", "--doc-id", str(did)],
+                    capture_output=True
+                )
+            threading.Thread(target=_rescan_run, daemon=True).start()
+            log.info(f"Rescan manuell gestartet: Dokument #{rescan_doc_id} ({row['dateiname']})")
+            self._json_response({"status": "started", "id": rescan_doc_id, "dateiname": row["dateiname"]})
+            return
+
         else:
             self._json_response({"error": "Unbekannter Endpunkt"}, 404)
     def do_DELETE(self):
         path = urlparse(self.path).path
+        # DELETE /api/enex/doc/<id> — Vault-Datei + DB-Eintrag löschen
+        if path.startswith("/api/enex/doc/"):
+            try:
+                doc_id = int(path.split("/")[-1])
+            except ValueError:
+                self._json_response({"error": "Ungültige ID"}, 400); return
+            with get_db() as con:
+                row = con.execute(
+                    "SELECT dateiname, vault_pfad FROM dokumente WHERE id=? AND import_source='enex'",
+                    (doc_id,)
+                ).fetchone()
+                if not row:
+                    self._json_response({"error": "Dokument nicht gefunden"}, 404); return
+                if row["vault_pfad"] and VAULT_ROOT:
+                    md_file = VAULT_ROOT / row["vault_pfad"]
+                    if md_file.exists():
+                        md_file.unlink()
+                        log.info(f"Vault-Datei gelöscht: {row['vault_pfad']}")
+                con.execute("DELETE FROM dokumente WHERE id=?", (doc_id,))
+            log.info(f"ENEX-Dokument #{doc_id} ({row['dateiname']}) gelöscht")
+            self._json_response({"status": "deleted", "id": doc_id, "dateiname": row["dateiname"]})
+            return
         if path.startswith("/api/lernregeln/"):
             try:
                 rule_id = int(path.split("/")[-1])
@@ -9959,20 +10378,37 @@ def process_enex_file(enex_path: Path):
         log.error(f"enex_processor nicht verfügbar: {e}")
         return
 
+    # Warten bis der Syncthing-Transfer vollständig ist (ENEX-Dateien können sehr groß sein)
+    if not wait_for_file_stable(enex_path, timeout=120):
+        log.warning(f"ENEX nicht stabil nach 120 s — Transfer noch aktiv?: {enex_path.name}")
+        return
+
     done_dir = TEMP_DIR / "enex_done"
     done_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         stats = _process(enex_path)
+        imported   = stats.get('imported', 0)
+        duplicates = stats.get('duplicate', 0)
+        errors     = stats.get('error', 0)
+        pdf_pending = stats.get('pdf_pending', 0)
         log.info(
             f"ENEX abgeschlossen: {enex_path.name} — "
-            f"{stats.get('imported', 0)} importiert | "
-            f"{stats.get('duplicate', 0)} Duplikate | "
-            f"{stats.get('error', 0)} Fehler | "
-            f"{stats.get('pdf_pending', 0)} PDFs → OCR"
+            f"{imported} importiert | {duplicates} Duplikate | "
+            f"{errors} Fehler | {pdf_pending} PDFs → OCR"
         )
+        msg = (
+            f"🐘 ENEX-Import abgeschlossen\n"
+            f"📄 {enex_path.name}\n"
+            f"✅ {imported} importiert"
+            + (f" · 🔀 {duplicates} Duplikate" if duplicates else "")
+            + (f" · 🌙 {pdf_pending} PDFs → OCR" if pdf_pending else "")
+            + (f" · ❌ {errors} Fehler" if errors else "")
+        )
+        tg_send(msg)
     except Exception as e:
         log.error(f"ENEX-Verarbeitung fehlgeschlagen: {enex_path.name}: {e}", exc_info=True)
+        tg_send(f"❌ ENEX-Import fehlgeschlagen\n📄 {enex_path.name}\n{e}")
 
     try:
         shutil.move(str(enex_path), str(done_dir / enex_path.name))
@@ -10614,6 +11050,11 @@ class DocumentHandler(FileSystemEventHandler):
     """Watchdog-Handler für WATCH_DIR: verarbeitet .pdf und .enex Dateien."""
     def _enqueue(self, path: Path):
         suffix = path.suffix.lower()
+        if path.name.startswith("."):
+            return
+        if ".sync-conflict-" in path.name:
+            log.debug(f"Syncthing-Konfliktdatei ignoriert: {path.name}")
+            return
         if suffix == ".pdf":
             log.info(f"In Queue (PDF): {path.name}")
             _step_emit(path.name, "started", "Verarbeitung gestartet", "done")
@@ -10642,6 +11083,9 @@ class EnexHandler(FileSystemEventHandler):
         if path.suffix.lower() != ".enex":
             return
         if path.name.startswith("."):  # macOS-Ressource-Forks und SMB-Temp-Dateien
+            return
+        if ".sync-conflict-" in path.name:  # Syncthing-Konfliktdateien nie verarbeiten
+            log.debug(f"Syncthing-Konfliktdatei ignoriert: {path.name}")
             return
         log.info(f"In Queue (ENEX/enex-Ordner): {path.name}")
         file_queue.put(("enex", path))
@@ -11677,7 +12121,8 @@ def main():
     for f in WATCH_DIR.glob("*.pdf"):
         file_queue.put(f)
     for f in WATCH_DIR.glob("*.enex"):
-        file_queue.put(("enex", f))
+        if not f.name.startswith(".") and ".sync-conflict-" not in f.name:
+            file_queue.put(("enex", f))
 
     # Vorhandene ENEX-Dateien im dedizierten enex/-Unterordner verarbeiten
     enex_dir = WATCH_DIR / "enex"
@@ -11686,7 +12131,7 @@ def main():
     if enex_files:
         log.info(f"Startup-Scan enex/: {len(enex_files)} Datei(en) gefunden")
         for f in enex_files:
-            if not f.name.startswith("."):
+            if not f.name.startswith(".") and ".sync-conflict-" not in f.name:
                 file_queue.put(("enex", f))
 
     # Auto-Batch-Rescan entfernt 2026-04-19 (flache Archiv-Architektur):

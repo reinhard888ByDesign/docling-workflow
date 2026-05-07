@@ -22,6 +22,10 @@ services:
     image: quay.io/docling-project/docling-serve:latest
     container_name: docling-serve
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "8"
     environment:
       - DOCLING_SERVE_NUM_WORKERS=2
       - DOCLING_SERVE_MAX_SYNC_WAIT=600
@@ -53,6 +57,7 @@ services:
       - DB_PATH=/data/dispatcher-temp/dispatcher.db
       - ENEX_TAGS_CONFIG=/config/enex-tags.yaml
       - ENEX_DEFAULT_TIMEZONE=Europe/Rome
+      - ENEX_OCR_DOCLING_TIMEOUT=600
       - API_PORT=8765
       - HOST_IP=${HOST_IP:-192.168.86.195}
       - CACHE_READER_URL=http://cache-reader:8501

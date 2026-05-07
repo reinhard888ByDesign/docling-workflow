@@ -553,8 +553,12 @@ def format_guided_summary(doc_id: int, meta: dict) -> tuple[str, dict]:
 
 # ── Dokument-Verarbeitung ──────────────────────────────────────────────────────
 
-def process_pdf(pdf_path: Path):
-    """Hauptverarbeitungsroutine für eine neue PDF-Datei."""
+def process_pdf(pdf_path: Path) -> bool:
+    """Hauptverarbeitungsroutine für eine neue PDF-Datei.
+
+    Returns True wenn die Datei vollständig verarbeitet wurde (kann aus incoming/ gelöscht werden).
+    Returns False bei temporären Fehlern (OCR nicht erreichbar) — Datei bleibt für Retry.
+    """
     log.info(f"Verarbeite: {pdf_path.name}")
 
     # Duplikat-Check
@@ -563,23 +567,23 @@ def process_pdf(pdf_path: Path):
         row = con.execute("SELECT id, status FROM pending WHERE pdf_hash=?", (h,)).fetchone()
     if row:
         log.info(f"Duplikat (Hash {h[:8]}…), überspringe.")
-        return
+        return True  # als erledigt markieren — wird aus incoming/ entfernt
 
-    # Pending-Verzeichnis anlegen
-    pending_subdir = PENDING_DIR / h[:12]
-    pending_subdir.mkdir(parents=True, exist_ok=True)
-    dest_pdf = pending_subdir / pdf_path.name
-    shutil.copy2(pdf_path, dest_pdf)
-
-    # OCR
-    ocr_text = ocr_pdf(dest_pdf)
+    # OCR direkt auf der incoming-Datei (kein frühzeitiges Kopieren nach pending/)
+    ocr_text = ocr_pdf(pdf_path)
     if not ocr_text:
         log.warning(f"OCR fehlgeschlagen für {pdf_path.name} — Ryzen nicht erreichbar?")
         tg_send(
             f"⚠️ <b>OCR fehlgeschlagen</b>\n<code>{pdf_path.name}</code>\n"
-            "Ryzen nicht erreichbar. Dokument bleibt in ~/incoming/ bis Retry."
+            "Ryzen nicht erreichbar. Retry beim nächsten Scan-Durchlauf."
         )
-        return
+        return False  # Datei bleibt in incoming/ für nächsten Versuch
+
+    # Pending-Verzeichnis anlegen — erst jetzt nach erfolgreichem OCR
+    pending_subdir = PENDING_DIR / h[:12]
+    pending_subdir.mkdir(parents=True, exist_ok=True)
+    dest_pdf = pending_subdir / pdf_path.name
+    shutil.copy2(pdf_path, dest_pdf)
 
     # LLM-Metadaten-Extraktion
     meta = extract_metadata(ocr_text)
@@ -645,6 +649,7 @@ def process_pdf(pdf_path: Path):
                 con.execute("UPDATE pending SET tg_msg_id=? WHERE id=?", (msg_id, doc_id))
 
     log.info(f"Dokument {doc_id} in Pending [{konfidenz}]: {meta.get('dateiname')}, Weitergabe um {transfer_at}")
+    return True
 
 # ── Weitergabe ─────────────────────────────────────────────────────────────────
 
@@ -1117,20 +1122,28 @@ def telegram_poll_thread():
 
 def scan_incoming():
     """Polling-Loop: scannt ~/incoming/ auf neue PDFs."""
-    known = set()
+    known: set = set()
     while True:
         try:
-            current = set()
+            current: set = set()
             for f in INCOMING_DIR.glob("*.pdf"):
-                current.add(f)
                 if f not in known:
                     time.sleep(2)  # kurz warten bis Datei vollständig geschrieben
                     if f.stat().st_size > 0:
                         try:
-                            process_pdf(f)
-                            f.unlink()   # aus incoming/ entfernen nach Verarbeitung
+                            ok = process_pdf(f)
                         except Exception as e:
                             log.error(f"Fehler bei {f.name}: {e}")
+                            ok = False
+                        if ok:
+                            f.unlink(missing_ok=True)
+                        else:
+                            # Temporärer Fehler (OCR nicht erreichbar) — beim nächsten Tick erneut versuchen
+                            current.add(f)
+                    else:
+                        current.add(f)
+                else:
+                    current.add(f)
             known = current
         except Exception as e:
             log.error(f"Scan-Fehler: {e}")

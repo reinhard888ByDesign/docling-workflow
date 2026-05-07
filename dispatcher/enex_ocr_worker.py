@@ -111,55 +111,56 @@ def _extract_with_pdfminer(pdf_path: Path) -> Optional[str]:
         return None
 
 
-def _extract_with_docling(pdf_path: Path) -> Optional[str]:
+def _extract_with_docling(pdf_path: Path) -> Tuple[Optional[str], str]:
     """
-    Sendet PDF an docling-serve und gibt den extrahierten Markdown-Text zurück.
+    Sendet PDF an docling-serve und gibt (text, fehler) zurück.
     Timeout: DOCLING_TIMEOUT Sekunden.
     """
     try:
         with open(pdf_path, "rb") as f:
             resp = requests.post(
-                f"{DOCLING_URL}/convert",
-                files={"file": (pdf_path.name, f, "application/pdf")},
+                f"{DOCLING_URL}/v1/convert/file",
+                files={"files": (pdf_path.name, f, "application/pdf")},
                 timeout=DOCLING_TIMEOUT,
             )
         resp.raise_for_status()
         result = resp.json()
 
-        # docling-serve gibt {"markdown": "..."} oder {"output": "..."} zurück
-        text = result.get("markdown") or result.get("output") or result.get("text") or ""
-        if text:
+        # docling-serve /v1/convert/file gibt {"document": {"md_content": "..."}} zurück
+        doc = result.get("document") or {}
+        text = doc.get("md_content") or result.get("markdown") or result.get("output") or result.get("text") or ""
+        if text and text.strip():
             logger.debug("docling: %d Zeichen extrahiert", len(text.strip()))
-            return text.strip()
+            return text.strip(), ""
         logger.warning("docling: leere Antwort für %s", pdf_path.name)
-        return None
+        return None, "Docling: leere Antwort (ggf. korruptes oder nicht-scannbares PDF)"
     except requests.Timeout:
         logger.error("docling Timeout (%d s) für %s", DOCLING_TIMEOUT, pdf_path.name)
-        return None
+        return None, f"Docling Timeout nach {DOCLING_TIMEOUT}s (PDF zu groß oder Service überlastet)"
     except Exception as exc:
         logger.error("docling fehlgeschlagen für %s: %s", pdf_path.name, exc)
-        return None
+        return None, f"Docling Fehler: {type(exc).__name__}: {exc}"
 
 
-def run_ocr(pdf_path: Path) -> Tuple[Optional[str], str]:
+def run_ocr(pdf_path: Path) -> Tuple[Optional[str], str, str]:
     """
     Führt OCR durch: erst pdfminer (born-digital), dann Docling (Scan).
 
     Returns:
-        (ocr_text, source) — source: "pdfminer" | "docling" | None bei Fehler
+        (ocr_text, source, error_detail) — source: "pdfminer" | "docling" | ""
     """
     # Versuch 1: pdfminer (born-digital, < 1 Sek.)
     text = _extract_with_pdfminer(pdf_path)
     if text:
-        return text, "pdfminer"
+        return text, "pdfminer", ""
 
     # Versuch 2: Docling (Scan-OCR, 2–5 Min.)
     logger.info("  → Scan-PDF erkannt, starte Docling für %s", pdf_path.name)
-    text = _extract_with_docling(pdf_path)
+    text, err = _extract_with_docling(pdf_path)
     if text:
-        return text, "docling"
+        return text, "docling", ""
 
-    return None, ""
+    return None, "docling", err
 
 
 # ---------------------------------------------------------------------------
@@ -171,15 +172,17 @@ def find_pdf_for_md(md_vault_path: str) -> Optional[Path]:
     Sucht das zugehörige PDF in Anlagen/ basierend auf dem MD-Dateinamen.
     Konvention: YYYYMMDD_Quelle_Titel.md → Anlagen/YYYYMMDD_Quelle_Titel.pdf
     """
+    import unicodedata
     md_path = Path(md_vault_path)
-    pdf_name = md_path.stem + ".pdf"
-    pdf_path = ANLAGEN_DIR / pdf_name
+    # DB-Pfade können NFD-normalisiert sein (Mac-Evernote), Disk ist NFC → explizit normalisieren
+    stem_nfc = unicodedata.normalize("NFC", md_path.stem)
+    pdf_path = ANLAGEN_DIR / (stem_nfc + ".pdf")
     if pdf_path.exists():
         return pdf_path
 
     # Fallback: suche in Anlagen nach Dateinamen die mit dem Stem beginnen
     if ANLAGEN_DIR.exists():
-        candidates = list(ANLAGEN_DIR.glob(f"{md_path.stem}*.pdf"))
+        candidates = list(ANLAGEN_DIR.glob(f"{stem_nfc}*.pdf"))
         if candidates:
             return candidates[0]
 
@@ -198,7 +201,8 @@ def update_md_with_ocr(vault_path_rel: str, ocr_text: str) -> bool:
     Returns:
         True bei Erfolg, False bei Fehler.
     """
-    md_path = VAULT_PATH / vault_path_rel
+    import unicodedata
+    md_path = VAULT_PATH / unicodedata.normalize("NFC", vault_path_rel)
     if not md_path.exists():
         logger.error("MD-Datei nicht gefunden: %s", md_path)
         return False
@@ -217,16 +221,22 @@ def update_md_with_ocr(vault_path_rel: str, ocr_text: str) -> bool:
 # SQLite-Hilfsfunktionen
 # ---------------------------------------------------------------------------
 
-def load_pending_queue(conn: sqlite3.Connection) -> list:
-    """Lädt alle Dokumente mit ocr_status='pending' aus der DB."""
-    rows = conn.execute(
-        """
-        SELECT id, dateiname, vault_pfad
-        FROM dokumente
-        WHERE ocr_status = 'pending'
-        ORDER BY erstellt_am ASC
-        """
-    ).fetchall()
+def load_pending_queue(conn: sqlite3.Connection, doc_id: Optional[int] = None) -> list:
+    """Lädt Dokumente mit ocr_status='pending'. Optional gefiltert auf eine einzelne ID."""
+    if doc_id is not None:
+        rows = conn.execute(
+            "SELECT id, dateiname, vault_pfad FROM dokumente WHERE id=? AND ocr_status='pending'",
+            (doc_id,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT id, dateiname, vault_pfad
+            FROM dokumente
+            WHERE ocr_status = 'pending'
+            ORDER BY erstellt_am ASC
+            """
+        ).fetchall()
     return rows
 
 
@@ -235,17 +245,19 @@ def update_ocr_status(
     doc_id: int,
     status: str,
     source: str,
+    error_msg: Optional[str] = None,
 ):
-    """Setzt ocr_status, ocr_source und ocr_processed_at für ein Dokument."""
+    """Setzt ocr_status, ocr_source, ocr_processed_at und ocr_error für ein Dokument."""
     conn.execute(
         """
         UPDATE dokumente
         SET ocr_status = ?,
             ocr_source = ?,
-            ocr_processed_at = ?
+            ocr_processed_at = ?,
+            ocr_error = ?
         WHERE id = ?
         """,
-        (status, source, datetime.now(timezone.utc).isoformat(), doc_id),
+        (status, source, datetime.now(timezone.utc).isoformat(), error_msg, doc_id),
     )
     conn.commit()
 
@@ -275,6 +287,7 @@ def run_worker(
     limit: Optional[int] = None,
     force_window: bool = False,
     dry_run: bool = False,
+    doc_id: Optional[int] = None,
 ) -> dict:
     """
     Verarbeitet die OCR-Queue bis das Zeitfenster endet oder die Queue leer ist.
@@ -293,7 +306,7 @@ def run_worker(
 
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
-    queue = load_pending_queue(conn)
+    queue = load_pending_queue(conn, doc_id=doc_id)
     total_pending = len(queue)
 
     logger.info("OCR-Nachtlauf gestartet: %d Dokumente in Queue", total_pending)
@@ -331,14 +344,14 @@ def run_worker(
         pdf_path = find_pdf_for_md(vault_path_rel)
         if pdf_path is None:
             logger.warning("Kein PDF für %s — markiere als failed", filename)
-            update_ocr_status(conn, doc_id, "failed", "")
+            update_ocr_status(conn, doc_id, "failed", "", "Kein PDF gefunden (Anlage fehlt im Vault)")
             stats["failed"] += 1
             processed_count += 1
             continue
 
         # OCR durchführen
         t0 = time.time()
-        ocr_text, source = run_ocr(pdf_path)
+        ocr_text, source, ocr_error = run_ocr(pdf_path)
         elapsed = time.time() - t0
 
         if ocr_text:
@@ -353,11 +366,11 @@ def run_worker(
                     source, elapsed, len(ocr_text)
                 )
             else:
-                update_ocr_status(conn, doc_id, "failed", source)
+                update_ocr_status(conn, doc_id, "failed", source, "MD-Datei konnte nicht aktualisiert werden")
                 stats["failed"] += 1
                 logger.error("  ❌ MD-Update fehlgeschlagen: %s", vault_path_rel)
         else:
-            update_ocr_status(conn, doc_id, "failed", "")
+            update_ocr_status(conn, doc_id, "failed", source, ocr_error or "OCR fehlgeschlagen")
             stats["failed"] += 1
             logger.error("  ❌ OCR fehlgeschlagen: %s", filename)
 
@@ -407,12 +420,15 @@ def main():
                         help="Maximale Anzahl Dokumente")
     parser.add_argument("--force-window", action="store_true",
                         help="Zeitfenster-Check ignorieren (für Tests)")
+    parser.add_argument("--doc-id",       type=int, default=None,
+                        help="Nur dieses einzelne Dokument verarbeiten (ID aus dokumente-Tabelle)")
     args = parser.parse_args()
 
     stats = run_worker(
         limit=args.limit,
         force_window=args.force_window,
         dry_run=args.dry_run,
+        doc_id=args.doc_id,
     )
 
     sys.exit(0 if stats["failed"] == 0 else 1)
