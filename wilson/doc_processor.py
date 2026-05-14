@@ -564,9 +564,15 @@ def process_pdf(pdf_path: Path) -> bool:
     # Duplikat-Check
     h = pdf_hash(pdf_path)
     with get_db() as con:
-        row = con.execute("SELECT id, status FROM pending WHERE pdf_hash=?", (h,)).fetchone()
+        row = con.execute("SELECT id, orig_name, status FROM pending WHERE pdf_hash=?", (h,)).fetchone()
     if row:
+        orig_name = row[1] or pdf_path.name
         log.info(f"Duplikat (Hash {h[:8]}…), überspringe.")
+        tg_send(
+            f"♻️ <b>Duplikat erkannt</b>\n"
+            f"<code>{pdf_path.name}</code>\n"
+            f"Bereits verarbeitet als:\n<code>{orig_name}</code>"
+        )
         return True  # als erledigt markieren — wird aus incoming/ entfernt
 
     # OCR direkt auf der incoming-Datei (kein frühzeitiges Kopieren nach pending/)

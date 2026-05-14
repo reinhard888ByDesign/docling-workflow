@@ -26,6 +26,7 @@ services:
       resources:
         limits:
           cpus: "8"
+          memory: 10G
     environment:
       - DOCLING_SERVE_NUM_WORKERS=2
       - DOCLING_SERVE_MAX_SYNC_WAIT=600
@@ -59,8 +60,10 @@ services:
       - ENEX_DEFAULT_TIMEZONE=Europe/Rome
       - ENEX_OCR_DOCLING_TIMEOUT=600
       - API_PORT=8765
+      - SIDECAR_GRACE_SEC=30
       - HOST_IP=${HOST_IP:-192.168.86.195}
       - CACHE_READER_URL=http://cache-reader:8501
+      - KK_DB_PATH=/data/kk_leistungen.db
       - TZ=Europe/Rome
     ports:
       - "8765:8765"
@@ -71,6 +74,7 @@ services:
       - ./syncthing/data/reinhards-vault:/data/reinhards-vault
       - /home/reinhard/.local/bin/enzyme:/usr/local/bin/enzyme:ro
       - /home/reinhard/.ssh/id_ed25519:/ssh/id_ed25519:ro
+      - /home/reinhard/.claude/skills/leistungsabrechnung/kk_leistungen.db:/data/kk_leistungen.db
     networks:
       - docling-net
       - ollama-net

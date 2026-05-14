@@ -66,6 +66,8 @@ OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT",   "300"))
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT_ID",    "")
 API_PORT       = int(os.environ.get("API_PORT", "8765"))
+SIDECAR_GRACE_SEC = int(os.environ.get("SIDECAR_GRACE_SEC", "30"))
+KK_DB_PATH = os.environ.get("KK_DB_PATH", "")
 
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -568,6 +570,104 @@ def save_to_db(file_path: Path, result: dict) -> list[dict]:
         return match_infos
 
 
+def _ensure_kk_schema(con):
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS leistungen (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            krankenkasse TEXT NOT NULL,
+            versicherungsnummer TEXT,
+            adressat TEXT,
+            datum_leistungsabrechnung TEXT,
+            leistungserbringer TEXT,
+            zeitraum TEXT,
+            art_der_behandlung TEXT,
+            rechnungsbetrag_eur REAL,
+            erstattung_eur REAL,
+            erstattungssatz_pct INTEGER,
+            hinweise TEXT,
+            quelle_pdf TEXT,
+            rohtext_md5 TEXT,
+            erstellt_am TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(quelle_pdf, zeitraum, leistungserbringer, art_der_behandlung, rechnungsbetrag_eur)
+        );
+        CREATE INDEX IF NOT EXISTS idx_kk_leistungen_kk ON leistungen(krankenkasse);
+        CREATE INDEX IF NOT EXISTS idx_kk_leistungen_datum ON leistungen(datum_leistungsabrechnung);
+    """)
+
+
+def _write_kk_leistungen_db(result: dict, pdf_path: Path) -> int:
+    """Schreibt Leistungsabrechnungs-Positionen in kk_leistungen.db.
+    Gibt Anzahl neuer Eintraege zurueck. Kein Fehler falls DB nicht konfiguriert."""
+    if not KK_DB_PATH:
+        return 0
+    positionen = result.get("positionen") or []
+    if not positionen:
+        return 0
+
+    db_path = Path(KK_DB_PATH)
+    absender = (result.get("absender") or "").upper()
+    if "HUK" in absender:
+        kk = "HUK-Coburg"
+    elif "GOTHAER" in absender or "GOTHA" in absender:
+        kk = "Gothaer"
+    else:
+        kk = ""
+
+    try:
+        con = sqlite3.connect(str(db_path))
+        con.execute("PRAGMA journal_mode=WAL")
+    except Exception as e:
+        log.warning(f"kk_leistungen.db nicht erreichbar: {e}")
+        return 0
+
+    try:
+        _ensure_kk_schema(con)
+        neu = 0
+        for pos in positionen:
+            betrag = _parse_betrag(str(pos.get("rechnungsbetrag", "")))
+            erstattung = _parse_betrag(str(pos.get("erstattungsbetrag", "")))
+            satz = pos.get("erstattungsprozent")
+            if satz is None and betrag and erstattung is not None and betrag > 0:
+                satz = round(erstattung / betrag * 100)
+
+            try:
+                con.execute(
+                    """INSERT INTO leistungen
+                       (krankenkasse, versicherungsnummer, adressat,
+                        datum_leistungsabrechnung, leistungserbringer,
+                        zeitraum, art_der_behandlung, rechnungsbetrag_eur,
+                        erstattung_eur, erstattungssatz_pct, hinweise,
+                        quelle_pdf)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        kk,
+                        result.get("versicherungsnummer"),
+                        result.get("adressat"),
+                        result.get("rechnungsdatum"),
+                        pos.get("leistungserbringer"),
+                        pos.get("zeitraum"),
+                        pos.get("art_der_behandlung"),
+                        betrag,
+                        erstattung,
+                        satz,
+                        pos.get("hinweise"),
+                        pdf_path.name,
+                    ),
+                )
+                con.commit()
+                neu += 1
+            except sqlite3.IntegrityError:
+                pass  # bereits vorhanden
+            except Exception as e:
+                log.warning(f"Fehler beim Schreiben in kk_leistungen.db: {e}")
+
+        if neu:
+            log.info(f"kk_leistungen.db: {neu} neue Position(en) aus {pdf_path.name}")
+    finally:
+        con.close()
+    return neu
+
+
 def save_klassifikation_historie(dok_id: int | None, result: dict, korrektur: bool = False):
     """Schreibt einen Eintrag in klassifikations_historie.
 
@@ -695,6 +795,68 @@ file_queue: queue.Queue = queue.Queue()
 # ── Rescan-Fortschritt ─────────────────────────────────────────────────────────
 _rescan_state: dict = {"active": False, "total": 0, "done": 0, "errors": 0, "current": ""}
 _rescan_stop_requested: bool = False
+
+# ── Vault-Summarizer Steuerung ─────────────────────────────────────────────────
+_SUMMARIZER_PROGRESS = Path("/data/dispatcher-temp/vault_summarizer_progress.json")
+_SUMMARIZER_LOG      = Path("/data/dispatcher-temp/vault_summarizer.log")
+_SUMMARIZER_MODEL    = "qwen3:4b-instruct"
+_summarizer_proc: "subprocess.Popen | None" = None
+
+def _summarizer_pid() -> int | None:
+    """Gibt PID des laufenden vault_summarizer zurück, sonst None."""
+    global _summarizer_proc
+    if _summarizer_proc is not None and _summarizer_proc.poll() is None:
+        return _summarizer_proc.pid
+    _summarizer_proc = None
+    # Fallback: Prozess suchen der unabhängig gestartet wurde
+    try:
+        r = subprocess.run(["pgrep", "-f", "vault_summarizer.py"], capture_output=True, text=True)
+        pids = [int(p) for p in r.stdout.split() if p.strip().isdigit()]
+        return pids[0] if pids else None
+    except Exception:
+        return None
+
+def _summarizer_stop() -> None:
+    global _summarizer_proc
+    pid = _summarizer_pid()
+    if pid is not None:
+        try:
+            subprocess.run(["kill", str(pid)], check=True)
+        except Exception:
+            pass
+    _summarizer_proc = None
+    log.info(f"Vault-Summarizer gestoppt (PID {pid})")
+
+def _summarizer_status() -> dict:
+    """Liest Fortschritt + Prozessstatus des vault_summarizers."""
+    pid = _summarizer_pid()
+    running = pid is not None
+    result: dict = {
+        "label": "Vault Summarizer",
+        "status": "ok" if running else "warn",
+        "running": running,
+        "pid": pid,
+    }
+    try:
+        if _SUMMARIZER_PROGRESS.exists():
+            data = json.loads(_SUMMARIZER_PROGRESS.read_text())
+            total = 4894
+            counts: dict[str, int] = {}
+            for v in data.values():
+                s = v.get("status", "unknown") if isinstance(v, dict) else str(v)
+                counts[s] = counts.get(s, 0) + 1
+            scanned = len(data)
+            result.update({
+                "scanned": scanned,
+                "total": total,
+                "done": counts.get("done", 0),
+                "errors": counts.get("error", 0),
+                "skipped": counts.get("skipped_short", 0) + counts.get("skipped_lang_uncertain", 0),
+                "pct": round(scanned * 100 / total) if total else 0,
+            })
+    except Exception:
+        pass
+    return result
 KEYWORD_RULES: list = []
 
 # ── Batch-Modus (thread-local) ─────────────────────────────────────────────────
@@ -972,7 +1134,7 @@ Regeln:
         model = _get_available_ollama_model()
         r = requests.post(
             f"{OLLAMA_URL}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
+            json={"model": model, "prompt": prompt, "stream": False, "keep_alive": "2h"},
             timeout=60,
         )
         sql = r.json().get("response", "").strip()
@@ -1739,6 +1901,9 @@ def _collect_health() -> dict:
     else:
         services["molly"] = {"label": "Molly Medikation", "status": "error", "error": "Port 8080 nicht erreichbar"}
 
+    # 10 — Vault Summarizer
+    services["vault_summarizer"] = _summarizer_status()
+
     host_ip = os.environ.get("HOST_IP", "localhost")
 
     return {
@@ -2301,10 +2466,12 @@ const SVC = {
     desc: 'Browser-Interface für Gespräche mit den lokalen Ollama-Modellen und dem Vault-Assistenten. Ermöglicht natürlichsprachliche Vault-Suche über den enzyme-MCP-Server.' },
   molly:        { icon:'🐾', label:'Molly Medikation',  urlFn: ip => `http://${ip}:8080/`,
     desc: 'Medikationsplan für Molly (Labrador, 11 J.). Zeigt Tagesdosen für Altadol, Deltacortene, Gabapentin und Tobradex. Mit Abhaken-Funktion und Erledigt-Tracking.' },
+  vault_summarizer: { icon:'📝', label:'Vault Summarizer', urlFn: _ => null,
+    desc: 'Fasst alle Vault-Markdown-Dateien mit qwen3:4b-instruct zusammen. Lässt sich manuell starten und stoppen, um Ressourcen-Konflikte mit anderen Ollama-Prozessen zu vermeiden.' },
 };
 
 // Card render order = same as flow
-const CARD_ORDER = ['wilson_pi','syncthing','syncthing_mac','docling_serve','ollama','dispatcher','enzyme','open_webui','molly'];
+const CARD_ORDER = ['wilson_pi','syncthing','syncthing_mac','docling_serve','ollama','dispatcher','enzyme','open_webui','molly','vault_summarizer'];
 
 let _hostIp = 'localhost';
 
@@ -2372,6 +2539,32 @@ function renderCard(key, svc) {
         <a href="${enzymeUrl}" target="_blank" style="font-size:12px;color:var(--accent);text-decoration:none;border:1px solid var(--border);padding:4px 10px;border-radius:6px">API-Docs ↗</a>
         <span id="enzyme-refresh-status" style="font-size:12px;color:var(--muted)"></span>
       </div>`;
+  } else if (key === 'vault_summarizer') {
+    const pct  = svc.pct ?? 0;
+    const done = svc.done ?? 0;
+    const sc   = svc.scanned ?? 0;
+    const tot  = svc.total ?? 0;
+    const err  = svc.errors ?? 0;
+    const running = svc.running ?? false;
+    body = `
+      <div style="margin-bottom:6px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:3px">
+          <span>${sc} / ${tot} gescannt</span><span>${pct}%</span>
+        </div>
+        <div style="background:var(--border);border-radius:4px;height:6px;overflow:hidden">
+          <div style="background:var(--accent);height:100%;width:${pct}%;transition:width .4s"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:16px;font-size:12px;margin-bottom:8px">
+        <span style="color:var(--ok)">✓ ${done} Summaries</span>
+        ${err > 0 ? `<span style="color:var(--err)">✗ ${err} Fehler</span>` : ''}
+        <span style="color:var(--muted)">PID: ${svc.pid ?? '—'}</span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button onclick="summarizerAction('start')" ${running?'disabled':''} style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--ok);background:transparent;color:var(--ok);cursor:pointer;font-weight:600;opacity:${running?0.4:1}">▶ Start</button>
+        <button onclick="summarizerAction('stop')" ${!running?'disabled':''} style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--err);background:transparent;color:var(--err);cursor:pointer;font-weight:600;opacity:${!running?0.4:1}">■ Stop</button>
+      </div>
+      <div id="summarizer-action-status" style="font-size:11px;color:var(--muted);margin-top:4px"></div>`;
   } else if (key === 'molly') {
     const mollyUrl = SVC.molly.urlFn(_hostIp);
     body = `
@@ -2496,6 +2689,19 @@ async function mollyAction(action) {
     if (st) st.textContent = 'Fehler: nicht erreichbar';
   }
   setTimeout(() => loadAll(), 3000);
+}
+
+async function summarizerAction(action) {
+  const st = document.getElementById('summarizer-action-status');
+  if (st) st.textContent = action==='start' ? 'Wird gestartet …' : 'Wird gestoppt …';
+  try {
+    const r = await fetch('/api/summarizer/' + action, {method:'POST'});
+    const d = await r.json();
+    if (st) st.textContent = d.ok ? (d.msg || (action==='start' ? `Gestartet (PID ${d.pid})` : 'Gestoppt')) : (d.error || 'Fehler');
+  } catch(e) {
+    if (st) st.textContent = 'Fehler: nicht erreichbar';
+  }
+  setTimeout(() => loadAll(), 2000);
 }
 
 // Categories
@@ -4012,7 +4218,7 @@ _REVIEW_HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Docling · Review</title>
 <style>
-:root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--accent:#7c6af7;--text:#e0e0e0;--muted:#888;--green:#4caf50;--orange:#ff9800;--red:#f44336}
+:root{--bg:#f5f6fa;--card:#ffffff;--border:#e2e4ed;--accent:#7c6af7;--text:#1a1d27;--muted:#6b7280;--green:#16a34a;--orange:#d97706;--red:#dc2626}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;height:100vh;display:flex;flex-direction:column}
 header{display:flex;align-items:center;gap:16px;padding:10px 18px;background:var(--card);border-bottom:1px solid var(--border)}
@@ -4023,19 +4229,19 @@ header .links a:hover{color:var(--text)}
 /* Left panel */
 #left{width:340px;min-width:260px;border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
 .filter-bar{padding:8px 10px;border-bottom:1px solid var(--border);display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-.filter-bar select,.filter-bar input{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:12px}
+.filter-bar select,.filter-bar input{background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:12px}
 .filter-bar input{flex:1;min-width:80px}
 #doc-list{flex:1;overflow-y:auto;padding:6px}
 .doc-item{padding:8px 10px;border-radius:6px;cursor:pointer;border:1px solid transparent;margin-bottom:4px;transition:background .15s}
-.doc-item:hover{background:#22253a}
-.doc-item.active{background:#1e2240;border-color:var(--accent)}
+.doc-item:hover{background:#eef0f8}
+.doc-item.active{background:#ebe8ff;border-color:var(--accent)}
 .doc-item .fname{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .doc-item .meta{font-size:12px;display:flex;gap:6px;align-items:center;margin-top:3px}
-.badge{padding:2px 6px;border-radius:10px;font-size:10px;font-weight:600;background:#2a2d3a}
-.badge.inbox{background:#3a2a1a;color:var(--orange)}
-.badge.niedrig{background:#3a1a1a;color:var(--red)}
-.badge.mittel{background:#1a2a3a;color:#5bc0de}
-.badge.hoch{background:#1a3a1a;color:var(--green)}
+.badge{padding:2px 6px;border-radius:10px;font-size:10px;font-weight:600;background:#e5e7eb;color:var(--text)}
+.badge.inbox{background:#fef3c7;color:#92400e}
+.badge.niedrig{background:#fee2e2;color:#991b1b}
+.badge.mittel{background:#dbeafe;color:#1e40af}
+.badge.hoch{background:#dcfce7;color:#166534}
 .count-bar{padding:6px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)}
 /* Right panel */
 #right{flex:1;display:flex;flex-direction:column;overflow:hidden}
@@ -4048,14 +4254,14 @@ header .links a:hover{color:var(--text)}
 .meta-box .lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
 .meta-box .val{font-size:13px;font-weight:500;margin-top:2px;word-break:break-word}
 .panels{display:flex;flex:1;overflow:hidden;gap:0}
-#md-panel{flex:1;overflow-y:auto;padding:12px 16px;border-right:1px solid var(--border);font-size:12px;line-height:1.6;white-space:pre-wrap;font-family:monospace;color:#b0c4de}
+#md-panel{flex:1;overflow-y:auto;padding:12px 16px;border-right:1px solid var(--border);font-size:12px;line-height:1.6;white-space:pre-wrap;font-family:monospace;color:#374151}
 #form-panel{width:320px;min-width:260px;overflow-y:auto;padding:14px 16px}
 #form-panel h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--accent)}
 .form-group{margin-bottom:12px}
 .form-group label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px}
-.form-group select,.form-group input,.form-group textarea{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:5px;padding:6px 8px;font-size:12px}
+.form-group select,.form-group input,.form-group textarea{width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:5px;padding:6px 8px;font-size:12px}
 .form-group textarea{min-height:60px;resize:vertical;font-family:monospace}
-.rule-section{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;margin:10px 0}
+.rule-section{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;margin:10px 0}
 .rule-section .rule-title{font-size:11px;text-transform:uppercase;color:var(--muted);letter-spacing:.5px;margin-bottom:8px}
 .radio-group{display:flex;flex-direction:column;gap:6px}
 .radio-group label{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px}
@@ -4065,11 +4271,11 @@ button.primary{width:100%;padding:9px;background:var(--accent);color:#fff;border
 button.primary:hover{background:#6a5ae0}
 button.primary:disabled{opacity:.4;cursor:not-allowed}
 .btn-secondary{padding:5px 10px;background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:5px;cursor:pointer;font-size:11px}
-.btn-secondary:hover{background:var(--card);color:var(--text)}
+.btn-secondary:hover{background:var(--bg);color:var(--text)}
 .retro-toggle{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;cursor:pointer}
 .retro-toggle input{cursor:pointer}
-.toast{position:fixed;bottom:20px;right:20px;background:#1a3a1a;border:1px solid var(--green);color:var(--green);padding:10px 16px;border-radius:8px;font-size:13px;z-index:999;display:none}
-.toast.error{background:#3a1a1a;border-color:var(--red);color:var(--red)}
+.toast{position:fixed;bottom:20px;right:20px;background:#f0fdf4;border:1px solid var(--green);color:var(--green);padding:10px 16px;border-radius:8px;font-size:13px;z-index:999;display:none}
+.toast.error{background:#fef2f2;border-color:var(--red);color:var(--red)}
 /* Lernregeln list */
 #rules-panel{padding:14px 16px}
 #rules-panel h3{font-size:13px;font-weight:600;margin-bottom:10px}
@@ -6899,6 +7105,20 @@ _ENEX_HTML = r"""<!DOCTYPE html>
     <div class="stat"><div class="stat-label">❌ Fehler</div><div class="stat-value c-red" id="s-failed">—</div></div>
   </div>
 
+  <div id="rerun-box" style="display:none;margin:12px 0;padding:14px 18px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;font-size:13px">
+    <div style="font-weight:700;margin-bottom:8px;color:#15803d">⚙️ OCR-Rerun läuft</div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:8px">
+      <span>Bearbeitet: <b id="rr-done">—</b> / <b id="rr-total">—</b></span>
+      <span>Ø Tempo: <b id="rr-avg">—</b></span>
+      <span>ETA: <b id="rr-eta">—</b></span>
+      <span>Fehler: <b id="rr-failed">—</b></span>
+    </div>
+    <div style="background:#dcfce7;border-radius:6px;height:10px;overflow:hidden">
+      <div id="rr-bar" style="height:100%;background:#22c55e;width:0%;transition:width .5s"></div>
+    </div>
+    <div id="rr-last" style="margin-top:6px;color:#6b7280;font-size:11px;font-family:monospace">—</div>
+  </div>
+
   <div class="toolbar">
     <button class="filter-btn active" onclick="setFilter('all',event)">Alle</button>
     <button class="filter-btn" onclick="setFilter('pending',event)">⏳ Ausstehend</button>
@@ -6958,6 +7178,26 @@ async function loadStats() {
     document.getElementById('s-not_required').textContent = d.not_required ?? '—';
     document.getElementById('s-failed').textContent       = d.failed       ?? '—';
   } catch(e) { console.error('stats:', e); }
+  try {
+    const r = await (await fetch('/api/enex/ocr/rerun-status')).json();
+    const box = document.getElementById('rerun-box');
+    if (r.running || r.done > 0) {
+      box.style.display = 'block';
+      document.getElementById('rr-done').textContent   = r.done   ?? '—';
+      document.getElementById('rr-total').textContent  = r.total  ?? '—';
+      document.getElementById('rr-avg').textContent    = r.avg_s  ? r.avg_s + 's/Dok' : '—';
+      document.getElementById('rr-eta').textContent    = r.running ? (r.eta ?? '—') : '—';
+      document.getElementById('rr-failed').textContent = r.failed ?? '0';
+      document.getElementById('rr-last').textContent   = r.running ? (r.last_file ?? '') : '';
+      const pct = r.total > 0 ? Math.round(r.done / r.total * 100) : 0;
+      document.getElementById('rr-bar').style.width = pct + '%';
+      if (!r.running) {
+        document.getElementById('rerun-box').style.background = '#f0f9ff';
+        document.getElementById('rerun-box').style.borderColor = '#7dd3fc';
+        document.getElementById('rerun-box').querySelector('div').textContent = '✅ OCR-Rerun abgeschlossen';
+      }
+    } else { box.style.display = 'none'; }
+  } catch(e) { /* kein Rerun aktiv */ }
 }
 
 const OCR_LABELS = {
@@ -7231,7 +7471,7 @@ _BACKUP_HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Backup · Dispatcher</title>
 <style>
-  :root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;--ok:#3fb950;--warn:#d29922;--err:#f85149}
+  :root{--bg:#f4f5f7;--card:#fff;--border:#dde1ea;--text:#1a1d2e;--muted:#6b7280;--accent:#4f46e5;--ok:#059669;--warn:#d97706;--err:#dc2626}
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);font-size:14px;padding:0 0 40px}
   header{display:flex;align-items:center;gap:14px;padding:14px 24px;border-bottom:1px solid var(--border);background:var(--card);position:sticky;top:0;z-index:10}
@@ -7247,16 +7487,16 @@ _BACKUP_HTML = r"""<!DOCTYPE html>
   .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)} .accent{color:var(--accent)}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th{text-align:left;color:var(--muted);font-weight:500;padding:6px 10px;border-bottom:1px solid var(--border)}
-  td{padding:7px 10px;border-bottom:1px solid #21262d}
+  td{padding:7px 10px;border-bottom:1px solid var(--border)}
   tr:last-child td{border-bottom:none}
   .btn{padding:7px 16px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:600}
-  .btn-primary{background:var(--accent);color:#000}
+  .btn-primary{background:var(--accent);color:#fff}
   .btn-primary:hover{opacity:.85}
   .btn-primary:disabled{opacity:.4;cursor:not-allowed}
-  .log-box{background:#010409;border:1px solid var(--border);border-radius:6px;padding:14px;font-family:monospace;font-size:11px;line-height:1.6;max-height:360px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+  .log-box{background:#f8f9fb;border:1px solid var(--border);border-radius:6px;padding:14px;font-family:monospace;font-size:11px;line-height:1.6;max-height:360px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:#374151}
   .status-msg{margin-top:10px;font-size:12px;color:var(--muted)}
   .badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:700}
-  .badge-ok{background:#1a3a1a;color:var(--ok)} .badge-warn{background:#3a2a00;color:var(--warn)} .badge-err{background:#3a0a0a;color:var(--err)}
+  .badge-ok{background:#d1fae5;color:#065f46} .badge-warn{background:#fef3c7;color:#92400e} .badge-err{background:#fee2e2;color:#991b1b}
 </style>
 </head>
 <body>
@@ -7404,6 +7644,43 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 self._json_response({
                     "total": total, "pending": pending, "completed": completed,
                     "failed": failed, "not_required": not_required, "merged": merged,
+                })
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+        # GET /api/enex/ocr/rerun-status — Fortschritt enex_ocr_rerun.py (liest Host-Log)
+        elif path == "/api/enex/ocr/rerun-status":
+            import re as _re
+            LOG = Path("/data/dispatcher-temp/enex_ocr_rerun.log")
+            try:
+                if not LOG.exists():
+                    self._json_response({"running": False, "done": 0, "total": 0}); return
+                lines = LOG.read_text("utf-8", errors="ignore").splitlines()
+                total = done = failed = 0
+                avg_s = None
+                eta = last_file = None
+                running = False
+                for line in lines:
+                    m = _re.search(r'Starte OCR-Lauf:\s*(\d+)', line)
+                    if m: total = int(m.group(1))
+                    m = _re.search(r'\[(\d+)/(\d+)\].*?: (.+?)\.md', line)
+                    if m:
+                        done = int(m.group(1)); total = total or int(m.group(2))
+                        last_file = m.group(3).split('/')[-1] + '.md'
+                        running = True
+                    if 'fehlgeschlagen' in line or 'Fehler' in line.lower():
+                        failed += 1
+                    m = _re.search(r'Ø\s+([\d.]+)s/Dok.*?ETA\s*~(.+)', line)
+                    if m: avg_s = float(m.group(1)); eta = m.group(2).strip()
+                    if 'Fertig in' in line: running = False
+                self._json_response({
+                    "running":   running,
+                    "done":      done,
+                    "total":     total,
+                    "failed":    failed,
+                    "avg_s":     round(avg_s, 0) if avg_s else None,
+                    "eta":       eta,
+                    "last_file": last_file,
                 })
             except Exception as e:
                 self._json_response({"error": str(e)}, 500)
@@ -9059,6 +9336,27 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._json_response({"status": "started", "id": rescan_doc_id, "dateiname": row["dateiname"]})
             return
 
+        # POST /api/summarizer/start — Vault-Summarizer starten
+        elif path == "/api/summarizer/start":
+            global _summarizer_proc
+            import subprocess as _sp_sum
+            if _summarizer_pid() is not None:
+                self._json_response({"ok": False, "error": "Läuft bereits"}); return
+            log_fh = open(_SUMMARIZER_LOG, "a")
+            _summarizer_proc = _sp_sum.Popen(
+                ["python3", "-u", "/data/dispatcher-temp/vault_summarizer.py",
+                 "--run", "--model", _SUMMARIZER_MODEL],
+                stdout=log_fh, stderr=log_fh, start_new_session=True,
+            )
+            log.info(f"Vault-Summarizer gestartet (PID {_summarizer_proc.pid})")
+            self._json_response({"ok": True, "pid": _summarizer_proc.pid})
+            return
+
+        # POST /api/summarizer/stop — Vault-Summarizer beenden
+        elif path == "/api/summarizer/stop":
+            _summarizer_stop(); self._json_response({"ok": True, "msg": "Gestoppt"})
+            return
+
         else:
             self._json_response({"error": "Unbekannter Endpunkt"}, 404)
     def do_DELETE(self):
@@ -9730,7 +10028,7 @@ Für Krankenversicherung/Versicherung zusätzlich ausfüllen:
 - "rechnungsbetrag": Gesamtbetrag als String (z.B. "33,06 EUR") — bei Leistungsabrechnung: Gesamtrechnungsbetrag, bei Arztrechnung: Endbetrag; sonst null
 - "erstattungsbetrag": Erstatteter Betrag als String — NUR bei Leistungsabrechnung, sonst null
 - "faelligkeitsdatum": Fälligkeitsdatum als String — NUR bei Arztrechnung/Rezept/sonstige, sonst null
-- "positionen": Liste der Erstattungspositionen — NUR bei leistungsabrechnung-Typen, sonst []. Jede Position: {{"leistungserbringer": "Name", "zeitraum": "02.02-19.04.2023", "rechnungsbetrag": 33.06, "erstattungsbetrag": 10.72}}
+- "positionen": Liste der Erstattungspositionen — NUR bei leistungsabrechnung-Typen, sonst []. Jede Position: {{"leistungserbringer": "Name", "zeitraum": "02.02-19.04.2023", "art_der_behandlung": "Zahnbehandlung", "rechnungsbetrag": 33.06, "erstattungsbetrag": 10.72, "hinweise": "1" oder null}}
 """
 
     header_block = ""
@@ -9819,7 +10117,7 @@ Antworte NUR mit einem JSON-Objekt mit diesen Feldern:
 - "rechnungsbetrag": Gesamtbetrag als String (z.B. "33,06 EUR"), oder null
 - "erstattungsbetrag": Erstatteter Betrag — NUR bei Leistungsabrechnung, sonst null
 - "faelligkeitsdatum": Fälligkeitsdatum — NUR bei Arztrechnung/Rezept, sonst null
-- "positionen": Erstattungspositionen — NUR bei Leistungsabrechnung, sonst []
+- "positionen": Erstattungspositionen mit leistungserbringer, zeitraum, art_der_behandlung, rechnungsbetrag, erstattungsbetrag, hinweise — NUR bei Leistungsabrechnung, sonst []
 - "konfidenz_category": "hoch" | "mittel" | "niedrig" — wie sicher bist du bei der Kategorie?
 - "konfidenz_type":     "hoch" | "mittel" | "niedrig" — wie sicher bist du beim Typ?
 - "konfidenz_absender": "hoch" | "mittel" | "niedrig" — wie sicher bist du beim Absender?
@@ -9839,16 +10137,19 @@ Dokument:
 
     try:
         t0 = time.time()
-        r = requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.1, "num_ctx": OLLAMA_NUM_CTX},
-            },
-            timeout=OLLAMA_TIMEOUT,
-        )
+        payload = {
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "keep_alive": "2h",
+            "options": {"temperature": 0.1, "num_ctx": OLLAMA_NUM_CTX},
+        }
+        r = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=OLLAMA_TIMEOUT)
+        # GPU-Hang auf AMD iGPU: einmal retry nach 500 (model runner nach cold-load crash)
+        if r.status_code == 500 and "model runner" in r.text:
+            log.warning(f"Ollama GPU-Hang (cold-load) — retry in 5s")
+            time.sleep(5)
+            r = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=OLLAMA_TIMEOUT)
         duration_ms = int((time.time() - t0) * 1000)
         if not r.ok:
             log.warning(f"Ollama Fehler {r.status_code}: {r.text[:300]}")
@@ -10675,7 +10976,20 @@ def process_file(file_path: Path):
     # Wenn Wilson das Dokument vorverarbeitet hat, liegt eine .meta.json neben dem PDF.
     # In diesem Fall: OCR + LLM auf Ryzen überspringen, Sidecar-Daten direkt verwenden.
     sidecar_path = file_path.parent / (file_path.stem + ".meta.json")
-    if sidecar_path.exists() and not _batch_active():
+    _sidecar_available = sidecar_path.exists()
+    if not _sidecar_available and not _batch_active():
+        # Grace Period: Sidecar kann via Syncthing wenige Sekunden nach der PDF
+        # eintreffen (kein atomarer Transfer). Warte kurz und prüfe erneut.
+        log.info(f"Kein Sidecar für {_fn} — warte {SIDECAR_GRACE_SEC}s auf .meta.json via Syncthing")
+        waited = 0
+        while waited < SIDECAR_GRACE_SEC:
+            time.sleep(2)
+            waited += 2
+            if sidecar_path.exists():
+                _sidecar_available = True
+                log.info(f"Sidecar erschien nach {waited}s: {sidecar_path.name}")
+                break
+    if _sidecar_available and not _batch_active():
         log.info(f"Wilson-Sidecar gefunden: {sidecar_path.name} — Bypass-Modus aktiv")
         _step_emit(_fn, "wilson_bypass", "Wilson-Sidecar-Bypass", "running")
         try:
@@ -11114,6 +11428,7 @@ def process_file(file_path: Path):
     _t0 = time.monotonic()
     match_infos = save_to_db(file_path, result)
     save_klassifikation_historie(result.get("_dok_id"), result)
+    _write_kk_leistungen_db(result, file_path)
     _step_emit(_fn, "db", "Datenbank speichern", "done",
                extracted={"dok_id": result.get("_dok_id"),
                           "konfidenz": result.get("konfidenz"),
