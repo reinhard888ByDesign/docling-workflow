@@ -2460,7 +2460,7 @@ const SVC = {
     desc: 'Lokales Large Language Model – läuft vollständig auf dem Ryzen, kein Cloud-Zugriff. Übernimmt Spracherkennung, Übersetzung (DE/IT→DE) und semantische Klassifikation nach Kategorie, Absender und Adressat (Fallback-Pfad ohne Wilson-Sidecar).' },
   dispatcher:   { icon:'📄', label:'Dispatcher',        urlFn: _ => `/pipeline`,
     desc: 'Herzstück der Pipeline. Überwacht den Eingangsordner, koordiniert OCR und Klassifikation, schreibt Ergebnis-MD in den Obsidian Vault und benachrichtigt via Telegram. Verwaltet Dokumenten-Datenbank und Konfidenz-Historie.' },
-  enzyme:       { icon:'🧪', label:'enzyme MCP',        urlFn: ip => `http://${ip}:11180/docs`,
+  enzyme:       { icon:'🧪', label:'enzyme MCP',        urlFn: ip => `/enzyme`,
     desc: 'Semantische Suchschicht über den Obsidian Vault. Indexiert alle Vault-MD-Dateien als Katalysatoren und Entitäten, stellt Vault-Inhalte als MCP-Tools für Claude Code (CLI) und Open WebUI bereit. Ermöglicht natürlichsprachliche Suche über 1.000+ Dokumente.' },
   open_webui:   { icon:'💬', label:'Open WebUI',        urlFn: ip => `http://${ip}:3000/`,
     desc: 'Browser-Interface für Gespräche mit den lokalen Ollama-Modellen und dem Vault-Assistenten. Ermöglicht natürlichsprachliche Vault-Suche über den enzyme-MCP-Server.' },
@@ -2536,6 +2536,7 @@ function renderCard(key, svc) {
       <div class="metric" style="margin-top:6px"><span class="metric-label">Letzte Aktualisierung</span><span class="metric-value" style="color:var(--accent)">${svc.last_refresh??'—'}</span></div>
       <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <button id="enzyme-refresh-btn" onclick="triggerEnzymeRefresh()" style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;font-weight:600">⟳ Aktualisieren</button>
+        <a href="/enzyme" style="font-size:12px;color:var(--accent);text-decoration:none;border:1px solid var(--accent);background:#eef2ff;padding:4px 10px;border-radius:6px;font-weight:600">🔍 Debug ↗</a>
         <a href="${enzymeUrl}" target="_blank" style="font-size:12px;color:var(--accent);text-decoration:none;border:1px solid var(--border);padding:4px 10px;border-radius:6px">API-Docs ↗</a>
         <span id="enzyme-refresh-status" style="font-size:12px;color:var(--muted)"></span>
       </div>`;
@@ -2623,7 +2624,7 @@ async function loadData() {
     const setHref = (id, url) => { const el=document.getElementById(id); if(el&&url) el.href=url; };
     setHref('fstep-syncthing',  SVC.syncthing.urlFn(_hostIp));
     setHref('fstep-ollama',     SVC.ollama.urlFn(_hostIp));
-    setHref('fstep-enzyme',     SVC.enzyme.urlFn(_hostIp));
+    setHref('fstep-enzyme',     '/enzyme');
     setHref('fstep-openwebui',  SVC.open_webui.urlFn(_hostIp));
 
     // KPI strip
@@ -2637,8 +2638,7 @@ async function loadData() {
     if (kpiEl('kpi-syncthing')) kpiEl('kpi-syncthing').textContent = sync.connections ?? '–';
     // Dynamic links for enzyme + syncthing
     const enzymeLink = kpiEl('kpi-enzyme-link');
-    if (enzymeLink && data.host_ip) enzymeLink.href = `http://${data.host_ip}:11180/`;
-    else if (enzymeLink) enzymeLink.href = '/api/health';
+    if (enzymeLink) enzymeLink.href = '/enzyme';
     const syncLink = kpiEl('kpi-syncthing-link');
     if (syncLink && data.host_ip) syncLink.href = `http://${data.host_ip}:8384/`;
 
@@ -2855,6 +2855,530 @@ function openHelp(){document.getElementById('help-overlay').classList.add('open'
 function closeHelp(){document.getElementById('help-overlay').classList.remove('open')}
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeHelp()})
 document.getElementById('help-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeHelp()})
+</script>
+</body>
+</html>"""
+
+
+_ENZYME_HTML = r"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>enzyme · Vault-Suche Debug</title>
+<style>
+:root{--bg:#f4f5f7;--surface:#fff;--border:#dde1ea;--text:#1a1d2e;--muted:#6b7280;--ok:#059669;--warn:#d97706;--err:#dc2626;--accent:#4f46e5}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;min-height:100vh}
+header{border-bottom:1px solid var(--border);padding:13px 24px;display:flex;align-items:center;gap:10px;background:var(--surface);flex-wrap:wrap}
+header h1{font-size:16px;font-weight:700;color:var(--accent);white-space:nowrap}
+nav a{font-size:12px;padding:4px 12px;border:1px solid var(--border);border-radius:7px;color:var(--text);text-decoration:none;font-weight:600;white-space:nowrap;transition:all .15s;margin-right:4px}
+nav a:hover{border-color:var(--accent);color:var(--accent)}
+/* Pipeline */
+.pipeline{background:linear-gradient(135deg,#eef2ff,#f0fdf4);border-bottom:1px solid var(--border);padding:20px 28px;overflow-x:auto}
+.pipeline-title{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:14px}
+.pipeline-steps{display:flex;align-items:center;gap:0;min-width:max-content}
+.pstep{display:flex;flex-direction:column;align-items:center;gap:3px;padding:10px 16px;border-radius:10px;background:var(--surface);border:2px solid var(--border);min-width:118px;transition:all .3s}
+.pstep.active{border-color:var(--accent);background:#eef2ff;box-shadow:0 0 0 4px rgba(79,70,229,.13)}
+.pstep.done{border-color:var(--ok);background:#f0fdf4}
+.pstep .pi{font-size:22px;line-height:1}
+.pstep .pt{font-size:11px;font-weight:700;color:var(--text);white-space:nowrap}
+.pstep .ps{font-size:10px;color:var(--muted);white-space:nowrap;text-align:center;line-height:1.4}
+.parr{color:var(--accent);font-size:18px;padding:0 6px;opacity:.45;flex-shrink:0}
+/* Stats */
+.stats-row{display:flex;flex-wrap:wrap;gap:8px;padding:12px 24px;background:var(--surface);border-bottom:1px solid var(--border)}
+.stat-pill{display:flex;align-items:center;gap:5px;padding:5px 12px;background:var(--bg);border:1px solid var(--border);border-radius:20px;font-size:12px}
+.stat-pill .sv{font-weight:700;color:var(--accent)}
+.stat-pill .sl{color:var(--muted)}
+/* Search */
+.search-section{padding:16px 24px;background:var(--surface);border-bottom:1px solid var(--border)}
+.search-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.search-input{flex:1;padding:9px 14px;border:1.5px solid var(--border);border-radius:8px;font-size:14px;color:var(--text);background:var(--bg);transition:border-color .15s;min-width:200px}
+.search-input:focus{border-color:var(--accent);outline:none}
+.search-btn{padding:9px 20px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;transition:opacity .15s}
+.search-btn:hover{opacity:.85}
+.search-btn:disabled{opacity:.45;cursor:not-allowed}
+.reg-select{padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:12px;color:var(--text);background:var(--bg);cursor:pointer}
+.reg-select:focus{border-color:var(--accent);outline:none}
+.examples{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.ex-btn{font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--muted);cursor:pointer;transition:all .15s}
+.ex-btn:hover{border-color:var(--accent);color:var(--accent);background:#eef2ff}
+/* Request/Response panes */
+.rr-section{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:14px 24px}
+@media(max-width:700px){.rr-section{grid-template-columns:1fr}}
+.rr-pane{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.rr-header{padding:9px 14px;background:#f8f9fb;border-bottom:1px solid var(--border);font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.rr-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.rr-dot.send{background:var(--warn)}.rr-dot.recv{background:var(--ok)}
+.rr-body{padding:12px 14px;font-family:'Cascadia Code','Fira Code',monospace;font-size:12px;line-height:1.6;color:#334155;white-space:pre-wrap;word-break:break-all;min-height:90px;max-height:230px;overflow-y:auto}
+.rr-meta{padding:8px 14px;border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:14px;font-size:11px;color:var(--muted)}
+.rr-meta strong{color:var(--text)}
+.time-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 9px;border-radius:999px;background:#d1fae5;color:var(--ok);font-weight:700;flex-shrink:0}
+/* Results */
+.section-hdr{padding:14px 24px 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.section-title{font-size:13px;font-weight:700;color:var(--text)}
+.section-count{font-size:11px;padding:2px 8px;border-radius:999px;background:#eef2ff;color:var(--accent);font-weight:700}
+.section-note{font-size:11px;color:var(--muted)}
+.results-grid{padding:0 24px 14px;display:flex;flex-direction:column;gap:8px}
+.result-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:6px;transition:box-shadow .2s,border-color .2s}
+.result-card:hover{border-color:var(--accent);box-shadow:0 2px 12px rgba(79,70,229,.08)}
+.result-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.result-rank{font-size:12px;font-weight:700;color:var(--muted);min-width:22px;flex-shrink:0}
+.result-path{font-size:12px;font-weight:600;color:var(--accent);font-family:monospace;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.result-sim{font-size:12px;font-weight:700;white-space:nowrap;flex-shrink:0}
+.sim-bar-wrap{height:5px;background:#e5e7eb;border-radius:3px;overflow:hidden}
+.sim-bar{height:100%;background:linear-gradient(90deg,#4f46e5,#7c3aed);border-radius:3px;transition:width .5s}
+.result-content{font-size:12px;color:var(--muted);line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.cat-badge{font-size:10px;padding:2px 7px;border-radius:4px;background:#f1f2f6;color:var(--muted);white-space:nowrap;flex-shrink:0}
+/* Catalysts */
+.catalyst-grid{padding:0 24px 28px;display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px}
+.catalyst-card{background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:6px}
+.catalyst-q{font-size:12px;font-style:italic;color:var(--text);line-height:1.5}
+.catalyst-meta{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:11px}
+.catalyst-entity{font-weight:600;color:var(--accent);font-family:monospace}
+.catalyst-score{color:var(--muted)}
+/* Misc */
+.placeholder{padding:44px 24px;text-align:center;color:var(--muted);font-size:13px}
+/* Help overlay */
+.help-overlay{display:none;position:fixed;inset:0;background:rgba(10,12,30,.45);z-index:200;align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto}
+.help-overlay.open{display:flex}
+.help-panel{background:var(--surface);border-radius:14px;max-width:780px;width:100%;box-shadow:0 12px 48px rgba(0,0,0,.22);border:1px solid var(--border);position:relative}
+.help-head{padding:18px 20px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.help-head h2{font-size:15px;font-weight:700;color:var(--accent);flex:1}
+.help-close{background:none;border:1px solid var(--border);border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:14px;color:var(--muted);display:flex;align-items:center;justify-content:center;transition:all .15s}
+.help-close:hover{border-color:var(--err);color:var(--err)}
+.help-body{padding:20px}
+.help-section{margin-bottom:22px}
+.help-section:last-child{margin-bottom:0}
+.help-section h3{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px}
+.step-list{display:flex;flex-direction:column;gap:10px}
+.step-row{display:flex;gap:12px;align-items:flex-start}
+.step-icon{font-size:20px;flex-shrink:0;width:32px;text-align:center;line-height:1.4}
+.step-content{flex:1}
+.step-title{font-size:13px;font-weight:700;color:var(--text);margin-bottom:2px}
+.step-desc{font-size:12px;color:var(--muted);line-height:1.6}
+.step-code{font-family:monospace;font-size:11px;background:#f1f2f6;border:1px solid var(--border);border-radius:4px;padding:2px 7px;color:var(--accent);margin-top:4px;display:inline-block}
+.help-table{width:100%;border-collapse:collapse;font-size:12px}
+.help-table th{text-align:left;padding:6px 10px;border-bottom:2px solid var(--border);color:var(--muted);font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.help-table td{padding:7px 10px;border-bottom:1px solid #f0f1f5;vertical-align:top;line-height:1.5}
+.help-table tr:last-child td{border-bottom:none}
+.help-table tr:hover td{background:#fafbfc}
+.sc-high{color:var(--ok);font-weight:700}.sc-mid{color:var(--accent);font-weight:700}.sc-low{color:var(--muted);font-weight:700}
+.tip-list{display:flex;flex-direction:column;gap:6px}
+.tip{display:flex;gap:8px;font-size:12px;color:var(--text);line-height:1.5}
+.tip-icon{flex-shrink:0;color:var(--accent)}
+.help-btn{font-size:12px;padding:4px 12px;border:1px solid var(--border);border-radius:7px;color:var(--text);background:var(--surface);cursor:pointer;font-weight:600;white-space:nowrap;transition:all .15s;margin-left:auto}
+.help-btn:hover{border-color:var(--accent);color:var(--accent)}
+</style>
+</head>
+<body>
+
+<header>
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2v-4M9 21H5a2 2 0 0 1-2-2v-4m0 0h18"/></svg>
+  <h1>&#x1F9EA; enzyme &middot; Vault-Suche</h1>
+  <nav>
+    <a href="/">&#x2190; Dashboard</a>
+    <a id="api-docs-link" href="#" target="_blank">API-Docs &#x2197;</a>
+  </nav>
+  <button class="help-btn" onclick="openHelp()">&#x2753; Erkl&auml;rt</button>
+</header>
+
+<!-- Prozess-Pipeline -->
+<div class="pipeline">
+  <div class="pipeline-title">Wie enzyme im Vault sucht &mdash; Schritt f&uuml;r Schritt</div>
+  <div class="pipeline-steps">
+    <div class="pstep" id="ps1">
+      <span class="pi">&#x1F4DD;</span>
+      <span class="pt">1. Query</span>
+      <span class="ps">Freitext-Eingabe</span>
+    </div>
+    <span class="parr">&#x2192;</span>
+    <div class="pstep" id="ps2">
+      <span class="pi">&#x26A1;</span>
+      <span class="pt">2. ONNX Encode</span>
+      <span class="ps">arctic-xs-v1<br>&#x2192; 384-dim&nbsp;Vektor</span>
+    </div>
+    <span class="parr">&#x2192;</span>
+    <div class="pstep" id="ps3">
+      <span class="pi">&#x1F50D;</span>
+      <span class="pt">3. Cosine Search</span>
+      <span class="ps">vs. <span id="ps3-count">4.818</span> Vektoren<br>in SQLite (lokal)</span>
+    </div>
+    <span class="parr">&#x2192;</span>
+    <div class="pstep" id="ps4">
+      <span class="pi">&#x1F4A1;</span>
+      <span class="pt">4. Katalysatoren</span>
+      <span class="ps"><span id="ps4-count">1.118</span> thematische<br>Fragen &uuml;berlagern</span>
+    </div>
+    <span class="parr">&#x2192;</span>
+    <div class="pstep" id="ps5">
+      <span class="pi">&#x1F4CA;</span>
+      <span class="pt">5. Ranking</span>
+      <span class="ps">Top-10 nach<br>Similarity&nbsp;Score</span>
+    </div>
+  </div>
+</div>
+
+<!-- Vault-Stats -->
+<div class="stats-row">
+  <div class="stat-pill"><span class="sv" id="st-docs">&ndash;</span><span class="sl">Dokumente im Vault</span></div>
+  <div class="stat-pill"><span class="sv" id="st-emb">&ndash;</span><span class="sv" id="st-pct" style="font-size:11px;color:var(--muted)"></span><span class="sl">Embeddings</span></div>
+  <div class="stat-pill"><span class="sv" id="st-cat">&ndash;</span><span class="sl">Katalysatoren</span></div>
+  <div class="stat-pill"><span class="sv" id="st-ent">&ndash;</span><span class="sl">Entit&auml;ten</span></div>
+  <div class="stat-pill"><span class="sv">arctic-xs-v1</span><span class="sl">Modell (lokal,&nbsp;ONNX)</span></div>
+  <div class="stat-pill"><span class="sv">:11180</span><span class="sl">mcpo-Bridge&nbsp;(HTTP)</span></div>
+</div>
+
+<!-- Suchformular -->
+<div class="search-section">
+  <div class="search-row">
+    <input class="search-input" id="q-input" type="text"
+      placeholder="Suchbegriff eingeben, z.B. &raquo;Mietvertrag Karlsruhe&laquo;&hellip;"
+      onkeydown="if(event.key==='Enter')doSearch()">
+    <select class="reg-select" id="reg-select" title="Register / Suchstrategie">
+      <option value="explore">explore</option>
+      <option value="semantic">semantic</option>
+    </select>
+    <button class="search-btn" id="search-btn" onclick="doSearch()">&#x1F50D; Suchen</button>
+  </div>
+  <div class="examples">
+    <span style="font-size:11px;color:var(--muted);align-self:center">Beispiele:</span>
+    <button class="ex-btn" onclick="setQ('Krankenversicherung Erstattung')">Krankenversicherung Erstattung</button>
+    <button class="ex-btn" onclick="setQ('Mietvertrag Karlsruhe')">Mietvertrag Karlsruhe</button>
+    <button class="ex-btn" onclick="setQ('Steuer Italien 2024')">Steuer Italien 2024</button>
+    <button class="ex-btn" onclick="setQ('Molly Medikament')">Molly Medikament</button>
+    <button class="ex-btn" onclick="setQ('Garten Seggiano')">Garten Seggiano</button>
+    <button class="ex-btn" onclick="setQ('Wonderz Investment')">Wonderz Investment</button>
+  </div>
+</div>
+
+<!-- Request / Response -->
+<div class="rr-section">
+  <div class="rr-pane">
+    <div class="rr-header">
+      <span style="display:flex;align-items:center;gap:7px"><span class="rr-dot send"></span>API-Request &rarr; POST :11180/catalyze</span>
+    </div>
+    <div class="rr-body" id="req-body" style="color:var(--muted);font-style:italic">Noch keine Suchanfrage&hellip;</div>
+  </div>
+  <div class="rr-pane">
+    <div class="rr-header">
+      <span style="display:flex;align-items:center;gap:7px"><span class="rr-dot recv"></span>API-Response (Zusammenfassung)</span>
+      <span class="time-badge" id="time-badge" style="display:none">&ndash;&nbsp;ms</span>
+    </div>
+    <div class="rr-body" id="resp-body" style="color:var(--muted);font-style:italic">Noch kein Ergebnis&hellip;</div>
+    <div class="rr-meta" id="resp-meta" style="display:none">
+      <div>Strategie: <strong id="rm-strategy">&ndash;</strong></div>
+      <div>Treffer: <strong id="rm-count">&ndash;</strong></div>
+      <div>Server-Zeit: <strong id="rm-time">&ndash;</strong></div>
+    </div>
+  </div>
+</div>
+
+<!-- Ergebnisse -->
+<div id="results-section" style="display:none">
+  <div class="section-hdr">
+    <span class="section-title">&#x1F4C4; Dokument-Treffer</span>
+    <span class="section-count" id="res-count">0</span>
+    <span class="section-note">&mdash; geordnet nach Cosine-Similarity (h&ouml;her = &auml;hnlicher)</span>
+  </div>
+  <div class="results-grid" id="results-grid"></div>
+</div>
+
+<!-- Katalysatoren -->
+<div id="catalysts-section" style="display:none">
+  <div class="section-hdr">
+    <span class="section-title">&#x1F4A1; Beitragende Katalysatoren</span>
+    <span class="section-count" id="cat-count">0</span>
+    <span class="section-note">&mdash; thematische Fragen, die enzyme im Hintergrund nutzt</span>
+  </div>
+  <div class="catalyst-grid" id="catalyst-grid"></div>
+</div>
+
+<div class="placeholder" id="empty-state">
+  Gib einen Suchbegriff ein, um zu sehen, wie enzyme den Vault durchsucht.
+</div>
+
+<!-- Help Overlay -->
+<div class="help-overlay" id="help-overlay" onclick="if(event.target===this)closeHelp()">
+<div class="help-panel">
+  <div class="help-head">
+    <span style="font-size:22px">&#x1F9EA;</span>
+    <h2>Wie enzyme den Vault durchsucht</h2>
+    <button class="help-close" onclick="closeHelp()">&#x2715;</button>
+  </div>
+  <div class="help-body">
+
+    <div class="help-section">
+      <h3>&#x1F504; Der Suchprozess in 5 Schritten</h3>
+      <div class="step-list">
+        <div class="step-row">
+          <span class="step-icon">&#x1F4DD;</span>
+          <div class="step-content">
+            <div class="step-title">1. Query &mdash; Freitext-Eingabe</div>
+            <div class="step-desc">Du tippst einen beliebigen Text, z.B. <em>&raquo;Mietvertrag Karlsruhe&laquo;</em> oder <em>&raquo;Krankenversicherung Erstattung 2024&laquo;</em>. enzyme erwartet keine Schlagworte &mdash; ganze S&auml;tze oder Fragen funktionieren oft besser als einzelne Begriffe.</div>
+            <span class="step-code">POST :11180/catalyze &rarr; {"query": "...", "register": "explore"}</span>
+          </div>
+        </div>
+        <div class="step-row">
+          <span class="step-icon">&#x26A1;</span>
+          <div class="step-content">
+            <div class="step-title">2. ONNX Encode &mdash; Text wird zum Vektor</div>
+            <div class="step-desc">Das lokale Modell <strong>arctic-xs-v1</strong> (ca. 8 MB, l&auml;uft vollst&auml;ndig offline) wandelt den Suchtext in einen <strong>384-dimensionalen Zahlenvektor</strong> um &mdash; eine Art mathematischer Fingerabdruck des Bedeutungsinhalts. Dieser Schritt dauert typischerweise unter 50&nbsp;ms und erfordert keinerlei Internetverbindung.</div>
+          </div>
+        </div>
+        <div class="step-row">
+          <span class="step-icon">&#x1F50D;</span>
+          <div class="step-content">
+            <div class="step-title">3. Cosine Search &mdash; Vektorvergleich gegen alle Dokumente</div>
+            <div class="step-desc">Jedes Vault-Dokument wurde vorab ebenfalls als Vektor gespeichert (insgesamt <strong>4.818 Embeddings</strong> in SQLite). enzyme berechnet die <strong>Cosine-&Auml;hnlichkeit</strong> zwischen dem Suchvektor und allen Dokumentvektoren: Je kleiner der Winkel zwischen zwei Vektoren, desto &auml;hnlicher der Inhalt &mdash; unabh&auml;ngig von genauen Worttreffen. Das erm&ouml;glicht semantische Suche: &raquo;Miete&laquo; findet auch &raquo;Pacht&laquo;, &raquo;Monatsrate&laquo; oder &raquo;affitto mensile&laquo;.</div>
+          </div>
+        </div>
+        <div class="step-row">
+          <span class="step-icon">&#x1F4A1;</span>
+          <div class="step-content">
+            <div class="step-title">4. Katalysatoren &mdash; thematische Fragen &uuml;berlagern die Suche</div>
+            <div class="step-desc">enzyme hat <strong>1.118 Katalysatoren</strong> aus dem Vault generiert: offene, thematische Fragen wie <em>&raquo;What unspoken assumptions challenge the idea of &hellip;&laquo;</em>. Diese Fragen kodieren Verbindungen zwischen Dokumenten, die reine Keyword-Suche nicht erfassen w&uuml;rde. Die Katalysatoren mit der h&ouml;chsten Vektorn&auml;he zum Suchbegriff erhalten mehr Gewicht und beeinflussen das Ranking zus&auml;tzlich. Das Dashboard zeigt, welche Katalysatoren bei deiner Suche aktiv waren.</div>
+          </div>
+        </div>
+        <div class="step-row">
+          <span class="step-icon">&#x1F4CA;</span>
+          <div class="step-content">
+            <div class="step-title">5. Ranking &mdash; Top-10 nach Similarity Score</div>
+            <div class="step-desc">Die &auml;hnlichsten Dokumente werden absteigend nach ihrem Score gelistet. Die gesamte Suche dauert typischerweise <strong>60&ndash;120&nbsp;ms</strong> auf dem Ryzen. Zur&uuml;ckgegeben werden: Dateipfad, ein Textausschnitt des Dokuments sowie die beitragenden Katalysatoren.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="help-section">
+      <h3>&#x1F4CF; Similarity Score verstehen</h3>
+      <table class="help-table">
+        <tr><th>Score</th><th>Bedeutung</th><th>Typisches Ergebnis</th></tr>
+        <tr><td><span class="sc-high">&ge; 1.5</span></td><td>Sehr hohe &Auml;hnlichkeit</td><td>Dokument behandelt das Thema direkt und ausf&uuml;hrlich</td></tr>
+        <tr><td><span class="sc-mid">1.2 &ndash; 1.5</span></td><td>Gute &Auml;hnlichkeit</td><td>Thema wird erw&auml;hnt oder steht im Zusammenhang</td></tr>
+        <tr><td><span class="sc-low">&lt; 1.2</span></td><td>Schwache &Auml;hnlichkeit</td><td>Nur periphere Relevanz; oft zuf&auml;lliger Wort-Overlap</td></tr>
+      </table>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px">Hinweis: Cosine-Scores &gt; 2.0 sind bei 384-dim-Modellen ungewöhnlich. enzyme normalisiert nicht auf [0,1], daher k&ouml;nnen Werte &uuml;ber 1.0 erscheinen &mdash; die relative Rangfolge z&auml;hlt.</div>
+    </div>
+
+    <div class="help-section">
+      <h3>&#x1F4AC; Tipps f&uuml;r bessere Suchergebnisse</h3>
+      <div class="tip-list">
+        <div class="tip"><span class="tip-icon">&#x2714;</span><span><strong>Ganze S&auml;tze</strong> statt Stichwortlisten &mdash; enzyme versteht Kontext, nicht nur Schlagworte: <em>&raquo;Wie hoch ist die Erstattung meiner Krankenkasse?&laquo;</em></span></div>
+        <div class="tip"><span class="tip-icon">&#x2714;</span><span><strong>Mehrsprachig</strong> m&ouml;glich &mdash; Deutsch, Englisch und Italienisch werden alle korrekt eingebettet, da das Modell multilinguale Texte kennt.</span></div>
+        <div class="tip"><span class="tip-icon">&#x2714;</span><span><strong>Register &raquo;explore&laquo;</strong> (Standard) ber&uuml;cksichtigt Katalysatoren zus&auml;tzlich &mdash; ideal f&uuml;r thematische Suche. <strong>&raquo;semantic&laquo;</strong> ist reiner Vektorvergleich ohne Katalysator-Overlay.</span></div>
+        <div class="tip"><span class="tip-icon">&#x26A0;</span><span>Dokumente mit <strong>nur PDF-Einbettung</strong> (kein OCR-Text) zeigen keinen Textausschnitt &mdash; sie werden dennoch &uuml;ber Filename und Pfad eingebettet.</span></div>
+        <div class="tip"><span class="tip-icon">&#x26A0;</span><span>Neue oder ge&auml;nderte Vault-Dokumente brauchen einen <strong>enzyme-Refresh</strong> (&#x27F3; Button auf dem Haupt-Dashboard), bevor sie durchsuchbar sind.</span></div>
+      </div>
+    </div>
+
+    <div class="help-section">
+      <h3>&#x1F4D6; Weitere Dokumentation</h3>
+      <div style="font-size:12px;color:var(--muted);line-height:1.7">
+        Eine ausf&uuml;hrliche Erkl&auml;rung ist im Vault unter
+        <strong style="color:var(--accent);font-family:monospace">82 Digitales/enzyme &mdash; Vault-Suche verstehen.md</strong>
+        abgelegt &mdash; einschlie&szlig;lich Architektur&uuml;bersicht und Hinweisen f&uuml;r Claude&nbsp;Code und Wilson.
+      </div>
+    </div>
+
+  </div>
+</div>
+</div>
+
+<script>
+// Set API-Docs link dynamically
+document.getElementById('api-docs-link').href = 'http://' + location.hostname + ':11180/docs';
+
+// Load vault stats on page load
+(async () => {
+  try {
+    const r = await fetch('/api/enzyme/status', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    if (!r.ok) return;
+    const d = await r.json();
+    const docs = d.documents ?? 0;
+    const emb  = d.embedded ?? 0;
+    const pct  = docs > 0 ? Math.round(emb / docs * 100) : 0;
+    document.getElementById('st-docs').textContent = docs.toLocaleString('de');
+    document.getElementById('st-emb').textContent  = emb.toLocaleString('de');
+    document.getElementById('st-pct').textContent  = ' (' + pct + '%)';
+    document.getElementById('st-cat').textContent  = (d.catalysts ?? 0).toLocaleString('de');
+    document.getElementById('st-ent').textContent  = (d.entities ?? 0).toLocaleString('de');
+    document.getElementById('ps3-count').textContent = emb.toLocaleString('de');
+    document.getElementById('ps4-count').textContent = (d.catalysts ?? 0).toLocaleString('de');
+  } catch(e) { console.warn('Stats-Load fehlgeschlagen', e); }
+})();
+
+function setQ(q) {
+  document.getElementById('q-input').value = q;
+  doSearch();
+}
+
+let _busy = false;
+
+function setStep(active) {
+  for (let i = 1; i <= 5; i++) {
+    const el = document.getElementById('ps' + i);
+    if (!el) continue;
+    el.classList.remove('active', 'done');
+    if (i < active) el.classList.add('done');
+    else if (i === active) el.classList.add('active');
+  }
+}
+
+function resetSteps() {
+  for (let i = 1; i <= 5; i++) {
+    const el = document.getElementById('ps' + i);
+    if (el) el.classList.remove('active', 'done');
+  }
+}
+
+const delay = ms => new Promise(r => setTimeout(r, ms));
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+async function doSearch() {
+  if (_busy) return;
+  const query = document.getElementById('q-input').value.trim();
+  if (!query) return;
+  const register = document.getElementById('reg-select').value;
+
+  _busy = true;
+  document.getElementById('search-btn').disabled = true;
+  document.getElementById('empty-state').style.display = 'none';
+  document.getElementById('results-section').style.display = 'none';
+  document.getElementById('catalysts-section').style.display = 'none';
+  document.getElementById('time-badge').style.display = 'none';
+  document.getElementById('resp-meta').style.display = 'none';
+
+  // Schritt 1: Query
+  setStep(1);
+  const reqPayload = {query: query, register: register};
+  document.getElementById('req-body').style.fontStyle = 'normal';
+  document.getElementById('req-body').style.color = '#334155';
+  document.getElementById('req-body').textContent = 'POST http://<host>:11180/catalyze\nContent-Type: application/json\n\n' + JSON.stringify(reqPayload, null, 2);
+  document.getElementById('resp-body').textContent = 'Anfrage läuft…';
+  document.getElementById('resp-body').style.fontStyle = 'italic';
+  document.getElementById('resp-body').style.color = 'var(--muted)';
+
+  await delay(160);
+  // Schritt 2: ONNX Encode
+  setStep(2);
+  await delay(160);
+  // Schritt 3: Cosine Search
+  setStep(3);
+
+  const t0 = performance.now();
+  let data;
+  try {
+    const resp = await fetch('/api/enzyme/search', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(reqPayload)
+    });
+    data = await resp.json();
+  } catch(e) {
+    document.getElementById('resp-body').textContent = 'Fehler: ' + e.message;
+    document.getElementById('resp-body').style.color = 'var(--err)';
+    document.getElementById('resp-body').style.fontStyle = 'normal';
+    resetSteps();
+    _busy = false;
+    document.getElementById('search-btn').disabled = false;
+    return;
+  }
+  const elapsed = Math.round(performance.now() - t0);
+
+  // Schritt 4: Katalysatoren
+  setStep(4);
+  await delay(100);
+  // Schritt 5: Ranking
+  setStep(5);
+
+  // Response-Meta
+  const serverMs = data.processing_time != null ? Math.round(data.processing_time * 1000) : null;
+  document.getElementById('time-badge').textContent = '⏱️ ' + (serverMs != null ? serverMs : elapsed) + ' ms';
+  document.getElementById('time-badge').style.display = 'inline-flex';
+
+  const summary = {
+    search_strategy: data.search_strategy ?? '–',
+    processing_time_ms: serverMs,
+    total_results: (data.results ?? []).length,
+    top_contributing_catalysts: (data.top_contributing_catalysts ?? []).length
+  };
+  document.getElementById('resp-body').textContent = JSON.stringify(summary, null, 2);
+  document.getElementById('resp-body').style.fontStyle = 'normal';
+  document.getElementById('resp-body').style.color = '#334155';
+
+  document.getElementById('rm-strategy').textContent = data.search_strategy ?? '–';
+  document.getElementById('rm-count').textContent    = (data.results ?? []).length;
+  document.getElementById('rm-time').textContent     = (serverMs != null ? serverMs + ' ms' : '–') + ' (total: ' + elapsed + ' ms)';
+  document.getElementById('resp-meta').style.display = 'flex';
+
+  // Ergebnisse rendern
+  const results = data.results ?? [];
+  if (results.length > 0) {
+    const maxSim = Math.max(...results.map(r => r.similarity ?? 0));
+    document.getElementById('res-count').textContent = results.length;
+    document.getElementById('results-grid').innerHTML = results.map((r, i) => {
+      const sim  = r.similarity ?? 0;
+      const pct  = maxSim > 0 ? Math.min(100, Math.round((sim / maxSim) * 100)) : 0;
+      const fp   = r.file_path ?? '';
+      const parts = fp.split('/');
+      const catTag = parts.length > 1 ? parts[0] : '';
+      const content = (r.content ?? '')
+        .replace(/<!--[\s\S]*?-->/g, '')
+        .replace(/!\[\[.*?\]\]/g, '[PDF]')
+        .trim();
+      const simColor = sim >= 1.5 ? 'var(--ok)' : sim >= 1.2 ? 'var(--accent)' : 'var(--muted)';
+      return '<div class="result-card">'
+        + '<div class="result-top">'
+        + '<span class="result-rank">#' + (i+1) + '</span>'
+        + '<span class="result-path" title="' + escHtml(fp) + '">' + escHtml(fp) + '</span>'
+        + '<span class="result-sim" style="color:' + simColor + '">' + sim.toFixed(3) + '</span>'
+        + (catTag ? '<span class="cat-badge">' + escHtml(catTag) + '</span>' : '')
+        + '</div>'
+        + '<div class="sim-bar-wrap"><div class="sim-bar" style="width:' + pct + '%"></div></div>'
+        + (content
+          ? '<div class="result-content">' + escHtml(content) + '</div>'
+          : '<div class="result-content" style="font-style:italic;color:var(--muted)">Kein Textinhalt (nur PDF-Einbettung)</div>')
+        + '</div>';
+    }).join('');
+    document.getElementById('results-section').style.display = 'block';
+  }
+
+  // Katalysatoren rendern
+  const cats = data.top_contributing_catalysts ?? [];
+  if (cats.length > 0) {
+    document.getElementById('cat-count').textContent = cats.length;
+    document.getElementById('catalyst-grid').innerHTML = cats.map(c => {
+      return '<div class="catalyst-card">'
+        + '<div class="catalyst-q">&ldquo;' + escHtml(c.text ?? '') + '&rdquo;</div>'
+        + '<div class="catalyst-meta">'
+        + '<span class="catalyst-entity">&#x1F4C1; ' + escHtml(c.entity ?? '') + '</span>'
+        + '<span class="catalyst-score">Score: ' + (c.relevance_score ?? 0).toFixed(3)
+        + ' &middot; Beitr&auml;ge: ' + (c.contribution_count ?? 0) + '</span>'
+        + '</div>'
+        + '</div>';
+    }).join('');
+    document.getElementById('catalysts-section').style.display = 'block';
+  }
+
+  if (results.length === 0 && cats.length === 0) {
+    document.getElementById('empty-state').style.display = 'block';
+  }
+
+  _busy = false;
+  document.getElementById('search-btn').disabled = false;
+}
+
+function openHelp()  { document.getElementById('help-overlay').classList.add('open'); }
+function closeHelp() { document.getElementById('help-overlay').classList.remove('open'); }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeHelp(); });
 </script>
 </body>
 </html>"""
@@ -7830,6 +8354,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._html_response(_PIPELINE_HTML)
             return
 
+        elif path == "/enzyme":
+            self._html_response(_ENZYME_HTML)
+            return
+
         elif path == "/enex":
             self._html_response(_ENEX_HTML)
             return
@@ -8973,6 +9501,58 @@ class _ApiHandler(BaseHTTPRequestHandler):
                     log.warning(f"Lernregel speichern fehlgeschlagen: {e}")
             self._json_response({"result": result, "rule_id": rule_id})
 
+        # POST /api/tg/callback — Relay von Wilson für Dispatcher-Callbacks (cat/sc/st/ok/cancel)
+        elif path == "/api/tg/callback":
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json_response({"error": "Ungültiger Body"}, 400); return
+            cb_id   = data.get("callback_id", "")
+            cb_data = data.get("data", "")
+            cb_chat = data.get("chat_id", "")
+            cb_msg_id = data.get("msg_id")
+            cb_msg_text = data.get("msg_text", "")
+            try:
+                if cb_data.startswith("ok:"):
+                    tg_answer_callback(cb_id, "✅")
+                    tg_edit_message(cb_chat, cb_msg_id,
+                                    cb_msg_text + "\n\n✅ Bestätigt",
+                                    reply_markup={"inline_keyboard": []})
+                elif cb_data.startswith("cat:"):
+                    doc_id = int(cb_data.split(":")[1])
+                    tg_answer_callback(cb_id)
+                    tg_edit_message(cb_chat, cb_msg_id,
+                                    f"🗂 Kategorie wählen für Dokument #{doc_id}:",
+                                    reply_markup=build_category_keyboard(doc_id))
+                elif cb_data.startswith("sc:"):
+                    parts = cb_data.split(":")
+                    doc_id = int(parts[1]); cat_id = parts[2]
+                    cats = load_categories()
+                    cat_label = cats.get(cat_id, {}).get("label", cat_id)
+                    tg_answer_callback(cb_id)
+                    tg_edit_message(cb_chat, cb_msg_id,
+                                    f"📁 Typ wählen für <b>{cat_label}</b>:",
+                                    reply_markup=build_type_keyboard(doc_id, cat_id))
+                elif cb_data.startswith("st:"):
+                    parts = cb_data.split(":")
+                    doc_id = int(parts[1]); cat_id = parts[2]; type_id = parts[3]
+                    tg_answer_callback(cb_id, "⏳ Korrigiere...")
+                    result_text = handle_correction(doc_id, cat_id, type_id)
+                    tg_edit_message(cb_chat, cb_msg_id, result_text,
+                                    reply_markup={"inline_keyboard": []})
+                elif cb_data.startswith("cancel:"):
+                    tg_answer_callback(cb_id, "Abgebrochen")
+                    tg_edit_message(cb_chat, cb_msg_id,
+                                    cb_msg_text + "\n\n❌ Abgebrochen",
+                                    reply_markup={"inline_keyboard": []})
+                else:
+                    tg_answer_callback(cb_id, "❓ Unbekannter Callback")
+                    self._json_response({"error": f"Unbekannter Callback: {cb_data}"}, 400); return
+            except Exception as e:
+                log.warning(f"tg/callback Fehler: {e}")
+                self._json_response({"error": str(e)}, 500); return
+            self._json_response({"ok": True})
+
         # POST /api/lernregel — Lernregel direkt speichern (ohne Korrektur)
         elif path == "/api/lernregel":
             try:
@@ -8999,20 +9579,105 @@ class _ApiHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._json_response({"error": str(e)}, 500)
 
+        # POST /api/vault-grep — Exakte Grep-Suche im Vault (für Wilson/externe Clients)
+        # Body: {"query": "Linke", "case_insensitive": true, "mode": "content", "max_results": 20}
+        elif path == "/api/vault-grep":
+            try:
+                body = self._read_body()
+            except Exception:
+                body = {}
+            query = body.get("query", "").strip()
+            if not query:
+                self._json_response({"error": "query erforderlich"}, 400); return
+            if len(query) > 300:
+                self._json_response({"error": "query zu lang (max 300 Zeichen)"}, 400); return
+            if not VAULT_ROOT:
+                self._json_response({"error": "VAULT_ROOT nicht konfiguriert"}, 500); return
+            case_insensitive = bool(body.get("case_insensitive", True))
+            mode = body.get("mode", "content")
+            max_results = min(int(body.get("max_results", 20)), 50)
+            import subprocess as _sp
+            cmd = ["grep", "-r", "--include=*.md", "-l", "-F"]
+            if case_insensitive:
+                cmd.append("-i")
+            cmd += [query, str(VAULT_ROOT)]
+            try:
+                result = _sp.run(cmd, capture_output=True, text=True, timeout=15)
+                file_lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+                vault_str = str(VAULT_ROOT)
+                matches = []
+                for fp in file_lines[:max_results]:
+                    rel = fp[len(vault_str):].lstrip("/")
+                    entry = {"file_path": rel}
+                    if mode == "content":
+                        ctx_cmd = ["grep", "-n", "-F"]
+                        if case_insensitive:
+                            ctx_cmd.append("-i")
+                        ctx_cmd += [query, fp]
+                        ctx = _sp.run(ctx_cmd, capture_output=True, text=True, timeout=5)
+                        entry["matches"] = ctx.stdout.splitlines()[:5]
+                    matches.append(entry)
+                self._json_response({
+                    "query": query,
+                    "total_files": len(file_lines),
+                    "results": matches,
+                })
+            except _sp.TimeoutExpired:
+                self._json_response({"error": "grep timeout"}, 504)
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+
+        # POST /api/enzyme/search — Proxy: Suchanfrage an enzyme mcpo weiterleiten
+        elif path == "/api/enzyme/search":
+            try:
+                body_data = self._read_body()
+            except Exception:
+                body_data = {}
+            _enzyme_hosts = ["host.docker.internal", "172.17.0.1", "192.168.3.1"]
+            for _h in _enzyme_hosts:
+                try:
+                    r = requests.post(f"http://{_h}:11180/catalyze",
+                                      json=body_data,
+                                      headers={"Content-Type": "application/json"},
+                                      timeout=30)
+                    self._json_response(r.json(), r.status_code)
+                    return
+                except Exception:
+                    continue
+            self._json_response({"error": "enzyme mcpo nicht erreichbar (Port 11180)"}, 502)
+
+        # POST /api/enzyme/status — Proxy: enzyme Status abfragen
+        elif path == "/api/enzyme/status":
+            _enzyme_hosts = ["host.docker.internal", "172.17.0.1", "192.168.3.1"]
+            for _h in _enzyme_hosts:
+                try:
+                    r = requests.post(f"http://{_h}:11180/status",
+                                      json={},
+                                      headers={"Content-Type": "application/json"},
+                                      timeout=5)
+                    self._json_response(r.json(), r.status_code)
+                    return
+                except Exception:
+                    continue
+            self._json_response({"error": "enzyme mcpo nicht erreichbar (Port 11180)"}, 502)
+
         # POST /api/enzyme-refresh — enzyme-Index manuell aktualisieren
         elif path == "/api/enzyme-refresh":
             import subprocess
             enzyme_bin = "/usr/local/bin/enzyme"
             vault_path = "/data/reinhards-vault"
+            guide_path = os.path.join(vault_path, "guide.md")
             if not os.path.exists(enzyme_bin):
                 self._json_response({"status": "error", "error": "enzyme-Binary nicht gefunden"}, 500)
                 return
             def _run_refresh():
                 try:
-                    r = subprocess.run(
-                        [enzyme_bin, "refresh", "--vault", vault_path],
-                        capture_output=True, text=True, timeout=300
-                    )
+                    cmd = [enzyme_bin, "refresh", "--vault", vault_path]
+                    if os.path.exists(guide_path):
+                        guide_content = open(guide_path, "r", encoding="utf-8").read()
+                        cmd += ["--guide", guide_content]
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
                     log.info(f"enzyme refresh: exit={r.returncode} stdout={r.stdout[:200]}")
                     sse_broadcast("enzyme_refresh_done", {
                         "success": r.returncode == 0,
@@ -10405,6 +11070,10 @@ def move_to_vault(file_path: Path, temp_md: Path, category_id: str, type_id: str
     shutil.move(str(file_path), str(dest_pdf))
     log.info(f"PDF → Anlagen: {pdf_filename}")
 
+    # vault_pfad + anlagen_dateiname im result-Dict vermerken (für SSE nach Vault-Move)
+    result["vault_pfad"] = vault_pfad
+    result["_anlagen_dateiname"] = pdf_filename
+
     _write_vault_md(dest_pdf, dest_md, vault_pfad, temp_md, result, category_id, type_id, file_path.name)
 
 
@@ -11536,12 +12205,24 @@ def process_file(file_path: Path):
     lines.append(f"🌐 Sprache:    {lang_label}{lang_pct}")
 
     category_id = result.get("category_id", "")
-    tg_send("\n".join(lines))
+    _dok_id = result.get("_dok_id")
+    _tg_reply_markup = build_confirm_keyboard(_dok_id) if _dok_id else None
+    tg_send("\n".join(lines), reply_markup=_tg_reply_markup)
     log.info(f"Klassifiziert: {file_path.name} → {category_id}/{type_id}")
 
-    # SSE — Live-Update ans Dashboard
+    # 7. Dateien in Vault verschieben
+    _step_emit(_fn, "vault", "Vault-Move", "running")
+    _t0 = time.monotonic()
+    move_to_vault(file_path, temp_md, category_id, type_id, result)
+    _step_emit(_fn, "vault", "Vault-Move", "done",
+               extracted={"vault_pfad": result.get("vault_pfad", "")},
+               duration_ms=(time.monotonic() - _t0) * 1000)
+
+    # SSE — Live-Update ans Dashboard (nach Vault-Move, damit pdf_name korrekt ist)
     _vault_pfad = result.get("vault_pfad", "")
-    _pdf_name = _safe_pdf_name_from_vault_pfad(_vault_pfad, file_path.name) if _vault_pfad else file_path.name
+    _pdf_name = result.get("_anlagen_dateiname") or (
+        _safe_pdf_name_from_vault_pfad(_vault_pfad, file_path.name) if _vault_pfad else file_path.name
+    )
     sse_broadcast("doc_processed", {
         "dateiname":      file_path.name,
         "pdf_name":       _pdf_name,
@@ -11554,14 +12235,6 @@ def process_file(file_path: Path):
         "vault_pfad":     _vault_pfad,
         "erstellt_am":    datetime.now().strftime("%Y-%m-%d %H:%M"),
     })
-
-    # 7. Dateien in Vault verschieben
-    _step_emit(_fn, "vault", "Vault-Move", "running")
-    _t0 = time.monotonic()
-    move_to_vault(file_path, temp_md, category_id, type_id, result)
-    _step_emit(_fn, "vault", "Vault-Move", "done",
-               extracted={"vault_pfad": result.get("vault_pfad", "")},
-               duration_ms=(time.monotonic() - _t0) * 1000)
 
     if _batch_active():
         batch_result = dict(result)

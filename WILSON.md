@@ -1,6 +1,6 @@
 # Wilson — Raspberry Pi 5 Infrastruktur
 
-Stand: 2026-05-14
+Stand: 2026-05-15
 
 ## Hardware & Zugang
 
@@ -102,6 +102,21 @@ journalctl -p err..emerg  # Fehler
 - Share: `smb://192.168.3.124/incoming` (guest, kein Passwort)
 - Path auf Wilson: `/home/reinhard/incoming`
 - Scanner (Mac) legt PDF direkt ab → `doc-processor.service` verarbeitet sofort
+
+## Telegram-Callback-Relay
+
+Wilson's `doc-processor` ist der **exklusive Telegram-Poller** (Ryzen hat `DISABLE_TELEGRAM_POLL=1`). Damit Inline-Keyboard-Buttons aus Ryzen-Nachrichten funktionieren, leitet Wilson unbekannte Callback-Prefixe an den Dispatcher weiter:
+
+```
+User klickt Button in Ryzen-Nachricht
+  → Wilson empfängt Callback via getUpdates
+  → Bekannte Prefixe (confirm/reject/correct/gkat/…): Wilson verarbeitet selbst
+  → Unbekannte Prefixe (cat:/sc:/st:/ok:/cancel:): POST → DISPATCHER_URL/api/tg/callback
+  → Dispatcher antwortet: Kategorie-Keyboard oder Korrektur
+```
+
+Ryzen-Endpoint: `POST http://192.168.86.195:8765/api/tg/callback`  
+Payload: `{callback_id, data, chat_id, msg_id, msg_text}`
 
 ## Bekannte Probleme / Vorfälle
 

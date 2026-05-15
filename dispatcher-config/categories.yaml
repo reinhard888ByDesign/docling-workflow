@@ -158,6 +158,26 @@ keyword_rules:
     category_id: immobilien_eigen
     beschreibung: "Immobilien Kaufvertrag / Grundbuch"
 
+  - keywords: ["Lipowskystraße", "Lipowskystrasse", "Lipowsky"]
+    category_id: immobilien_vermietet
+    beschreibung: "Lipowskystraße München (vermietet)"
+
+  - keywords: ["Schießhausstraße", "Schiesshaus", "Schiesshausstrasse", "Schießhaus"]
+    category_id: immobilien_vermietet
+    beschreibung: "Schießhausstraße Neuburg (vermietet)"
+
+  - keywords: ["Kolberger Straße", "Kolberger Strasse", "Kolbergerstraße", "Kolbergerstrasse"]
+    category_id: immobilien_vermietet
+    beschreibung: "Kolberger Straße Karlsruhe (vermietet)"
+
+  - keywords: ["Kornstraße", "Kornstrasse"]
+    category_id: immobilien_vermietet
+    beschreibung: "Kornstraße Bremen (vermietet)"
+
+  - keywords: ["Schechen"]
+    category_id: immobilien_vermietet
+    beschreibung: "Bahnhofstraße Schechen (vermietet)"
+
   - keywords: ["Kontoauszug", "Kontoabschluss", "Umsatzübersicht",
                "Estratto conto", "Girokonto", "Bankabschluss"]
     category_id: finanzen

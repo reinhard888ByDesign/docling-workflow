@@ -1,7 +1,7 @@
 # Persönliches KI-gestütztes Dokumentenmanagement
 ## Projektbeschreibung und Umsetzungsplan
 
-*Stand: April 2026 — Entscheidungen getroffen, Umsetzung steht aus*
+*Stand: 2026-05-15 — laufend aktualisiert*
 
 ---
 
@@ -1840,6 +1840,53 @@ Zusätzliche Monitoring-Kacheln:
 | Übersetzungs-LLM | translategemma:latest |
 | Geschätzter Vollrescan-Aufwand | 108–270 Stunden |
 | OmniSearch API-Port | 51361 |
+
+---
+
+## 10. Änderungsprotokoll
+
+### 2026-05-15
+
+#### Bug Fix: SSE-Broadcast vor Vault-Move
+
+Der Live-Update-Event (`doc_processed` via SSE) wurde bisher **vor** dem Vault-Move gesendet. Dadurch enthielt `pdf_name` den originalen Scanner-Dateinamen (z.B. `06052026_DKB Ooot,ho Krdthnk AS.pdf`) statt dem bereinigten Vault-Namen — der Dashboard-Link zeigte „PDF nicht gefunden", bis die Seite neu geladen wurde.
+
+**Fix:** SSE-Broadcast nach `move_to_vault()` verschoben. `move_to_vault()` schreibt jetzt `vault_pfad` und `_anlagen_dateiname` in das `result`-Dict zurück, sodass der korrekte Name im Event erscheint.
+
+#### Telegram-Korrekturen via Inline-Keyboard
+
+Jede abgeschlossene Dispatcher-Klassifikation enthält jetzt zwei Buttons:
+
+```
+[✅ Passt]   [✏️ Korrigieren]
+```
+
+Bei „Korrigieren" öffnet sich ein Kategorie-Keyboard → Typ-Keyboard → Vault-Move wird mit neuer Kategorie wiederholt.
+
+**Architektur:** Da Ryzen's `DISABLE_TELEGRAM_POLL=1` gesetzt ist (nur Wilson pollt), werden Callbacks über Wilson als Relay weitergeleitet:
+
+```
+User klickt Button
+  → Wilson empfängt Callback (exklusiver Poller)
+  → Unbekannte Prefixe (cat:/sc:/st:/ok:/cancel:) → POST http://192.168.86.195:8765/api/tg/callback
+  → Dispatcher verarbeitet: Kategorie-Keyboard / Korrektur / Bestätigung
+```
+
+Neuer Endpoint: `POST /api/tg/callback` (Payload: `{callback_id, data, chat_id, msg_id, msg_text}`)
+
+#### Keyword-Rules für vermietete Immobilien (17 Regeln total, +5)
+
+Neue Adressen-Regeln in `dispatcher-config/categories.yaml` → Kategorie `immobilien_vermietet`:
+
+| Keywords | Objekt |
+|---|---|
+| `Lipowskystraße`, `Lipowskystrasse`, `Lipowsky` | München |
+| `Schießhausstraße`, `Schiesshaus`, `Schießhaus` | Neuburg |
+| `Kolberger Straße`, `Kolberger Strasse` | Karlsruhe |
+| `Kornstraße`, `Kornstrasse` | Bremen |
+| `Schechen` | Bahnhofstraße Schechen |
+
+Die Regeln greifen **nach** LLM-Klassifikation und überschreiben bei Treffer — außer wenn LLM bereits dieselbe Kategorie mit hoher/mittlerer Konfidenz gewählt hat.
 
 ---
 
