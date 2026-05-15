@@ -158,19 +158,21 @@ keyword_rules:
     category_id: immobilien_eigen
     beschreibung: "Immobilien Kaufvertrag / Grundbuch"
 
-  - keywords: ["Lipowskystraße", "Lipowskystrasse", "Lipowsky"]
+  - keywords: ["Lipowskystraße", "Lipowskystrasse", "Lipowsky", "LipowskyStra", "LipowskyStr"]
     category_id: immobilien_vermietet
     beschreibung: "Lipowskystraße München (vermietet)"
 
-  - keywords: ["Schießhausstraße", "Schiesshaus", "Schiesshausstrasse", "Schießhaus"]
+  - keywords: ["Schießhausstraße", "Schiesshaus", "Schiesshausstrasse", "Schießhaus",
+               "SchieBhaus", "SchieBhausstra"]
     category_id: immobilien_vermietet
     beschreibung: "Schießhausstraße Neuburg (vermietet)"
 
-  - keywords: ["Kolberger Straße", "Kolberger Strasse", "Kolbergerstraße", "Kolbergerstrasse"]
+  - keywords: ["Kolberger Straße", "Kolberger Strasse", "Kolbergerstraße", "Kolbergerstrasse",
+               "Kolberger Str", "Kolbergerstr", "KolbergerStra", "Troltsch"]
     category_id: immobilien_vermietet
-    beschreibung: "Kolberger Straße Karlsruhe (vermietet)"
+    beschreibung: "Kolberger Straße Karlsruhe / Troltsch Hausverwaltung (vermietet)"
 
-  - keywords: ["Kornstraße", "Kornstrasse"]
+  - keywords: ["Kornstraße", "Kornstrasse", "Kornstr"]
     category_id: immobilien_vermietet
     beschreibung: "Kornstraße Bremen (vermietet)"
 

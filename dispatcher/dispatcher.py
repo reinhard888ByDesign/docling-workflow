@@ -11725,6 +11725,19 @@ def process_file(file_path: Path):
                 encoding="utf-8",
             )
 
+            # Keyword-Rules auf Bypass-Text (beschreibung + Dateiname) anwenden.
+            # Fängt Fälle ab, wo Wilson-LLM die Kategorie falsch bestimmt hat
+            # (z.B. Scanner-OCR mit ß→B-Fehlern, die im Sidecar-Text noch erkennbar sind).
+            _bypass_text = f"{beschreibung} {force_stem} {absender}"
+            _kw_result = apply_keyword_rules(dict(result_bypass), _bypass_text, categories)
+            if _kw_result.get("category_id") != kategorie_id:
+                old_kat = kategorie_id
+                kategorie_id = _kw_result["category_id"]
+                category_label = categories.get(kategorie_id, {}).get("label", kategorie_id)
+                result_bypass["category_id"]    = kategorie_id
+                result_bypass["category_label"] = category_label
+                log.info(f"Bypass Keyword-Override: {old_kat} → {kategorie_id} ({file_path.name})")
+
             _step_emit(_fn, "db", "Datenbank speichern", "running")
             match_infos_bp = save_to_db(file_path, result_bypass)
             save_klassifikation_historie(result_bypass.get("_dok_id"), result_bypass)
@@ -11751,7 +11764,9 @@ def process_file(file_path: Path):
                 f"",
                 f"🤖 Vorverarbeitet von Wilson — kein LLM auf Ryzen",
             ]
-            tg_send("\n".join(tg_lines))
+            _dok_id_bp = result_bypass.get("_dok_id")
+            _tg_kb_bp = build_confirm_keyboard(_dok_id_bp) if _dok_id_bp else None
+            tg_send("\n".join(tg_lines), reply_markup=_tg_kb_bp)
             log.info(f"Wilson-Bypass abgeschlossen: {file_path.name} → {kategorie_id}")
 
             _step_emit(_fn, "vault", "Vault-Move", "running")
