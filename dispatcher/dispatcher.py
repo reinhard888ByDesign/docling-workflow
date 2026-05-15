@@ -1901,6 +1901,23 @@ def _collect_health() -> dict:
     else:
         services["molly"] = {"label": "Molly Medikation", "status": "error", "error": "Port 8080 nicht erreichbar"}
 
+    # 9b — KV Dashboard (Port 8090)
+    _kv_hosts = ["host.docker.internal", "172.17.0.1", "192.168.86.195"]
+    for _h in _kv_hosts:
+        try:
+            r = requests.get(f"http://{_h}:8090/erbringer", timeout=4)
+            if r.status_code == 200:
+                services["kv_dashboard"] = {
+                    "label": "KV Dashboard",
+                    "status": "ok",
+                    "port": 8090,
+                }
+                break
+        except Exception:
+            continue
+    else:
+        services["kv_dashboard"] = {"label": "KV Dashboard", "status": "error", "error": "Port 8090 nicht erreichbar"}
+
     # 10 — Vault Summarizer
     services["vault_summarizer"] = _summarizer_status()
 

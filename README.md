@@ -53,6 +53,15 @@ Mac / iPhone / Scanner / Evernote-Export
 
 Wilson auf dem Pi (`~/raspberry/wilson/`) ist kein Docker-Container, sondern ein systemd-Dienst.
 
+### Hintergrundprozesse (manuell via Dashboard steuerbar)
+
+| Script | Funktion |
+|--------|----------|
+| `dispatcher-temp/vault_summarizer.py` | Fasst alle Vault-MD-Dateien zusammen (qwen3:4b-instruct, ~4900 Dateien, läuft nachts 00–07 Uhr) |
+| `dispatcher-temp/anlagen_processor.py` | Klassifiziert und verschiebt `Anlagen/`-PDFs (OCR + Ollama, 25/Lauf, tagsüber starten) |
+
+Beide sind als Dashboard-Kacheln auf `http://ryzen:8765/` sichtbar und lassen sich dort manuell starten/stoppen.
+
 ## Voraussetzungen
 
 - Docker + Docker Compose

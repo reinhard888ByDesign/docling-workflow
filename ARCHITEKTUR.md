@@ -1888,6 +1888,42 @@ Neue Adressen-Regeln in `dispatcher-config/categories.yaml` → Kategorie `immob
 
 Die Regeln greifen **nach** LLM-Klassifikation und überschreiben bei Treffer — außer wenn LLM bereits dieselbe Kategorie mit hoher/mittlerer Konfidenz gewählt hat.
 
+### 2026-05-15 (Vault-Maintenance + Anlagen-Processor)
+
+#### Vault-Maintenance
+
+Umfassende Bereinigung des Obsidian-Vaults:
+
+- **177 medizinische PDFs** aus `Anlagen/` in `49 Krankenversicherung/`, `20 Familie/`, `40 Finanzen/`, `80 Business/`, `85 Wissen/` verschoben (`move_medical_pdfs.py`)
+- **1309 Dateien** vom Evernote-Namensmuster `YYYYMMDD_Evernote_Rest` → `YYYYMMDD_Rest` umbenannt
+- **556 Frontmatter-Felder** `erstellt:` → `Datum_original:` umbenannt (Evernote-Legacy-Feld)
+- **132 Dateien** ohne Tags automatisch getaggt (Ordner-Basis-Tags + Keyword-Tags aus Dateiname)
+- **7 falsch abgelegte Dateien** aus `49 Krankenversicherung/` in korrekte Kategorien verschoben
+- **36 Inline-Tags** (`#Tag` im Fließtext) in Frontmatter-YAML überführt
+- **72 Stubs** für unverlinkte PDFs in `49 Krankenversicherung/` angelegt (smart Tag-Ableitung)
+- **1160 Stubs** für unverlinkte PDFs in `Anlagen/` angelegt (Tag: `Anlagen/Unverarbeitet`)
+
+#### Anlagen-Processor (`dispatcher-temp/anlagen_processor.py`)
+
+Neues Hintergrundscript zur schrittweisen Klassifikation und Verschiebung der `Anlagen/`-PDFs:
+
+- Findet PDFs mit Stub-Tag `Anlagen/Unverarbeitet`
+- OCR via `docling-serve`, Kategorie-Erkennung via Ollama (`qwen3:4b-instruct`)
+- Verschiebt PDF in `VAULT/<Kategorie>/<Jahr>/`, legt neuen Stub mit OCR-Vorschau an
+- **BATCH=25** PDFs pro Lauf — kein Ressourcen-Konflikt mit `vault_summarizer` (der läuft nachts)
+- Fortschritt: `dispatcher-temp/anlagen_processor_progress.json`
+- Log: `dispatcher-temp/anlagen_processor.log`
+
+#### Dashboard-Kachel: Anlagen Processor
+
+Neue Kachel im Dispatcher-Dashboard (`http://ryzen:8765/`) analog zur Vault-Summarizer-Kachel:
+
+- Fortschrittsbalken mit verarbeitet / gesamt / %
+- Zähler: verarbeitete Dateien, Fehler, PID, zuletzt verarbeitete Datei
+- **▶ Start** / **■ Stop** Buttons — kein Timer, manuell steuerbar
+- API-Endpoints: `POST /api/anlagen/start`, `POST /api/anlagen/stop`
+- Bei fehlendem Progress-File: Gesamtzahl aus `Anlagen/*.pdf`-Zählung
+
 ---
 
 *Aktiver Entwicklungszweig: `feature/classification-v2` (mehrstufige Klassifikation, echte Konfidenz aus Disagreement, gestuftes Routing)*
