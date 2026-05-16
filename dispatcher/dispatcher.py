@@ -2650,7 +2650,8 @@ function renderCard(key, svc) {
         <button onclick="summarizerAction('start')" ${running?'disabled':''} style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--ok);background:transparent;color:var(--ok);cursor:pointer;font-weight:600;opacity:${running?0.4:1}">▶ Start</button>
         <button onclick="summarizerAction('stop')" ${!running?'disabled':''} style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--err);background:transparent;color:var(--err);cursor:pointer;font-weight:600;opacity:${!running?0.4:1}">■ Stop</button>
       </div>
-      <div id="summarizer-action-status" style="font-size:11px;color:var(--muted);margin-top:4px"></div>`;
+      <div id="summarizer-action-status" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
+      <div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5;border-top:1px solid var(--border);padding-top:8px">Liest .md-Dateien im Vault, kürzt/fasst lange Notizen per Ollama zusammen, schreibt sie zurück.</div>`;
   } else if (key === 'anlagen_processor') {
     const pct     = svc.pct ?? 0;
     const done    = svc.done ?? 0;
@@ -2677,7 +2678,8 @@ function renderCard(key, svc) {
         <button onclick="anlagenAction('start')" ${running?'disabled':''} style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--ok);background:transparent;color:var(--ok);cursor:pointer;font-weight:600;opacity:${running?0.4:1}">▶ Start (25)</button>
         <button onclick="anlagenAction('stop')"  ${!running?'disabled':''} style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--err);background:transparent;color:var(--err);cursor:pointer;font-weight:600;opacity:${!running?0.4:1}">■ Stop</button>
       </div>
-      <div id="anlagen-action-status" style="font-size:11px;color:var(--muted);margin-top:4px"></div>`;
+      <div id="anlagen-action-status" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
+      <div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5;border-top:1px solid var(--border);padding-top:8px">Scannt Anlagen/*.pdf auf PDFs ohne .md-Sidecar (oder mit „Anlagen/Unverarbeitet"-Markierung), führt OCR via Docling durch, klassifiziert per Ollama und verschiebt das PDF in den richtigen Vault-Ordner. Schreibt verarbeitete Dokumente in die Dispatcher-DB (Duplikat-Schutz).</div>`;
   } else if (key === 'molly') {
     const mollyUrl = SVC.molly.urlFn(_hostIp);
     body = `
