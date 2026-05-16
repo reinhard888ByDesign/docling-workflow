@@ -857,6 +857,61 @@ def _summarizer_status() -> dict:
     except Exception:
         pass
     return result
+# ── Anlagen-Processor Steuerung ───────────────────────────────────────────────
+_ANLAGEN_PROGRESS = Path("/data/dispatcher-temp/anlagen_processor_progress.json")
+_ANLAGEN_LOG      = Path("/data/dispatcher-temp/anlagen_processor.log")
+_anlagen_proc: "subprocess.Popen | None" = None
+
+def _anlagen_pid() -> int | None:
+    global _anlagen_proc
+    if _anlagen_proc is not None and _anlagen_proc.poll() is None:
+        return _anlagen_proc.pid
+    _anlagen_proc = None
+    try:
+        r = subprocess.run(["pgrep", "-f", "anlagen_processor.py"], capture_output=True, text=True)
+        pids = [int(p) for p in r.stdout.split() if p.strip().isdigit()]
+        return pids[0] if pids else None
+    except Exception:
+        return None
+
+def _anlagen_stop() -> None:
+    global _anlagen_proc
+    pid = _anlagen_pid()
+    if pid is not None:
+        try:
+            subprocess.run(["kill", str(pid)], check=True)
+        except Exception:
+            pass
+    _anlagen_proc = None
+    log.info(f"Anlagen-Processor gestoppt (PID {pid})")
+
+def _anlagen_status() -> dict:
+    pid     = _anlagen_pid()
+    running = pid is not None
+    result: dict = {
+        "label":   "Anlagen-Processor",
+        "status":  "ok" if running else "warn",
+        "running": running,
+        "pid":     pid,
+    }
+    try:
+        if _ANLAGEN_PROGRESS.exists():
+            data   = json.loads(_ANLAGEN_PROGRESS.read_text())
+            done   = len(data.get("done", []))
+            failed = len(data.get("failed", {}))
+            total  = data.get("total", 0)
+            last   = data.get("last_file", "")
+            result.update({
+                "done":      done,
+                "failed":    failed,
+                "total":     total,
+                "last_file": last,
+                "pct":       round(done * 100 / total) if total else 0,
+            })
+    except Exception:
+        pass
+    return result
+
 KEYWORD_RULES: list = []
 
 # ── Batch-Modus (thread-local) ─────────────────────────────────────────────────
@@ -1903,23 +1958,31 @@ def _collect_health() -> dict:
 
     # 9b — KV Dashboard (Port 8090)
     _kv_hosts = ["host.docker.internal", "172.17.0.1", "192.168.86.195"]
+    _kv_ok = False
+    _kv_stats = {}
     for _h in _kv_hosts:
         try:
-            r = requests.get(f"http://{_h}:8090/erbringer", timeout=4)
+            r = requests.get(f"http://{_h}:8090/api/summary", timeout=4)
             if r.status_code == 200:
-                services["kv_dashboard"] = {
-                    "label": "KV Dashboard",
-                    "status": "ok",
-                    "port": 8090,
-                }
+                _kv_ok = True
+                _kv_stats = r.json()
                 break
         except Exception:
             continue
-    else:
-        services["kv_dashboard"] = {"label": "KV Dashboard", "status": "error", "error": "Port 8090 nicht erreichbar"}
+
+    services["kv_dashboard"] = {
+        "label": "KV Dashboard",
+        "status": "ok" if _kv_ok else "error",
+        "error": "Port 8090 nicht erreichbar" if not _kv_ok else None,
+        "port": 8090,
+        "stats": _kv_stats,
+    }
 
     # 10 — Vault Summarizer
     services["vault_summarizer"] = _summarizer_status()
+
+    # 11 — Anlagen-Processor
+    services["anlagen_processor"] = _anlagen_status()
 
     host_ip = os.environ.get("HOST_IP", "localhost")
 
@@ -2330,6 +2393,7 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
     <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
     <a href="/db" target="_blank" rel="noopener">🗄️ DB</a>
     <a href="/backup" target="_blank" rel="noopener">💾 Backup</a>
+    <a href="http://192.168.86.195:8090" target="_blank" rel="noopener">🏥 KV</a>
   </nav>
   <div class="sse-wrap">
     <span class="sse-dot" id="sse-dot"></span>Live
@@ -2483,12 +2547,16 @@ const SVC = {
     desc: 'Browser-Interface für Gespräche mit den lokalen Ollama-Modellen und dem Vault-Assistenten. Ermöglicht natürlichsprachliche Vault-Suche über den enzyme-MCP-Server.' },
   molly:        { icon:'🐾', label:'Molly Medikation',  urlFn: ip => `http://${ip}:8080/`,
     desc: 'Medikationsplan für Molly (Labrador, 11 J.). Zeigt Tagesdosen für Altadol, Deltacortene, Gabapentin und Tobradex. Mit Abhaken-Funktion und Erledigt-Tracking.' },
+    kv_dashboard: { icon:'🏥', label:'KV Dashboard',      urlFn: ip => `http://${ip}:8090/`,
+      desc: 'Dashboard für KV-Leistungsabrechnungen und Arztrechnungen (Gothaer/HUK). Extraktion, Matching und Auswertung aller medizinischen Belege.' },
   vault_summarizer: { icon:'📝', label:'Vault Summarizer', urlFn: _ => null,
     desc: 'Fasst alle Vault-Markdown-Dateien mit qwen3:4b-instruct zusammen. Lässt sich manuell starten und stoppen, um Ressourcen-Konflikte mit anderen Ollama-Prozessen zu vermeiden.' },
+  anlagen_processor: { icon:'📂', label:'Anlagen-Processor', urlFn: _ => null,
+    desc: 'Klassifiziert PDFs aus Anlagen/ per OCR + LLM und verschiebt sie in die richtigen Vault-Ordner. 25 PDFs pro Lauf, manuell gestartet.' },
 };
 
 // Card render order = same as flow
-const CARD_ORDER = ['wilson_pi','syncthing','syncthing_mac','docling_serve','ollama','dispatcher','enzyme','open_webui','molly','vault_summarizer'];
+const CARD_ORDER = ['wilson_pi','syncthing','syncthing_mac','docling_serve','ollama','dispatcher','enzyme','open_webui','molly','kv_dashboard','vault_summarizer','anlagen_processor'];
 
 let _hostIp = 'localhost';
 
@@ -2583,6 +2651,33 @@ function renderCard(key, svc) {
         <button onclick="summarizerAction('stop')" ${!running?'disabled':''} style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--err);background:transparent;color:var(--err);cursor:pointer;font-weight:600;opacity:${!running?0.4:1}">■ Stop</button>
       </div>
       <div id="summarizer-action-status" style="font-size:11px;color:var(--muted);margin-top:4px"></div>`;
+  } else if (key === 'anlagen_processor') {
+    const pct     = svc.pct ?? 0;
+    const done    = svc.done ?? 0;
+    const tot     = svc.total ?? 0;
+    const fail    = svc.failed ?? 0;
+    const running = svc.running ?? false;
+    const last    = svc.last_file ?? '';
+    body = `
+      <div style="margin-bottom:6px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:3px">
+          <span>${done} / ${tot} verarbeitet</span><span>${pct}%</span>
+        </div>
+        <div style="background:var(--border);border-radius:4px;height:6px;overflow:hidden">
+          <div style="background:var(--ok);height:100%;width:${pct}%;transition:width .4s"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:16px;font-size:12px;margin-bottom:6px">
+        <span style="color:var(--ok)">✓ ${done} erledigt</span>
+        ${fail > 0 ? `<span style="color:var(--err)">✗ ${fail} Fehler</span>` : ''}
+        <span style="color:var(--muted)">PID: ${svc.pid ?? '—'}</span>
+      </div>
+      ${last ? `<div style="font-size:11px;color:var(--muted);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${last}">Zuletzt: ${last}</div>` : ''}
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button onclick="anlagenAction('start')" ${running?'disabled':''} style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--ok);background:transparent;color:var(--ok);cursor:pointer;font-weight:600;opacity:${running?0.4:1}">▶ Start (25)</button>
+        <button onclick="anlagenAction('stop')"  ${!running?'disabled':''} style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--err);background:transparent;color:var(--err);cursor:pointer;font-weight:600;opacity:${!running?0.4:1}">■ Stop</button>
+      </div>
+      <div id="anlagen-action-status" style="font-size:11px;color:var(--muted);margin-top:4px"></div>`;
   } else if (key === 'molly') {
     const mollyUrl = SVC.molly.urlFn(_hostIp);
     body = `
@@ -2594,6 +2689,24 @@ function renderCard(key, svc) {
         <button onclick="mollyAction('kill')" style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--err);background:transparent;color:var(--err);cursor:pointer;font-weight:600">■ Stop</button>
       </div>
       <div id="molly-action-status" style="font-size:11px;color:var(--muted);margin-top:4px"></div>`;
+  } else if (key === 'kv_dashboard') {
+    const st = svc.stats || {};
+    const kvUrl = SVC.kv_dashboard.urlFn(_hostIp);
+    const la_total = st.total || 0;
+    const pct = la_total > 0 ? Math.round((st.gematcht||0) / la_total * 100) : 0;
+    const offen = la_total - (st.gematcht||0);
+    body = `
+      <div class="enzyme-stats" style="gap:4px">
+        <div class="estat" style="padding:5px 6px"><div class="ev" style="font-size:13px">${la_total||'—'}</div><div class="el" style="font-size:9px">Leistungen</div></div>
+        <div class="estat" style="padding:5px 6px"><div class="ev" style="font-size:13px">${st.rechnungen??'—'}</div><div class="el" style="font-size:9px">Rechnungen</div></div>
+        <div class="estat" style="padding:5px 6px"><div class="ev" style="font-size:13px">${st.gematcht??'—'}</div><div class="el" style="font-size:9px">Gematcht</div></div>
+        <div class="estat" style="padding:5px 6px"><div class="ev" style="font-size:13px">${pct}%</div><div class="el" style="font-size:9px">Abdeckung</div></div>
+        <div class="estat" style="padding:5px 6px"><div class="ev" style="font-size:13px">${offen}</div><div class="el" style="font-size:9px">Offene LA</div></div>
+        <div class="estat" style="padding:5px 6px"><div class="ev" style="font-size:13px">${st.erbringer_verified??'—'}/${st.erbringer_total??'—'}</div><div class="el" style="font-size:9px">Erbringer</div></div>
+      </div>
+      <div style="margin-top:8px">
+        <a href="${kvUrl}" target="_blank" style="font-size:12px;color:var(--accent);text-decoration:none;border:1px solid var(--border);padding:4px 10px;border-radius:6px">Öffnen ↗</a>
+      </div>`;
   }
 
   const errHtml = svc.error ? `<div class="err-msg">⚠ ${svc.error}</div>` : '';
@@ -2713,6 +2826,19 @@ async function summarizerAction(action) {
   if (st) st.textContent = action==='start' ? 'Wird gestartet …' : 'Wird gestoppt …';
   try {
     const r = await fetch('/api/summarizer/' + action, {method:'POST'});
+    const d = await r.json();
+    if (st) st.textContent = d.ok ? (d.msg || (action==='start' ? `Gestartet (PID ${d.pid})` : 'Gestoppt')) : (d.error || 'Fehler');
+  } catch(e) {
+    if (st) st.textContent = 'Fehler: nicht erreichbar';
+  }
+  setTimeout(() => loadAll(), 2000);
+}
+
+async function anlagenAction(action) {
+  const st = document.getElementById('anlagen-action-status');
+  if (st) st.textContent = action==='start' ? 'Wird gestartet …' : 'Wird gestoppt …';
+  try {
+    const r = await fetch('/api/anlagen/' + action, {method:'POST'});
     const d = await r.json();
     if (st) st.textContent = d.ok ? (d.msg || (action==='start' ? `Gestartet (PID ${d.pid})` : 'Gestoppt')) : (d.error || 'Fehler');
   } catch(e) {
@@ -10037,6 +10163,26 @@ class _ApiHandler(BaseHTTPRequestHandler):
         # POST /api/summarizer/stop — Vault-Summarizer beenden
         elif path == "/api/summarizer/stop":
             _summarizer_stop(); self._json_response({"ok": True, "msg": "Gestoppt"})
+            return
+
+        # POST /api/anlagen/start — Anlagen-Processor starten
+        elif path == "/api/anlagen/start":
+            global _anlagen_proc
+            import subprocess as _sp_an
+            if _anlagen_pid() is not None:
+                self._json_response({"ok": False, "error": "Läuft bereits"}); return
+            log_fh = open(_ANLAGEN_LOG, "a")
+            _anlagen_proc = _sp_an.Popen(
+                ["python3", "-u", "/data/dispatcher-temp/anlagen_processor.py"],
+                stdout=log_fh, stderr=log_fh, start_new_session=True,
+            )
+            log.info(f"Anlagen-Processor gestartet (PID {_anlagen_proc.pid})")
+            self._json_response({"ok": True, "pid": _anlagen_proc.pid})
+            return
+
+        # POST /api/anlagen/stop — Anlagen-Processor beenden
+        elif path == "/api/anlagen/stop":
+            _anlagen_stop(); self._json_response({"ok": True, "msg": "Gestoppt"})
             return
 
         else:

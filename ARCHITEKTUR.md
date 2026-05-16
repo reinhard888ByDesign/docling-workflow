@@ -1926,6 +1926,51 @@ Neue Kachel im Dispatcher-Dashboard (`http://ryzen:8765/`) analog zur Vault-Summ
 
 ---
 
+### 2026-05-16 (pdf-archiv Bereinigung + Anlagen-Processor Erweiterung)
+
+#### Analyse pdf-archiv
+
+Vollständige Analyse von `/home/reinhard/pdf-archiv/` (1.321 PDFs, Legacy-Archiv):
+
+- `VAULT_PDF_ARCHIV` zeigt in `docker-compose.yml` bereits auf `Anlagen/` — `pdf-archiv/` hatte keine aktive Rolle mehr
+- **64 `.md`-Dateien** im Vault verlinkten noch auf `file:///Volumes/reinhard/pdf-archiv/…` → alle auf `[[Anlagen/…]]` umgeschrieben; 20 PDFs dabei nach `Anlagen/` kopiert; 20 verwaiste Links mit `<!-- FEHLT -->` markiert
+- **195 `_1`-Suffix-Duplikate** gelöscht (identischer Inhalt, Gegenstück ohne Suffix vorhanden)
+- **871 einzigartige PDFs** aus `pdf-archiv/` nach `Anlagen/` kopiert → werden vom Anlagen-Processor aufgegriffen
+
+Von den 1.064 Unique-PDFs (vor Kopiervorgang): 29 hatten bereits `.md` im Vault, 92 waren in Dispatcher-DB — beide Gruppen werden durch den erweiterten Anlagen-Processor per DB-Check erkannt und übersprungen.
+
+#### Anlagen-Processor Erweiterung (`dispatcher-temp/anlagen_processor.py`)
+
+Drei Erweiterungen zur sicheren Verarbeitung von Altbestand:
+
+**1. DB-Check vor Verarbeitung**
+- MD5-Hash + Dateiname gegen `dokumente.pdf_hash` / `dokumente.dateiname` in Dispatcher-DB
+- Bei Treffer: Dokument als `done` markiert, kein erneutes OCR/Klassifizierung
+- Schützt gegen Duplikate im Vault bei PDFs die bereits durch Dispatcher verarbeitet wurden
+- Env-Variable `DISPATCHER_DB` (Default: `/data/dispatcher-temp/dispatcher.db`)
+
+**2. DB-Eintrag nach Verarbeitung**
+- Nach erfolgreichem OCR + Klassifizierung: `INSERT INTO dokumente` mit Feldern `dateiname`, `pdf_hash`, `kategorie`, `vault_pfad`, `anlagen_dateiname`
+- Dispatcher-Duplikat-Schutz (Hash-Check) greift damit auch für Anlagen-Processor-Dokumente
+- Dashboard (`/api/recent`, `/api/search`) zeigt künftig alle Dokumente
+
+**3. Fallback-Datum korrigiert**
+- Vorher: `0000-00-00` wenn kein `YYYYMMDD`-Prefix im Dateinamen
+- Jetzt: Datei-`mtime` als ISO-Datum (`YYYY-MM-DD`) — entspricht VAULT_FRONTMATTER_SPEC
+- Aktuelles Jahr als letzter Fallback wenn `mtime` nicht lesbar
+
+#### Ausführungsreihenfolge (abgeschlossen)
+
+| Schritt | Aktion | Ergebnis |
+|---------|--------|----------|
+| 0 | Anlagen-Processor erweitert | DB-Check + DB-Write + Fallback-Datum |
+| 1 | 195 `_1`-Duplikate in `pdf-archiv/` gelöscht | Bereinigt |
+| 2 | 871 einzigartige PDFs → `Anlagen/` kopiert | In Verarbeitungs-Queue |
+| 3 | Anlagen-Processor läuft durch (nachtweise) | ~121 per DB übersprungen, ~750 neu verarbeitet |
+| 4 | `pdf-archiv/` nach Abschluss entfernen | Wenn Anlagen-Processor-Queue leer |
+
+---
+
 *Aktiver Entwicklungszweig: `feature/classification-v2` (mehrstufige Klassifikation, echte Konfidenz aus Disagreement, gestuftes Routing)*
 *Primäres LLM: mistral-nemo:12B lokal via Ollama*
 *Erstellt April 2026 zur Vorbereitung einer Expertenberatung*
