@@ -89,6 +89,79 @@ tag_rules:
     typ: kontoauszug
     tag_output: ["Finanzen"]
 
+  # --- Immobilien vermietet / Via dell'ospedale Seggiano (Appartamento) ---
+  # Vor allgemeinem Seggiano, damit App. → vermietet gewinnt
+  - evernote_tags: ["Via dell'ospedale", "Ospedale", "Appartamento"]
+    match_mode: contains
+    kategorie: immobilien_vermietet
+    typ: sonstiges
+    adressat_hint: Reinhard
+    tag_output: ["Immobilien/Seggiano-Appartamento"]
+
+  # --- Immobilien eigen / Podere dei Venti (Seggiano) ---
+  - evernote_tags: ["PdV", "Podere dei Venti", "Podere"]
+    match_mode: contains
+    kategorie: immobilien_eigen
+    typ: sonstiges
+    adressat_hint: Reinhard
+    tag_output: ["Immobilien/PdV"]
+
+  # --- Immobilien vermietet / Schechen ---
+  - evernote_tags: ["Schechen"]
+    match_mode: contains
+    kategorie: immobilien_vermietet
+    typ: sonstiges
+    adressat_hint: Reinhard
+    tag_output: ["Immobilien/Schechen"]
+
+  # --- Immobilien vermietet / Kolberger Strasse Karlsruhe ---
+  - evernote_tags: ["Kolberger"]
+    match_mode: contains
+    kategorie: immobilien_vermietet
+    typ: sonstiges
+    adressat_hint: Reinhard
+    tag_output: ["Immobilien/Karlsruhe"]
+
+  # --- Immobilien vermietet / Lipowskystrasse München ---
+  - evernote_tags: ["Lipowsky"]
+    match_mode: contains
+    kategorie: immobilien_vermietet
+    typ: sonstiges
+    adressat_hint: Reinhard
+    tag_output: ["Immobilien/München"]
+
+  # --- Immobilien vermietet / Schießhausstrasse Neuburg ---
+  - evernote_tags: ["Schießhaus"]
+    match_mode: contains
+    kategorie: immobilien_vermietet
+    typ: sonstiges
+    adressat_hint: Reinhard
+    tag_output: ["Immobilien/Neuburg"]
+
+  # --- Immobilien vermietet / Kornstraße Bremen ---
+  - evernote_tags: ["Kornstraße", "Kornstrasse"]
+    match_mode: contains
+    kategorie: immobilien_vermietet
+    typ: sonstiges
+    adressat_hint: Reinhard
+    tag_output: ["Immobilien/Bremen"]
+
+  # --- Immobilien eigen / Archiv: Schevemoorer Strasse (alte Immobilie) ---
+  - evernote_tags: ["Schevemoorer"]
+    match_mode: contains
+    kategorie: immobilien_eigen
+    typ: sonstiges
+    adressat_hint: Reinhard
+    tag_output: ["Immobilien/Archiv"]
+
+  # --- Immobilien eigen / Archiv: Grassauer Strasse Übersee (bis 2022) ---
+  - evernote_tags: ["Grassauer", "Übersee"]
+    match_mode: contains
+    kategorie: immobilien_eigen
+    typ: sonstiges
+    adressat_hint: Reinhard
+    tag_output: ["Immobilien/Archiv"]
+
   # --- Immobilien / Seggiano Handwerker ---
   - evernote_tags: ["Handwerker", "Acquedotto", "Fognaria", "Ferroli", "Buderus", "Idraulico"]
     match_mode: contains
@@ -171,7 +244,7 @@ tag_filter:
 # Wird verwendet wenn kein Präfix und keine tag_rule greift.
 # ---------------------------------------------------------------------------
 fallback:
-  kategorie: null
+  kategorie: immobilien_eigen
   typ: enex_import
-  vault_folder: "00 Inbox"
+  vault_folder: "50 Immobilien eigen"
   tag_output: []
