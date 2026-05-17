@@ -784,6 +784,12 @@ def _kv_extract_and_store(file_path: Path, result: dict) -> None:
             if "erstattungssatz" in pos and "erstattungsprozent" not in pos:
                 pos["erstattungsprozent"] = pos.pop("erstattungssatz")
 
+        # Datum aus erster Position übernehmen (Ollama liefert ISO YYYY-MM-DD).
+        # result["rechnungsdatum"] kommt aus dem Sidecar als DD.MM.YYYY — falsch für kk_leistungen.db.
+        iso_datum = (positions[0].get("datum_leistungsabrechnung") or "").strip()
+        if iso_datum and len(iso_datum) == 10 and iso_datum[4] == "-":
+            result["rechnungsdatum"] = iso_datum
+
         result["positionen"] = positions
         n = _write_kk_leistungen_db(result, file_path)
         log.info(f"KV-Bypass-Extraktion: {n} Position(en) → kk_leistungen.db ({file_path.name})")
