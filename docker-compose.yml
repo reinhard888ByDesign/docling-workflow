@@ -63,7 +63,8 @@ services:
       - SIDECAR_GRACE_SEC=30
       - HOST_IP=${HOST_IP:-192.168.86.195}
       - CACHE_READER_URL=http://cache-reader:8501
-      - KK_DB_PATH=/data/kk_leistungen.db
+      - KK_DB_PATH=/data/kv-skill/kk_leistungen.db
+      - KK_EXTRACT_MODEL=qwen3:4b-instruct
       - TZ=Europe/Rome
     ports:
       - "8765:8765"
@@ -74,7 +75,7 @@ services:
       - ./syncthing/data/reinhards-vault:/data/reinhards-vault
       - /home/reinhard/.local/bin/enzyme:/usr/local/bin/enzyme:ro
       - /home/reinhard/.ssh/id_ed25519:/ssh/id_ed25519:ro
-      - /home/reinhard/.claude/skills/leistungsabrechnung/kk_leistungen.db:/data/kk_leistungen.db
+      - /home/reinhard/.claude/skills/leistungsabrechnung:/data/kv-skill
     networks:
       - docling-net
       - ollama-net

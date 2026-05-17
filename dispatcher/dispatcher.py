@@ -68,6 +68,7 @@ TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT_ID",    "")
 API_PORT       = int(os.environ.get("API_PORT", "8765"))
 SIDECAR_GRACE_SEC = int(os.environ.get("SIDECAR_GRACE_SEC", "30"))
 KK_DB_PATH = os.environ.get("KK_DB_PATH", "")
+KK_EXTRACT_MODEL = os.environ.get("KK_EXTRACT_MODEL", "qwen3:4b-instruct")
 
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -666,6 +667,129 @@ def _write_kk_leistungen_db(result: dict, pdf_path: Path) -> int:
     finally:
         con.close()
     return neu
+
+
+# ── KV-Bypass-Extraktion ───────────────────────────────────────────────────────
+# Wird im Wilson-Sidecar-Bypass für Leistungsabrechnungen aufgerufen.
+# pdftotext → Ollama (qwen3:4b-instruct) → kk_leistungen.db
+
+_KV_EXTRACTION_PROMPT = """Du bist ein Spezialist für die Extraktion strukturierter Daten aus \
+Leistungsabrechnungen deutscher privater Krankenversicherungen.
+
+Extrahiere aus dem folgenden Dokumententext ALLE Einzelpositionen als JSON-Array.
+Jede Position soll diese Felder enthalten:
+
+{
+  "krankenkasse": "Gothaer" oder "HUK-Coburg" (aus Absender/Briefkopf),
+  "versicherungsnummer": "Versicherungsnummer aus dem Dokument",
+  "adressat": "Name des Versicherten (Reinhard oder Marion)",
+  "datum_leistungsabrechnung": "Datum des Abrechnungsschreibens als JJJJ-MM-TT",
+  "leistungserbringer": "Name des Arztes/der Apotheke/des Heilpraktikers",
+  "zeitraum": "Behandlungszeitraum (z.B. '19.03.2026' oder '18.05.-14.08.2015')",
+  "art_der_behandlung": "Art (z.B. 'Zahnbehandlung', 'Arzneimittel', 'Heilpraktiker', 'ärztliche Leistung', 'Hilfsmittel', 'ambulante Leistung')",
+  "rechnungsbetrag": 123.45,
+  "erstattung": 100.00,
+  "erstattungssatz": 100,
+  "hinweise": "Hinweis-Text oder Nummer (z.B. '1', 'Nahrungsergänzungsmittel') oder null"
+}
+
+WICHTIGE REGELN:
+- Jede Zeile/Position der Tabelle wird ein EIGENER Array-Eintrag
+- Datum NORMALISIEREN auf JJJJ-MM-TT. Bei zweistelligen Jahren: 00-30 → 20xx, 31-99 → 19xx
+- Beträge als ZAHLEN (nicht String), mit Punkt als Dezimaltrenner
+- Wenn kein Hinweis → null
+- Nur das JSON-Array zurückgeben, keinen anderen Text
+- Gothaer-Briefkopf: Vers.nr. 1517 88 09 → Reinhard
+- HUK-Briefkopf: Vers.nr. 300/575064-W → Marion
+
+Dokumententext:
+"""
+
+
+def _kv_repair_json(s: str) -> str:
+    start, end = s.find("["), s.rfind("]")
+    if start >= 0 and end > start:
+        s = s[start:end + 1]
+    elif s.strip().startswith("{"):
+        s = "[" + s.strip() + "]"
+    s = re.sub(r',\s*([}\]])', r'\1', s)
+    s = re.sub(r'}\s*{', '},{', s)
+    return s
+
+
+def _kv_parse_json(response: str) -> list[dict]:
+    try:
+        data = json.loads(_kv_repair_json(response))
+        return data if isinstance(data, list) else [data]
+    except Exception:
+        return []
+
+
+def _kv_la_is_leistungsabrechnung(result: dict) -> bool:
+    """Erkennt ob ein Bypass-Dokument eine KV-Leistungsabrechnung ist."""
+    if not KK_DB_PATH:
+        return False
+    cat = (result.get("category_id") or "")
+    if cat not in ("krankenversicherung", "versicherung"):
+        return False
+    stem = (result.get("_force_stem") or "").lower()
+    desc = (result.get("beschreibung") or "").lower()
+    absd = (result.get("absender") or "").upper()
+    kv_sender = "HUK" in absd or "GOTHAER" in absd or "GOTHA" in absd
+    la_keyword = "leistungsabrechnung" in stem or "leistungsabrechnung" in desc
+    return la_keyword or kv_sender
+
+
+def _kv_pdf_to_text(pdf_path: Path) -> str:
+    """Extrahiert Text aus PDF via pdfminer.six (kein externes Tool nötig)."""
+    try:
+        from pdfminer.high_level import extract_text as pdfminer_extract
+        text = pdfminer_extract(str(pdf_path))
+        return (text or "").strip()
+    except Exception as e:
+        log.warning(f"pdfminer Extraktion fehlgeschlagen für {pdf_path.name}: {e}")
+        return ""
+
+
+def _kv_extract_and_store(file_path: Path, result: dict) -> None:
+    """Extrahiert KV-Positionen via pdfminer+Ollama und schreibt in kk_leistungen.db.
+    Läuft als Hintergrund-Thread — blockiert den Bypass-Pfad nicht."""
+    try:
+        text = _kv_pdf_to_text(file_path)
+
+        if not text:
+            log.warning(f"KV-Bypass-Extraktion: PDF-Text leer für {file_path.name}")
+            return
+
+        payload = {
+            "model": KK_EXTRACT_MODEL,
+            "prompt": _KV_EXTRACTION_PROMPT + text[:12000],
+            "stream": False,
+            "options": {"temperature": 0.1, "num_predict": 4096},
+        }
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/generate", json=payload, timeout=180,
+        )
+        resp.raise_for_status()
+        positions = _kv_parse_json(resp.json().get("response", ""))
+
+        if not positions:
+            log.warning(f"KV-Bypass-Extraktion: keine Positionen für {file_path.name}")
+            return
+
+        # Feldnamen auf _write_kk_leistungen_db()-Format mappen
+        for pos in positions:
+            if "erstattung" in pos and "erstattungsbetrag" not in pos:
+                pos["erstattungsbetrag"] = pos.pop("erstattung")
+            if "erstattungssatz" in pos and "erstattungsprozent" not in pos:
+                pos["erstattungsprozent"] = pos.pop("erstattungssatz")
+
+        result["positionen"] = positions
+        n = _write_kk_leistungen_db(result, file_path)
+        log.info(f"KV-Bypass-Extraktion: {n} Position(en) → kk_leistungen.db ({file_path.name})")
+
+    except Exception as e:
+        log.warning(f"KV-Bypass-Extraktion fehlgeschlagen für {file_path.name}: {e}")
 
 
 def save_klassifikation_historie(dok_id: int | None, result: dict, korrektur: bool = False):
@@ -11910,6 +12034,16 @@ def process_file(file_path: Path):
                        extracted={"dok_id": result_bypass.get("_dok_id"),
                                   "category_id": kategorie_id,
                                   "konfidenz": "hoch"})
+
+            # KV-Leistungsabrechnung: Positionen asynchron extrahieren → kk_leistungen.db
+            if _kv_la_is_leistungsabrechnung(result_bypass):
+                threading.Thread(
+                    target=_kv_extract_and_store,
+                    args=(file_path, dict(result_bypass)),
+                    daemon=True,
+                    name=f"kv-extract-{file_path.stem}",
+                ).start()
+                log.info(f"KV-Bypass-Extraktion gestartet (Hintergrund): {file_path.name}")
 
             # Telegram
             tg_send_document(file_path)
