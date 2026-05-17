@@ -845,8 +845,21 @@ Nach stabilem Phase-2-Stand:
 Frontmatter: kategorie: fahrzeuge → kategorie: bedienungsanleitungen
 ```
 
+## Offene Aufgaben (zurückgestellt, nächste Session)
+
+| # | Aufgabe | Status |
+|---|---------|--------|
+| 3 | KFZ: analyze.py/schema.sql/kfz.db vom anderen Team bereits geliefert (6 Fahrzeuge + 3 Versicherungen geseeded) | ✅ Basis vorhanden |
+| 4 | KFZ: Dispatcher-Integration — kein KFZ-Block in dispatcher.py, kein Volume-Mount in docker-compose.yml | ⏳ offen |
+| 5 | KFZ: Batch-Import — Vault `60 Fahrzeuge/` noch nicht importiert | ⏳ offen |
+| 6 | KFZ: PROTOKOLL.md + dashboard.py fehlen | ⏳ offen |
+| 7 | `altersvorsorge`-Skill — Konzept fertig, Implementierung ausstehend | ⏳ offen |
+| 8 | `sachversicherungen`-Skill — Konzept fertig, Implementierung ausstehend | ⏳ offen |
+| 9 | Git push zu origin — aktuell 6 Commits lokal ahead | ⏳ offen |
+
 ## Changelog
 
 - **2026-05-17:** Initiales Konzept erstellt (alle drei Skills)
 - **2026-05-17:** Alle 6 offenen Fragen geklärt — kfz_4 entfernt, av_8 präzisiert, sv_1 auf inaktiv, sv_9 auf `kombi_it`, Coverage-Logik angepasst, Dispatcher-Strategie bestätigt
 - **2026-05-17:** Fahrzeugliste vollständig revidiert: Aktive Fahrzeuge = GY243ZF (Tesla MY IT), GY964ZF (Ape), FR-Y1544 (Anhänger), TS-QZ566 (Anhänger). Altfahrzeuge als Bulk. DTD153 aus Vault nach `95 Bedienungsanleitungen/` umgezogen (Fehlklassifikation bereinigt).
+- **2026-05-17:** Offene Aufgaben 3–9 dokumentiert, zurückgestellt auf nächste Session.
