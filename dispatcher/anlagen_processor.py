@@ -253,8 +253,9 @@ def process_one(pdf_path, progress):
     new_stub = dst_dir / (stem + ".md")
     vault_pfad = str(new_stub.relative_to(VAULT))
     new_stub.write_text(
-        f"---\nDatum_original: {iso}\ntags:\n  - {tag}\n---\n"
-        f"[[{dst_pdf.name}]]\n\n{preview}\n",
+        f"---\nDatum_original: {iso}\ntags:\n  - {tag}\n"
+        f"original: {dst_pdf.name}\n---\n"
+        f"📎 [[Anlagen/{dst_pdf.name}]]\n\n{preview}\n",
         encoding="utf-8",
     )
 

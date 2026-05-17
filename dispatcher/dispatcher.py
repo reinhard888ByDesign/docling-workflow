@@ -11179,8 +11179,8 @@ def _build_frontmatter(result: dict, pdf_filename: str, category_id: str, type_i
         lines.append(f"faellig: {_q(faellig)}")
     if lang and lang != "de":
         lines.append(f"sprache: {lang}")
-    # original: Wikilink auf das PDF in Anlagen/
-    lines.append(f'original: "[[Anlagen/{pdf_filename}]]"')
+    # original: Dateiname des PDFs in Anlagen/ (kein Wikilink — der kommt in den Body)
+    lines.append(f"original: {pdf_filename}")
     lines.append(f"erstellt: {erstellt}")
     lines.append("---")
     lines.append("")
