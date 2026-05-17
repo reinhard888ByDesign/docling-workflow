@@ -585,6 +585,7 @@ def _ensure_kk_schema(con):
             rechnungsbetrag_eur REAL,
             erstattung_eur REAL,
             erstattungssatz_pct INTEGER,
+            sb_kumuliert_eur REAL,
             hinweise TEXT,
             quelle_pdf TEXT,
             rohtext_md5 TEXT,
@@ -594,6 +595,11 @@ def _ensure_kk_schema(con):
         CREATE INDEX IF NOT EXISTS idx_kk_leistungen_kk ON leistungen(krankenkasse);
         CREATE INDEX IF NOT EXISTS idx_kk_leistungen_datum ON leistungen(datum_leistungsabrechnung);
     """)
+    for ddl in ["ALTER TABLE leistungen ADD COLUMN sb_kumuliert_eur REAL"]:
+        try:
+            con.execute(ddl)
+        except Exception:
+            pass
 
 
 def _write_kk_leistungen_db(result: dict, pdf_path: Path) -> int:
@@ -627,9 +633,13 @@ def _write_kk_leistungen_db(result: dict, pdf_path: Path) -> int:
         for pos in positionen:
             betrag = _parse_betrag(str(pos.get("rechnungsbetrag", "")))
             erstattung = _parse_betrag(str(pos.get("erstattungsbetrag", "")))
+            sb_kumuliert = _parse_betrag(str(pos.get("sb_kumuliert", "")))
             satz = pos.get("erstattungsprozent")
-            if satz is None and betrag and erstattung is not None and betrag > 0:
-                satz = round(erstattung / betrag * 100)
+            if satz is None and betrag and erstattung is not None:
+                if betrag > 0 and erstattung >= 0:
+                    satz = round(erstattung / betrag * 100)
+                else:
+                    satz = 0  # Selbstbehalt: erstattung negativ
 
             try:
                 con.execute(
@@ -637,9 +647,9 @@ def _write_kk_leistungen_db(result: dict, pdf_path: Path) -> int:
                        (krankenkasse, versicherungsnummer, adressat,
                         datum_leistungsabrechnung, leistungserbringer,
                         zeitraum, art_der_behandlung, rechnungsbetrag_eur,
-                        erstattung_eur, erstattungssatz_pct, hinweise,
+                        erstattung_eur, erstattungssatz_pct, sb_kumuliert_eur, hinweise,
                         quelle_pdf)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         kk,
                         result.get("versicherungsnummer"),
@@ -651,6 +661,7 @@ def _write_kk_leistungen_db(result: dict, pdf_path: Path) -> int:
                         betrag,
                         erstattung,
                         satz,
+                        sb_kumuliert,
                         pos.get("hinweise"),
                         pdf_path.name,
                     ),
@@ -690,7 +701,8 @@ Jede Position soll diese Felder enthalten:
   "rechnungsbetrag": 123.45,
   "erstattung": 100.00,
   "erstattungssatz": 100,
-  "hinweise": "Hinweis-Text oder Nummer (z.B. '1', 'Nahrungsergänzungsmittel') oder null"
+  "hinweise": "Hinweis-Text oder Nummer (z.B. '1', 'Nahrungsergänzungsmittel') oder null",
+  "sb_kumuliert": null
 }
 
 WICHTIGE REGELN:
@@ -702,6 +714,26 @@ WICHTIGE REGELN:
 - Gothaer-Briefkopf: Vers.nr. 1517 88 09 → Reinhard
 - HUK-Briefkopf: Vers.nr. 300/575064-W → Marion
 
+SELBSTBEHALT (SB) — KRITISCH KORREKT EXTRAHIEREN:
+HUK-Coburg: Selbstbehalt erscheint als eigene Zeile(n) in der Abrechnungstabelle.
+  In der Tabelle steht KEIN Rechnungsbetrag für die SB-Zeile, nur ein negativer Erstattungsbetrag.
+  Einen EINZIGEN Eintrag erstellen (Summe aller SB-Zeilen falls mehrere):
+  "art_der_behandlung" = "Selbstbehalt"
+  "rechnungsbetrag" = ABS(SB-Betrag) als POSITIVE Zahl (z.B. 76.85, NICHT -76.85)
+  "erstattung" = NEGATIVER SB-Betrag (z.B. -76.85)
+  "erstattungssatz" = 0
+  "hinweise" = Selbstbehalt-Hinweistext aus dem Dokument
+  ACHTUNG: "restlicher Selbstbehalt von X €" im Hinweistext ist KEIN eigener Eintrag — nur als hinweis-Text verwenden.
+
+Gothaer: Selbstbehalt steht AUSSERHALB der Tabelle als "Berücksichtigte Selbstbeteiligung (SB)".
+  Einen EINZIGEN zusätzlichen Eintrag erstellen:
+  "art_der_behandlung" = "Selbstbehalt"
+  "leistungserbringer" = "Selbstbehalt"
+  "rechnungsbetrag" = POSITIVER SB-Betrag (z.B. 46.56)
+  "erstattung" = NEGATIVER SB-Betrag (z.B. -46.56)
+  "erstattungssatz" = 0
+  "sb_kumuliert" = Wert "angerechnete SB" aus SB-Jahresübersicht (z.B. 85.63) oder null
+
 Dokumententext:
 """
 
@@ -712,6 +744,10 @@ def _kv_repair_json(s: str) -> str:
         s = s[start:end + 1]
     elif s.strip().startswith("{"):
         s = "[" + s.strip() + "]"
+    # Fix: unquoted numbers with dots (z.B. 1517.88.09)
+    s = re.sub(r':\s*(\d+\.\d+\.\d+(?:\.\d+)?)\s*([,}\]])', r': "\1" \2', s)
+    # Fix: unquoted alphanumeric values (z.B. 300575064W00)
+    s = re.sub(r':\s*(\d+[A-Za-z/][A-Za-z0-9/\-]*)\s*([,}\]])', r': "\1" \2', s)
     s = re.sub(r',\s*([}\]])', r'\1', s)
     s = re.sub(r'}\s*{', '},{', s)
     return s
@@ -783,6 +819,7 @@ def _kv_extract_and_store(file_path: Path, result: dict) -> None:
                 pos["erstattungsbetrag"] = pos.pop("erstattung")
             if "erstattungssatz" in pos and "erstattungsprozent" not in pos:
                 pos["erstattungsprozent"] = pos.pop("erstattungssatz")
+            # sb_kumuliert bleibt unter diesem Namen (kein Umbenennen nötig)
 
         # Datum aus erster Position übernehmen (Ollama liefert ISO YYYY-MM-DD).
         # result["rechnungsdatum"] kommt aus dem Sidecar als DD.MM.YYYY — falsch für kk_leistungen.db.
