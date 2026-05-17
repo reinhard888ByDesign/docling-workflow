@@ -69,6 +69,8 @@ API_PORT       = int(os.environ.get("API_PORT", "8765"))
 SIDECAR_GRACE_SEC = int(os.environ.get("SIDECAR_GRACE_SEC", "30"))
 KK_DB_PATH = os.environ.get("KK_DB_PATH", "")
 KK_EXTRACT_MODEL = os.environ.get("KK_EXTRACT_MODEL", "qwen3:4b-instruct")
+IMMO_DB_PATH = os.environ.get("IMMO_DB_PATH", "")
+IMMO_EXTRACT_MODEL = os.environ.get("IMMO_EXTRACT_MODEL", "qwen3:4b-instruct")
 
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -833,6 +835,302 @@ def _kv_extract_and_store(file_path: Path, result: dict) -> None:
 
     except Exception as e:
         log.warning(f"KV-Bypass-Extraktion fehlgeschlagen für {file_path.name}: {e}")
+
+
+# ── Immobilien-Bypass-Extraktion ─────────────────────────────────────────────────
+# Wird im Wilson-Sidecar-Bypass für Immobilien-Dokumente aufgerufen.
+# pdftotext → Ollama (qwen3:4b-instruct) → immobilien.db
+
+_IMMO_EXTRACTION_PROMPT = """Du bist ein Spezialist fuer die Extraktion strukturierter Daten aus \
+Immobilien-Dokumenten.
+Extrahiere alle relevanten Informationen und gib sie als JSON zurueck.
+
+Objekte:
+- eigen_1: Grassauer Strasse 64, Uebersee (DE) — bis 2022
+- eigen_2: Podere dei venti, Seggiano (IT) — ab 2022
+- vm_1: Lipowskystrasse, Muenchen
+- vm_2: Kornstrasse, Bremen
+- vm_3: Kolberger Strasse, Karlsruhe (Hausverwaltung: Troltsch)
+- vm_4: Schiesshausstrasse, Neuburg
+- vm_5: Bahnhofstrasse, Schechen
+- vm_6: Via dell'ospedale, Seggiano
+
+Gib folgendes JSON zurueck (keine anderen Felder, kein Markdown):
+{
+  "objekt_id": "<ID aus Liste oben oder null>",
+  "doktyp": "<betriebskostenabrechnung|rechnung|mietvertrag|grundsteuer|hausgeld|versicherung|sonstiges>",
+  "datum_dokument": "<YYYY-MM-DD oder null>",
+  "betrag_eur": <Gesamtbetrag als Zahl oder null>,
+  "absender": "<Aussteller/Lieferant>",
+  "positionen": [
+    {
+      "beschreibung": "<Positionstext>",
+      "zeitraum": "<z.B. 2025-01 oder Q1/2025 oder 2025 oder null>",
+      "betrag_eur": <Zahl oder null>,
+      "kostenart": "<grundsteuer|hausgeld|strom|wasser|gas|reparatur|versicherung|verwaltung|sonstiges>"
+    }
+  ],
+  "mieter": "<Name des Mieters wenn erkennbar, sonst null>",
+  "nachzahlung_eur": <Nachzahlungs- oder Guthabenbetrag wenn BKA, sonst null>
+}
+
+Dokumenttext:
+"""
+
+_OBJEKT_KEYWORDS = [
+    ("vm_1", ["lipowsky"]),
+    ("vm_2", ["kornstraße", "kornstr"]),
+    ("vm_3", ["kolberger", "troltsch"]),
+    ("vm_4", ["schießhaus", "schiesshaus"]),
+    ("vm_5", ["schechen"]),
+    ("vm_6", ["via dell'ospedale", "via dell.ospedale"]),
+    ("eigen_2", ["podere dei venti"]),
+    ("eigen_1", ["grassauer", "übersee"]),
+]
+
+
+def _immo_match_objekt_keyword(text: str) -> str | None:
+    """Keyword-Matching im PDF-Text (deterministisch, Vorrang vor LLM)."""
+    t = text.lower()
+    for obj_id, patterns in _OBJEKT_KEYWORDS:
+        for pat in patterns:
+            if pat in t:
+                return obj_id
+    return None
+
+
+def _immo_is_immobiliendokument(result: dict) -> bool:
+    """Erkennt ob ein Bypass-Dokument ein Immobilien-Dokument ist."""
+    if not IMMO_DB_PATH:
+        return False
+    cat = (result.get("category_id") or "")
+    return cat in ("immobilien_eigen", "immobilien_vermietet")
+
+
+def _ensure_immo_schema(con):
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS objekte (
+            id          TEXT PRIMARY KEY,
+            bezeichnung TEXT NOT NULL,
+            strasse     TEXT,
+            ort         TEXT,
+            land        TEXT DEFAULT 'DE',
+            typ         TEXT NOT NULL,
+            aktiv_von   TEXT,
+            aktiv_bis   TEXT
+        );
+        INSERT OR IGNORE INTO objekte VALUES
+        ('eigen_1','Grassauer Strasse 64 Uebersee','Grassauer Strasse 64','Uebersee','DE','eigen','2000','2022'),
+        ('eigen_2','Podere dei venti Seggiano','Podere dei venti','Seggiano','IT','eigen','2022',NULL),
+        ('vm_1','Lipowskystrasse Muenchen','Lipowskystrasse','Muenchen','DE','vermietet',NULL,NULL),
+        ('vm_2','Kornstrasse Bremen','Kornstrasse','Bremen','DE','vermietet',NULL,NULL),
+        ('vm_3','Kolberger Strasse Karlsruhe','Kolberger Strasse','Karlsruhe','DE','vermietet',NULL,NULL),
+        ('vm_4','Schiesshausstrasse Neuburg','Schiesshausstrasse','Neuburg','DE','vermietet',NULL,NULL),
+        ('vm_5','Bahnhofstrasse Schechen','Bahnhofstrasse','Schechen','DE','vermietet',NULL,NULL),
+        ('vm_6','Via dell''ospedale Seggiano','Via dell''ospedale','Seggiano','IT','vermietet',NULL,NULL);
+        CREATE TABLE IF NOT EXISTS dokumente (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            quelle_pdf      TEXT NOT NULL UNIQUE,
+            objekt_id       TEXT REFERENCES objekte(id),
+            kategorie       TEXT NOT NULL,
+            doktyp          TEXT,
+            absender        TEXT,
+            datum_dokument  TEXT,
+            betrag_eur      REAL,
+            rohtext_md5     TEXT,
+            erstellt_am     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_immo_dok_objekt ON dokumente(objekt_id);
+        CREATE INDEX IF NOT EXISTS idx_immo_dok_datum  ON dokumente(datum_dokument);
+        CREATE INDEX IF NOT EXISTS idx_immo_dok_typ    ON dokumente(doktyp);
+        CREATE TABLE IF NOT EXISTS positionen (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            dokument_id     INTEGER NOT NULL REFERENCES dokumente(id),
+            beschreibung    TEXT NOT NULL,
+            zeitraum        TEXT,
+            betrag_eur      REAL,
+            kostenart       TEXT,
+            hinweise        TEXT,
+            UNIQUE(dokument_id, beschreibung, zeitraum, betrag_eur)
+        );
+        CREATE INDEX IF NOT EXISTS idx_immo_pos_dok ON positionen(dokument_id);
+        CREATE INDEX IF NOT EXISTS idx_immo_pos_kostenart ON positionen(kostenart);
+        CREATE TABLE IF NOT EXISTS mietvorgaenge (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            dokument_id     INTEGER NOT NULL REFERENCES dokumente(id),
+            objekt_id       TEXT REFERENCES objekte(id),
+            mieter          TEXT,
+            zeitraum        TEXT,
+            typ             TEXT,
+            betrag_eur      REAL,
+            nachzahlung_eur REAL,
+            hinweise        TEXT
+        );
+    """)
+
+
+def _write_immobilien_db(result: dict, pdf_path: Path) -> int:
+    """Schreibt Immobilien-Dokument in immobilien.db.
+    Gibt Anzahl neuer Eintraege zurueck. Kein Fehler falls DB nicht konfiguriert."""
+    if not IMMO_DB_PATH:
+        return 0
+    positionen = result.get("positionen") or []
+    if isinstance(positionen, dict):
+        positionen = [positionen]
+
+    db_path = Path(IMMO_DB_PATH)
+    try:
+        con = sqlite3.connect(str(db_path))
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA foreign_keys=ON")
+    except Exception as e:
+        log.warning(f"immobilien.db nicht erreichbar: {e}")
+        return 0
+
+    try:
+        _ensure_immo_schema(con)
+        quelle = pdf_path.name
+        betrag = _parse_betrag(str(result.get("betrag_eur", "")))
+        dok_id = None
+        neu = 0
+
+        try:
+            con.execute(
+                """INSERT INTO dokumente
+                   (quelle_pdf, objekt_id, kategorie, doktyp, absender,
+                    datum_dokument, betrag_eur, rohtext_md5)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    quelle,
+                    result.get("objekt_id"),
+                    result.get("category_id") or "",
+                    result.get("doktyp"),
+                    result.get("absender"),
+                    result.get("datum_dokument"),
+                    betrag,
+                    result.get("_rohtext_md5", ""),
+                ),
+            )
+            con.commit()
+            dok_id = con.execute("SELECT last_insert_rowid()").fetchone()[0]
+            neu = 1
+        except sqlite3.IntegrityError:
+            row = con.execute(
+                "SELECT id FROM dokumente WHERE quelle_pdf = ?", (quelle,)
+            ).fetchone()
+            if row:
+                dok_id = row[0]
+
+        if dok_id is None:
+            return 0
+
+        for pos in positionen:
+            try:
+                con.execute(
+                    """INSERT INTO positionen
+                       (dokument_id, beschreibung, zeitraum, betrag_eur, kostenart, hinweise)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        dok_id,
+                        pos.get("beschreibung", ""),
+                        pos.get("zeitraum"),
+                        _parse_betrag(str(pos.get("betrag_eur", ""))),
+                        pos.get("kostenart"),
+                        pos.get("hinweise"),
+                    ),
+                )
+                con.commit()
+            except sqlite3.IntegrityError:
+                pass
+            except Exception as e:
+                log.warning(f"Fehler beim Schreiben in immobilien.db (Position): {e}")
+
+        # Mietvorgang (nur wenn vermietet + relevante Daten)
+        mieter = result.get("mieter")
+        nachzahlung = result.get("nachzahlung_eur")
+        if mieter or nachzahlung is not None:
+            try:
+                con.execute(
+                    """INSERT INTO mietvorgaenge
+                       (dokument_id, objekt_id, mieter, zeitraum, typ, betrag_eur, nachzahlung_eur)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        dok_id,
+                        result.get("objekt_id"),
+                        str(mieter) if mieter else None,
+                        result.get("zeitraum"),
+                        result.get("doktyp"),
+                        betrag,
+                        _parse_betrag(str(nachzahlung)) if nachzahlung is not None else None,
+                    ),
+                )
+                con.commit()
+            except Exception:
+                pass
+
+        if neu:
+            log.info(f"immobilien.db: neues Dokument aus {quelle}")
+        return neu
+    finally:
+        con.close()
+
+
+def _immo_extract_and_store(file_path: Path, result: dict) -> None:
+    """Extrahiert Immobilien-Daten via pdfminer+Ollama und schreibt in immobilien.db.
+    Laeuft als Hintergrund-Thread — blockiert den Bypass-Pfad nicht."""
+    try:
+        from pdfminer.high_level import extract_text as pdfminer_extract
+        text = pdfminer_extract(str(file_path))
+        text = (text or "").strip()
+        if not text:
+            log.warning(f"Immo-Bypass-Extraktion: PDF-Text leer fuer {file_path.name}")
+            return
+
+        # Keyword-Matching fuer Objekt (Vorrang vor LLM)
+        kw_obj = _immo_match_objekt_keyword(text)
+
+        payload = {
+            "model": IMMO_EXTRACT_MODEL,
+            "prompt": _IMMO_EXTRACTION_PROMPT + text[:12000],
+            "stream": False,
+            "options": {"temperature": 0.1, "num_predict": 4096},
+        }
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/generate", json=payload, timeout=180,
+        )
+        resp.raise_for_status()
+        data = _kv_parse_json(resp.json().get("response", ""))
+
+        if not data:
+            log.warning(f"Immo-Bypass-Extraktion: kein JSON fuer {file_path.name}")
+            return
+
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        if not isinstance(data, dict):
+            log.warning(f"Immo-Bypass-Extraktion: unerwartetes Format fuer {file_path.name}")
+            return
+
+        # Keyword-Match hat Vorrang vor LLM
+        if kw_obj and data.get("objekt_id") != kw_obj:
+            data["objekt_id"] = kw_obj
+        elif not data.get("objekt_id") and kw_obj:
+            data["objekt_id"] = kw_obj
+
+        # Kategorie-Fallback: ohne Keyword → eigen_2 (Hauptwohnsitz) oder null
+        if not data.get("objekt_id"):
+            cat = result.get("category_id", "")
+            if cat == "immobilien_eigen":
+                data["objekt_id"] = "eigen_2"
+            # immobilien_vermietet ohne Keyword bleibt null
+
+        data["category_id"] = result.get("category_id", "")
+        data["_rohtext_md5"] = hashlib.md5(text.encode("utf-8")).hexdigest()
+        n = _write_immobilien_db(data, file_path)
+        log.info(f"Immo-Bypass-Extraktion: {n} Dok → immobilien.db ({file_path.name})")
+
+    except Exception as e:
+        log.warning(f"Immo-Bypass-Extraktion fehlgeschlagen fuer {file_path.name}: {e}")
 
 
 def save_klassifikation_historie(dok_id: int | None, result: dict, korrektur: bool = False):
@@ -12088,6 +12386,16 @@ def process_file(file_path: Path):
                 ).start()
                 log.info(f"KV-Bypass-Extraktion gestartet (Hintergrund): {file_path.name}")
 
+            # Immobilien-Dokument: asynchron extrahieren → immobilien.db
+            if _immo_is_immobiliendokument(result_bypass):
+                threading.Thread(
+                    target=_immo_extract_and_store,
+                    args=(file_path, dict(result_bypass)),
+                    daemon=True,
+                    name=f"immo-extract-{file_path.stem}",
+                ).start()
+                log.info(f"Immo-Extraktion gestartet (Hintergrund): {file_path.name}")
+
             # Telegram
             tg_send_document(file_path)
             tg_lines = [
@@ -12455,6 +12763,7 @@ def process_file(file_path: Path):
     match_infos = save_to_db(file_path, result)
     save_klassifikation_historie(result.get("_dok_id"), result)
     _write_kk_leistungen_db(result, file_path)
+    _write_immobilien_db(result, file_path)
     _step_emit(_fn, "db", "Datenbank speichern", "done",
                extracted={"dok_id": result.get("_dok_id"),
                           "konfidenz": result.get("konfidenz"),
