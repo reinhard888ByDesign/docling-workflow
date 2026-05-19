@@ -2573,9 +2573,9 @@ td.addr{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowra
 .imp-btn{background:none;border:1px solid #e5e7eb;border-radius:5px;padding:4px 9px;cursor:pointer;color:#6b7280;font-size:.85rem;transition:all .15s;margin-right:4px}
 .imp-btn:hover:not(:disabled){border-color:#2563eb;color:#2563eb}
 .imp-btn:disabled{opacity:.3;cursor:default}
-.ct-btn{background:none;border:1px solid #e5e7eb;border-radius:5px;padding:4px 9px;cursor:pointer;color:#6b7280;font-size:.85rem;transition:all .15s;margin-right:4px}
-.ct-btn:hover{border-color:#7c3aed;color:#7c3aed}
-.ct-btn.has-data{color:#7c3aed;border-color:#ddd6fe}
+td.name-cell{cursor:pointer;color:#4b5563}
+td.name-cell:hover{color:#7c3aed;text-decoration:underline}
+td.name-cell.has-data{color:#7c3aed}
 #ctOverlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:200;align-items:center;justify-content:center}
 #ctOverlay.open{display:flex}
 #ctBox{background:#fff;border-radius:10px;padding:24px;width:420px;max-width:95vw;box-shadow:0 8px 32px rgba(0,0,0,.2)}
@@ -2666,14 +2666,13 @@ async function load(){
   }
   tb.innerHTML=rows.map(s=>`<tr id="r${s.id}">
     <td class="mono addr" title="${esc(s.address)}">${esc(s.address)}</td>
-    <td style="color:#4b5563">${esc(s.display_name||'')}</td>
+    <td class="name-cell${(s.phone||s.postal||s.website||s.notes)?' has-data':''}" onclick="openContactFromEl(${s.id},this)" data-phone="${esc(s.phone||'')}" data-postal="${esc(s.postal||'')}" data-website="${esc(s.website||'')}" data-notes="${esc(s.notes||'')}" title="${(s.phone||s.postal||s.website||s.notes)?'Kontaktdaten bearbeiten':'Kontaktdaten hinzufügen'}">${esc(s.display_name||'–')}</td>
     <td class="cnt">${s.archive_count||0}</td>
     <td><select class="cat" onchange="setCat(${s.id},this.value)">${buildCatOptions(s.category_id||'')}</select></td>
     <td><select class="st" onchange="setStatus(${s.id},this.value)">
       ${['approved','pending','blocked'].map(v=>`<option value="${v}"${s.status===v?' selected':''}>${SL[v]}</option>`).join('')}
     </select></td>
     <td>
-      <button class="ct-btn${(s.phone||s.postal||s.website||s.notes)?' has-data':''}" onclick="openContact(${s.id},${JSON.stringify(s.phone||'')},${JSON.stringify(s.postal||'')},${JSON.stringify(s.website||'')},${JSON.stringify(s.notes||'')})" title="Kontaktdaten">📋</button>
       <button class="imp-btn" id="imp${s.id}" onclick="importHistory(${s.id})" title="Historische Emails importieren"${s.category_id?'':' disabled'}>📥</button>
       <button class="del-btn" onclick="del(${s.id})" title="Löschen">\U0001f5d1</button>
     </td>
@@ -2699,6 +2698,9 @@ async function setCat(id,cat){
   if(btn) btn.disabled=!cat;
 }
 let _ctId=null;
+function openContactFromEl(id,el){
+  openContact(id,el.dataset.phone,el.dataset.postal,el.dataset.website,el.dataset.notes);
+}
 function openContact(id,phone,postal,website,notes){
   _ctId=id;
   document.getElementById('ctPhone').value=phone;
