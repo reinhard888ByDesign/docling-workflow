@@ -1169,6 +1169,62 @@ def handle_callback(query: dict):
         if row and row["tg_msg_id"]:
             tg_edit(row["tg_msg_id"], "↩️ <b>Email bleibt in Inbox</b>")
 
+    # ── Kategorie-Auswahl für neuen Absender ─────────────────────────────────
+
+    elif action == "ssetcat" and len(parts) >= 3:
+        email_id = int(parts[1])
+        category_id = parts[2]
+        if category_id not in CATEGORIES:
+            return
+        with get_db() as con:
+            row = con.execute("SELECT * FROM email_pending WHERE id=?", (email_id,)).fetchone()
+        if not row:
+            return
+        from_addr = row["sender"] or ""
+        address = _extract_email_address(from_addr)
+        display_name = _clean_display_name(re.sub(r"<.*?>", "", from_addr).strip())
+        tg_msg_id = row["tg_msg_id"]
+        # Absender anlegen / Kategorie setzen
+        now = datetime.now().isoformat(timespec="seconds")
+        with get_db() as con:
+            con.execute(
+                "INSERT INTO email_senders(address, display_name, status, category_id, adressat, updated_at) "
+                "VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT(address) DO UPDATE SET "
+                "status='approved', category_id=excluded.category_id, updated_at=excluded.updated_at",
+                (address, display_name, "approved", category_id, "Reinhard", now),
+            )
+            sender_row = con.execute("SELECT * FROM email_senders WHERE address=?", (address,)).fetchone()
+        cat_label = CATEGORIES.get(category_id, category_id)
+        if tg_msg_id:
+            tg_edit(tg_msg_id,
+                    f"⏳ <b>Kategorie gesetzt:</b> {html.escape(cat_label)}\n"
+                    f"<code>{html.escape(address)}</code>\nVerarbeite Email…")
+        raw_data = row["raw_data"]
+        if raw_data:
+            pending_subdir = Path(row["pending_dir"])
+            pending_subdir.mkdir(parents=True, exist_ok=True)
+            _do_full_email_processing(email_id, json.loads(raw_data), pending_subdir)
+        # Retro-Import starten
+        if sender_row and not sender_row["archive_imported"]:
+            with get_db() as con:
+                con.execute("UPDATE email_senders SET archive_imported=1 WHERE address=?", (address,))
+            threading.Thread(
+                target=_retro_import_sender_bg,
+                args=(sender_row["id"], address, display_name),
+                daemon=True, name=f"retro-{address[:20]}",
+            ).start()
+        log.info(f"Neuer Absender via Telegram konfiguriert: {address} → {category_id}")
+
+    elif action == "slater" and len(parts) >= 2:
+        email_id = int(parts[1])
+        with get_db() as con:
+            row = con.execute("SELECT tg_msg_id FROM email_pending WHERE id=?", (email_id,)).fetchone()
+        if row and row["tg_msg_id"]:
+            tg_edit(row["tg_msg_id"],
+                    f"⏳ <b>Zurückgestellt</b> — Absender in Web-UI konfigurieren:\n"
+                    f"<code>http://{SENDER_UI_HOST}:{SENDER_UI_PORT}/</code>")
+
     # ── Absender-Verwaltung (aus /absender-Befehl) ────────────────────────────
 
     elif action in ("sabv_app", "sabv_blk", "sabv_del") and len(parts) >= 2:
@@ -2024,28 +2080,27 @@ def _notify_email_processed(email_id: int, meta: dict, subject: str):
 
 
 def _ask_sender_approval(email_id: int, from_addr: str, subject: str):
-    """Sendet Telegram-Anfrage für unbekannten Absender (ohne LLM / Downloads)."""
+    """Telegram-Anfrage für neuen Absender: Kategorie-Auswahl statt Annehmen/Blockieren."""
     address = _extract_email_address(from_addr)
-    domain = "@" + address.split("@")[-1] if "@" in address else address
     text = (
         f"📬 <b>Neuer Email-Absender</b>\n"
         f"{'─' * 35}\n"
         f"✉️ <b>Von:</b>     {html.escape(from_addr)}\n"
         f"📋 <b>Betreff:</b> {html.escape(subject)}\n"
         f"{'─' * 35}\n"
-        f"Soll Wilson Emails von diesem Absender ablegen?\n\n"
-        f"<b>Immer</b> — alle künftigen Emails verarbeiten\n"
-        f"<b>Domain</b> — alle Emails von <code>{html.escape(domain)}</code>\n"
-        f"<b>Einmalig</b> — nur diese Email\n"
-        f"<b>Blockieren</b> — Absender ignorieren"
+        f"Welche Kategorie soll Wilson für <code>{html.escape(address)}</code> verwenden?"
     )
-    keyboard = {"inline_keyboard": [[
-        {"text": "✅ Immer",       "callback_data": f"sapprove:{email_id}"},
-        {"text": "🌐 Domain",      "callback_data": f"sdomain:{email_id}"},
-        {"text": "1️⃣ Einmalig",   "callback_data": f"sonce:{email_id}"},
-        {"text": "🚫 Blockieren",  "callback_data": f"sblock:{email_id}"},
-    ]]}
-    tg_msg_id = tg_send(text, keyboard)
+    # Kategorie-Buttons in 3er-Reihen
+    cat_btns = [
+        {"text": _CAT_SHORT[k], "callback_data": f"ssetcat:{email_id}:{k}"}
+        for k in CATEGORIES
+    ]
+    rows = [cat_btns[i:i+3] for i in range(0, len(cat_btns), 3)]
+    rows.append([
+        {"text": "🚫 Blockieren", "callback_data": f"sblock:{email_id}"},
+        {"text": "⏳ Später",     "callback_data": f"slater:{email_id}"},
+    ])
+    tg_msg_id = tg_send(text, {"inline_keyboard": rows})
     if tg_msg_id:
         with get_db() as con:
             con.execute("UPDATE email_pending SET tg_msg_id=? WHERE id=?", (tg_msg_id, email_id))
