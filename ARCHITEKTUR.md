@@ -1971,6 +1971,133 @@ Drei Erweiterungen zur sicheren Verarbeitung von Altbestand:
 
 ---
 
+### 2026-05-19 — Wilson Email-Absenderverwaltung v2.x + Dispatcher Skill-Integration
+
+#### Wilson Email-Absenderverwaltung (doc_processor.py, v2.3–v2.8)
+
+Die Email-Absenderverwaltung (`email_senders`-Tabelle, Web-UI Port 8771) wurde vollständig ausgebaut. Sie ist die zentrale Schaltstelle für das Email-Routing — bekannte Absender werden **ohne LLM** direkt in den Vault geleitet.
+
+**Datenbankschema (neue Spalten):**
+
+| Spalte | Typ | Bedeutung |
+|---|---|---|
+| `category_id` | TEXT | Vault-Kategorie — wenn gesetzt: LLM-Bypass |
+| `adressat` | TEXT | Empfänger (Reinhard / Marion / Linoa) |
+| `archive_count` | INTEGER | Anzahl Gmail-Archiv-Emails dieses Absenders |
+| `archive_imported` | INTEGER | 0/1 — Retro-Import bereits ausgelöst? |
+| `phone` | TEXT | Telefonnummer (manuell oder via Signatur-Extraktion) |
+| `postal` | TEXT | Postadresse (manuell oder via Signatur-Extraktion) |
+| `website` | TEXT | Website-URL |
+| `notes` | TEXT | Freitext-Notizen |
+| `contact_updated` | TEXT | ISO-Timestamp letzter Kontaktdaten-Aktualisierung |
+
+**Email-Routing: zwei Pfade**
+
+```
+Eingehende Email
+  ├── Pfad A: Absender in DB + category_id gesetzt
+  │     → Kein LLM, kein Review
+  │     → Direkt in Vault (category, adressat aus DB)
+  │     → Telegram-Summary mit [✅ Archivieren] [✏️ Bearbeiten]
+  │     → Einmaliger Retro-Import aller historischen Emails (archive_imported-Flag)
+  │     → Signatur-Extraktion im Hintergrund (phone/postal/website/notes)
+  │
+  └── Pfad B: Unbekannter Absender
+        → Telegram-Abfrage mit Kategorie-Buttons (3er-Reihen)
+        → Nach Auswahl: category_id setzen + Email verarbeiten (Pfad A)
+        → Retro-Import wird automatisch gestartet
+```
+
+**Retro-Import (`_retro_import_sender_bg`):**
+- Durchsucht Gmail mit `from:address --all` (alle historischen Emails)
+- ThreadId-Deduplication (mehrere Nachrichten/Thread → nur eine Fetch)
+- Überspringt bereits vorhandene `message_id`s in `email_pending`
+- Echtes Empfangsdatum aus Date-Header (`email.utils.parsedate_to_datetime`)
+- 0.3s Sleep zwischen Fetches (Rate-Limiting)
+- Am Ende: Telegram-Zusammenfassung (N Emails importiert)
+- `archive_imported=1` wird **vor** Thread-Start gesetzt (Idempotenz)
+
+**Signatur-Extraktion (`_extract_contact_from_signature`, `_update_sender_contact_bg`):**
+- Analysiert die letzten 35 Zeilen jeder eingehenden Email via LLM (DeepSeek oder Ollama)
+- Extrahiert: Telefon, Postadresse, Website, Notizen (Firma/Funktion)
+- Überschreibt **nur NULL-Felder** — manuell gepflegte Daten bleiben erhalten
+- Läuft max. alle 90 Tage pro Absender
+
+**Domain-Override im Dispatcher (`_get_sender_row`):**
+- Beim OCR-Scan sucht der Dispatcher nach `@domain`-Mustern im Dokumenttext
+- Trifft er eine bekannte Domain in `email_senders` mit `category_id` → LLM-Kategorie überschrieben
+- Ermöglicht konsistentes Routing für Abrechnungsstellen, Portale etc. ohne exakte Email-Adresse
+
+**Web-UI (Port 8771 via Nginx-Proxy auf Ryzen):**
+
+| Feature | Beschreibung |
+|---|---|
+| Filter-Tabs | Alle / ⏳ Ausstehend (Standard) / ✅ Genehmigt / 🚫 Blockiert + Badge-Zähler |
+| Suchfeld | Client-seitig, kombiniert mit Tab-Filter |
+| Kategorie-Dropdown | Alle 17 Vault-Kategorien; leer = LLM-Automatik |
+| Adressat-Dropdown | Reinhard / Marion / Linoa / leer = Reinhard |
+| Kontakt-Modal | Klick auf Anzeigenamen öffnet Modal für phone/postal/website/notes |
+| 📥 Retro-Import | Button pro Zeile für manuellen Retro-Import (nur wenn Kategorie gesetzt) |
+| Archiv-Scan | 🔍 Scan aller Gmail-Emails (`is:anywhere --all`) mit Live-Progress |
+| Status-Legend | Erklärung aller drei Statuswerte |
+
+**Aussteller-Migration (`wilson/migrate_aussteller.py`):**
+- Einmalig-Script: importiert 91 bekannte Aussteller (Ärzte, Labore, Versicherungen etc.) in `email_senders`
+- Für Einträge mit Email: legt sowohl exakte Adresse als auch `@domain`-Eintrag an
+- Generische Domains (gmail.com, gmx.de etc.) werden als Domain-Einträge übersprungen
+- Überschreibt keine bestehenden Daten (INSERT OR IGNORE + UPDATE nur NULL-Felder)
+
+**Ryzen-Hub-Kachel:**
+- Wilson Email-Absender als Kachel unter „Dokumente & Abfragen" auf Port 8771
+- Erreichbar über Nginx-Proxy-Container (`wilson-sender-proxy`) von Ryzen aus
+
+---
+
+#### Dispatcher: KFZ / Altersvorsorge / Sachversicherungen Skill-Integration
+
+**Neue Kategorien (`dispatcher-config/categories.yaml`):**
+
+| category_id | Label | Vault-Ordner |
+|---|---|---|
+| `finanzen_versicherung_altersvorsorge` | Altersvorsorge | 40 Finanzen |
+| `finanzen_versicherung_sach` | Sachversicherungen | 40 Finanzen |
+
+Keyword-Rules für beide Kategorien ergänzt (Standmitteilung, AXA, LV1871, Nürnberger, Privathaftpflicht, DOCURA, VGH etc.)
+
+**Hintergrund-Skill-Extraktion (`dispatcher.py`):**
+
+Drei neue Skill-Hooks analog zum bestehenden KK/Immo-Muster:
+
+```python
+_call_skill_analyze(skill_name, file_path, beschreibung)
+  # Ruft /data/<skill>/analyze.py text <beschreibung> --quelle <dateiname> auf
+  # Non-blocking via subprocess.Popen
+```
+
+Greift sowohl im Wilson-Bypass-Pfad als auch im normalen LLM-Pfad:
+
+| category_id | Skill | Env-Variable |
+|---|---|---|
+| `fahrzeuge` | `kfz` | `KFZ_DB_PATH` |
+| `finanzen_versicherung_altersvorsorge` | `altersvorsorge` | `AV_DB_PATH` |
+| `finanzen_versicherung_sach` | `sachversicherungen` | `SV_DB_PATH` |
+
+**Email-MD-Routing im Dispatcher:**
+- Dispatcher watchet jetzt auch `.md`-Dateien mit `.meta.json`-Sidecar (`source=email`)
+- Syncthing-Race-Fix: Erscheint der Sidecar nach der `.md`, wird die `.md` nachträglich eingereiht
+- Startup-Queue berücksichtigt ebenfalls liegengebliebene Email-MDs
+
+**KK-Fix: HUK→Marion, Gothaer→Reinhard:**
+- `kk_adressat` wird jetzt aus dem Absendernamen hart abgeleitet, nicht mehr aus dem LLM-Ergebnis
+- Verhindert fehlerhaftes Routing wenn LLM `adressat` leer lässt
+
+**enex-tags.yaml Korrekturen:**
+- `Steuererklärung`-Tag in Evernote bedeutet „steuerrelevant" — kein Steuerdokument
+- Match-Mode auf `exact` geändert, `Steuer` aus contains-Liste entfernt
+- Fallback-Kategorie von `immobilien_eigen` auf `null` (→ `00 Inbox`) geändert
+
+---
+
 *Aktiver Entwicklungszweig: `feature/classification-v2` (mehrstufige Klassifikation, echte Konfidenz aus Disagreement, gestuftes Routing)*
 *Primäres LLM: mistral-nemo:12B lokal via Ollama*
 *Erstellt April 2026 zur Vorbereitung einer Expertenberatung*

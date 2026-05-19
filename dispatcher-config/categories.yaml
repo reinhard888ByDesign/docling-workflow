@@ -39,6 +39,16 @@ categories:
     vault_folder: "51 Immobilien vermietet"
     description: "Vermietete Immobilien: Lipowskystraße München, Kornstraße Bremen, Kolberger Straße Karlsruhe, Schießhausstraße Neuburg, Bahnhofstraße Schechen, Via dell'ospedale Seggiano"
 
+  finanzen_versicherung_altersvorsorge:
+    label: "Altersvorsorge"
+    vault_folder: "40 Finanzen"
+    description: "Lebensversicherung, Rentenversicherung, Direktversicherung, Pensionskasse, Standmitteilung"
+
+  finanzen_versicherung_sach:
+    label: "Sachversicherungen"
+    vault_folder: "40 Finanzen"
+    description: "Hausrat, Wohngebäude, Haftpflicht, Unfall, D&O, Rechtsschutz, Schließfach, Tier"
+
   garten:
     label: "Garten"
     vault_folder: "55 Garten"
@@ -208,3 +218,25 @@ keyword_rules:
                "incidente stradale", "codice della strada", "cds"]
     category_id: fahrzeuge
     beschreibung: "Polizia Stradale / Verkehrsunfall"
+
+  # Altersvorsorge erkennen
+  - keywords: ["Standmitteilung", "Stand der Versicherung", "Jahresinformation",
+               "Wertmitteilung", "Rückkaufswert", "Ablaufleistung", "Versicherungsschein",
+               "AXA Lebensversicherung", "AXA Colonia", "LV 1871", "LV1871",
+               "Nürnberger Lebensversicherung", "Nürnberger Pensionskasse",
+               "Nürnberger Direktversicherung", "Nürnberger U-Kasse",
+               "Unterstützungskasse", "HDI-Gerling", "Allvest", "Basisrente",
+               "fondsgebundene Rentenversicherung", "kapitalbildende Lebensversicherung"]
+    category_id: finanzen_versicherung_altersvorsorge
+    beschreibung: "Altersvorsorge: Lebens-/Rentenversicherung, Standmitteilung"
+
+  # Sachversicherungen erkennen
+  - keywords: ["Privathaftpflicht", "Hausratversicherung", "Wohngebäudeversicherung",
+               "Rechtsschutzversicherung", "Unfallversicherung", "D&O-Versicherung",
+               "Schließfachversicherung", "Tierversicherung",
+               "DOCURA", "VGH Versicherung", "VOV", "NV Versicherungen",
+               "Versicherungskammer Bayern", "CASAMIA", "Reale Mutua",
+               "Beitragsrechnung", "Prämienrechnung", "WGV Rechtsschutz",
+               "Nürnberger PrivatSchutz"]
+    category_id: finanzen_versicherung_sach
+    beschreibung: "Sachversicherung: Haftpflicht, Hausrat, Gebäude, Rechtsschutz"

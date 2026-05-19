@@ -71,6 +71,12 @@ KK_DB_PATH = os.environ.get("KK_DB_PATH", "")
 KK_EXTRACT_MODEL = os.environ.get("KK_EXTRACT_MODEL", "qwen3:4b-instruct")
 IMMO_DB_PATH = os.environ.get("IMMO_DB_PATH", "")
 IMMO_EXTRACT_MODEL = os.environ.get("IMMO_EXTRACT_MODEL", "qwen3:4b-instruct")
+KFZ_DB_PATH = os.environ.get("KFZ_DB_PATH", "")
+KFZ_EXTRACT_MODEL = os.environ.get("KFZ_EXTRACT_MODEL", "qwen3:4b-instruct")
+AV_DB_PATH = os.environ.get("AV_DB_PATH", "")
+AV_EXTRACT_MODEL = os.environ.get("AV_EXTRACT_MODEL", "qwen3:4b-instruct")
+SV_DB_PATH = os.environ.get("SV_DB_PATH", "")
+SV_EXTRACT_MODEL = os.environ.get("SV_EXTRACT_MODEL", "qwen3:4b-instruct")
 
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -617,10 +623,13 @@ def _write_kk_leistungen_db(result: dict, pdf_path: Path) -> int:
     absender = (result.get("absender") or "").upper()
     if "HUK" in absender:
         kk = "HUK-Coburg"
+        kk_adressat = "Marion Janning"
     elif "GOTHAER" in absender or "GOTHA" in absender:
         kk = "Gothaer"
+        kk_adressat = "Reinhard Janning"
     else:
         kk = ""
+        kk_adressat = result.get("adressat")
 
     try:
         con = sqlite3.connect(str(db_path))
@@ -655,7 +664,7 @@ def _write_kk_leistungen_db(result: dict, pdf_path: Path) -> int:
                     (
                         kk,
                         result.get("versicherungsnummer"),
-                        result.get("adressat"),
+                        kk_adressat,
                         result.get("rechnungsdatum"),
                         pos.get("leistungserbringer"),
                         pos.get("zeitraum"),
@@ -905,6 +914,45 @@ def _immo_is_immobiliendokument(result: dict) -> bool:
         return False
     cat = (result.get("category_id") or "")
     return cat in ("immobilien_eigen", "immobilien_vermietet")
+
+
+def _kfz_is_fahrzeugdokument(result: dict) -> bool:
+    if not KFZ_DB_PATH:
+        return False
+    cat = (result.get("category_id") or "")
+    return cat == "fahrzeuge"
+
+
+def _av_is_altersvorsorgedokument(result: dict) -> bool:
+    if not AV_DB_PATH:
+        return False
+    cat = (result.get("category_id") or "")
+    return cat == "finanzen_versicherung_altersvorsorge"
+
+
+def _sv_is_sachversicherungsdokument(result: dict) -> bool:
+    if not SV_DB_PATH:
+        return False
+    cat = (result.get("category_id") or "")
+    return cat == "finanzen_versicherung_sach"
+
+
+def _call_skill_analyze(skill_name: str, file_path: Path, beschreibung: str = "") -> None:
+    """Ruft analyze.py text im Hintergrund auf (non-blocking via subprocess.Popen)."""
+    script = Path("/data") / skill_name / "analyze.py"
+    if not script.exists():
+        log.warning(f"Skill-Script nicht gefunden: {script}")
+        return
+    cmd = [
+        sys.executable, str(script),
+        "text", (beschreibung or "")[:12000],
+        "--quelle", str(file_path.name),
+    ]
+    try:
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log.info(f"Skill {skill_name} gestartet: {file_path.name}")
+    except Exception as e:
+        log.warning(f"Skill {skill_name} fehlgeschlagen: {e}")
 
 
 def _ensure_immo_schema(con):
@@ -12249,7 +12297,157 @@ def process_enex_file(enex_path: Path):
         log.warning(f"ENEX verschieben nach done/ fehlgeschlagen: {e}")
 
 
+def _process_email_md(file_path: Path):
+    """Verarbeitet eine Email-MD-Datei (source: email) mit zugehörigem Sidecar."""
+    sidecar_path = file_path.parent / (file_path.stem + ".meta.json")
+    if not sidecar_path.exists():
+        log.warning(f"Email-MD ohne Sidecar: {file_path.name} — überspringe")
+        return
+
+    try:
+        sidecar_data = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        log.error(f"Email-Sidecar parse-Fehler {file_path.name}: {e}")
+        return
+
+    if sidecar_data.get("source") != "email":
+        log.debug(f"MD ohne source=email: {file_path.name} — überspringe")
+        return
+
+    dok = sidecar_data.get("dokument", {})
+    kategorie_id  = dok.get("kategorie_id", "archiv")
+    absender      = dok.get("absender", "–")
+    adressat      = dok.get("adressat", "Reinhard")
+    datum_raw     = dok.get("datum", "")
+    betreff       = dok.get("betreff", "")
+    von           = dok.get("von", "")
+    anlagen       = dok.get("anlagen", [])
+    beschreibung  = dok.get("beschreibung", "")
+    kurzbezeichnung = dok.get("kurzbezeichnung", "")
+    dateiname     = dok.get("dateiname", file_path.name)
+    verarb        = sidecar_data.get("verarbeitung", {})
+
+    # Vault-Ordner bestimmen
+    categories = load_categories()
+    vault_folder = categories.get(kategorie_id, {}).get("vault_folder", "00 Inbox") if categories else "00 Inbox"
+    if not vault_folder:
+        vault_folder = "00 Inbox"
+
+    # Datum formatieren
+    datum_fmt = ""
+    if datum_raw and re.match(r"\d{4}-\d{2}-\d{2}", datum_raw):
+        y, m, d = datum_raw.split("-")
+        datum_fmt = f"{d}.{m}.{y}"
+
+    # Jahr-Unterordner (Vorjahre)
+    year_sub = ""
+    if datum_raw and len(datum_raw) >= 4:
+        year = datum_raw[:4]
+        current_year = str(datetime.now().year)
+        if year != current_year:
+            year_sub = year
+
+    # Tags aus Kurzbezeichnung
+    tags = [t.strip() for t in kurzbezeichnung.replace("-", " ").split() if t.strip()]
+
+    # Anhang-Wikilinks auflösen (versuche .md Einträge zu finden)
+    anlage_links = []
+    if VAULT_ROOT:
+        for pdf_name in anlagen:
+            pdf_stem = Path(pdf_name).stem
+            # Suche nach .md mit diesem Stem im Vault
+            matches = list(VAULT_ROOT.rglob(f"{pdf_stem}.md"))
+            if matches:
+                anlage_links.append(f"📎 [[{pdf_stem}]]")
+            else:
+                anlage_links.append(f"📎 [[Anlagen/{pdf_name}]]")
+    else:
+        for pdf_name in anlagen:
+            anlage_links.append(f"📎 [[Anlagen/{pdf_name}]]")
+
+    # Frontmatter aufbauen
+    tags_yaml = "\n".join(f"  - {t}" for t in tags) if tags else "  []"
+    anlagen_yaml = "\n".join(f'  - "[[{Path(p).stem}]]"' for p in anlagen) if anlagen else ""
+    anlagen_field = f"anlagen:\n{anlagen_yaml}\n" if anlagen_yaml else ""
+    datum_field = f'datum: "{datum_raw}"\n' if datum_raw else ""
+    betreff_field = f'betreff: "{betreff}"\n' if betreff else ""
+    von_field = f'von: "{von}"\n' if von else ""
+
+    frontmatter = (
+        f"---\n"
+        f"{datum_field}"
+        f"absender: \"{absender}\"\n"
+        f"{von_field}"
+        f"adressat: \"{adressat}\"\n"
+        f"thema: \"{betreff} — {absender}\"\n"
+        f"{betreff_field}"
+        f"kategorie: \"{kategorie_id}\"\n"
+        f"tags:\n{tags_yaml}\n"
+        f"quelle: \"email\"\n"
+        f"{anlagen_field}"
+        f"zusammenfassung: \"{beschreibung[:200].replace(chr(34), chr(39))}\"\n"
+        f"erstellt: \"{datetime.now().strftime('%Y-%m-%d')}\"\n"
+        f"---\n"
+    )
+
+    # Body zusammensetzen: Frontmatter + Anhang-Links + Email-Body
+    email_body = file_path.read_text(encoding="utf-8")
+    anlage_block = "\n".join(anlage_links) + "\n\n" if anlage_links else ""
+    full_content = frontmatter + "\n" + anlage_block + email_body
+
+    # Ziel-Pfad im Vault bestimmen
+    if not VAULT_ROOT:
+        log.error("VAULT_ROOT nicht gesetzt — Email-MD kann nicht gespeichert werden")
+        return
+
+    vault_dir = VAULT_ROOT / vault_folder
+    if year_sub:
+        vault_dir = vault_dir / year_sub
+    vault_dir.mkdir(parents=True, exist_ok=True)
+
+    dest_md = vault_dir / dateiname
+    counter = 2
+    while dest_md.exists():
+        dest_md = vault_dir / f"{Path(dateiname).stem}_{counter}.md"
+        counter += 1
+
+    dest_md.write_text(full_content, encoding="utf-8")
+    file_path.unlink()
+    sidecar_path.unlink(missing_ok=True)
+
+    # Telegram-Bestätigung
+    n_anlagen = len(anlagen)
+    anlg_str = f" + {n_anlagen} Anhang/Anhänge" if n_anlagen else ""
+    tg_lines = [
+        f"📧 <b>Email im Vault abgelegt</b>",
+        f"",
+        f"📄 Datei:    <code>{dest_md.name}</code>",
+        f"✉️ Von:      {absender}",
+        f"👤 Adressat: {adressat}",
+    ]
+    if datum_fmt:
+        tg_lines.append(f"📅 Datum:    {datum_fmt}")
+    if categories:
+        cat_label = categories.get(kategorie_id, {}).get("label", kategorie_id)
+        tg_lines.append(f"🗂 Kategorie: <b>{cat_label}</b>")
+    tg_lines.append(f"📁 Ablage:   <code>{vault_folder}/{dest_md.name}</code>{anlg_str}")
+    tg_send("\n".join(tg_lines))
+    log.info(f"Email-MD abgelegt: {dest_md}")
+
+
 def process_file(file_path: Path):
+    # Email-MD (source=email) mit Sidecar → dedizierter Handler
+    if file_path.suffix.lower() == ".md":
+        sidecar_path = file_path.parent / (file_path.stem + ".meta.json")
+        if sidecar_path.exists():
+            try:
+                sc = json.loads(sidecar_path.read_text(encoding="utf-8"))
+                if sc.get("source") == "email":
+                    _process_email_md(file_path)
+            except Exception as e:
+                log.error(f"Email-MD Handler Fehler: {e}")
+        return
+
     if file_path.suffix.lower() != ".pdf":
         return
 
@@ -12395,6 +12593,39 @@ def process_file(file_path: Path):
                     name=f"immo-extract-{file_path.stem}",
                 ).start()
                 log.info(f"Immo-Extraktion gestartet (Hintergrund): {file_path.name}")
+
+            # KFZ-Dokument: Text an analyze.py uebergeben (Hintergrund)
+            if _kfz_is_fahrzeugdokument(result_bypass):
+                beschr = result_bypass.get("beschreibung", "")
+                threading.Thread(
+                    target=_call_skill_analyze,
+                    args=("kfz", file_path, beschr),
+                    daemon=True,
+                    name=f"kfz-extract-{file_path.stem}",
+                ).start()
+                log.info(f"KFZ-Skill gestartet (Hintergrund): {file_path.name}")
+
+            # Altersvorsorge-Dokument
+            if _av_is_altersvorsorgedokument(result_bypass):
+                beschr = result_bypass.get("beschreibung", "")
+                threading.Thread(
+                    target=_call_skill_analyze,
+                    args=("altersvorsorge", file_path, beschr),
+                    daemon=True,
+                    name=f"av-extract-{file_path.stem}",
+                ).start()
+                log.info(f"AV-Skill gestartet (Hintergrund): {file_path.name}")
+
+            # Sachversicherungs-Dokument
+            if _sv_is_sachversicherungsdokument(result_bypass):
+                beschr = result_bypass.get("beschreibung", "")
+                threading.Thread(
+                    target=_call_skill_analyze,
+                    args=("sachversicherungen", file_path, beschr),
+                    daemon=True,
+                    name=f"sv-extract-{file_path.stem}",
+                ).start()
+                log.info(f"SV-Skill gestartet (Hintergrund): {file_path.name}")
 
             # Telegram
             tg_send_document(file_path)
@@ -12764,6 +12995,19 @@ def process_file(file_path: Path):
     save_klassifikation_historie(result.get("_dok_id"), result)
     _write_kk_leistungen_db(result, file_path)
     _write_immobilien_db(result, file_path)
+    # KFZ/AV/SV: Hintergrund-Extraktion per Skill-analyze.py
+    if _kfz_is_fahrzeugdokument(result):
+        beschr = result.get("beschreibung", "")
+        threading.Thread(target=_call_skill_analyze, args=("kfz", file_path, beschr),
+                         daemon=True, name=f"kfz-extract-{file_path.stem}").start()
+    if _av_is_altersvorsorgedokument(result):
+        beschr = result.get("beschreibung", "")
+        threading.Thread(target=_call_skill_analyze, args=("altersvorsorge", file_path, beschr),
+                         daemon=True, name=f"av-extract-{file_path.stem}").start()
+    if _sv_is_sachversicherungsdokument(result):
+        beschr = result.get("beschreibung", "")
+        threading.Thread(target=_call_skill_analyze, args=("sachversicherungen", file_path, beschr),
+                         daemon=True, name=f"sv-extract-{file_path.stem}").start()
     _step_emit(_fn, "db", "Datenbank speichern", "done",
                extracted={"dok_id": result.get("_dok_id"),
                           "konfidenz": result.get("konfidenz"),
@@ -12946,6 +13190,28 @@ class DocumentHandler(FileSystemEventHandler):
             log.info(f"In Queue (PDF): {path.name}")
             _step_emit(path.name, "started", "Verarbeitung gestartet", "done")
             file_queue.put(path)
+        elif suffix == ".md":
+            # Nur Email-MDs mit Sidecar (source=email) einreihen
+            sc_path = path.parent / (path.stem + ".meta.json")
+            if sc_path.exists():
+                try:
+                    sc = json.loads(sc_path.read_text(encoding="utf-8"))
+                    if sc.get("source") == "email":
+                        log.info(f"In Queue (Email-MD): {path.name}")
+                        file_queue.put(path)
+                except Exception:
+                    pass
+        elif suffix == ".json" and path.name.endswith(".meta.json"):
+            # Sidecar erschienen: prüfe ob zugehörige Email-MD wartet (Syncthing-Race Fix)
+            md_path = path.parent / (path.stem.replace(".meta", "") + ".md")
+            if md_path.exists():
+                try:
+                    sc = json.loads(path.read_text(encoding="utf-8"))
+                    if sc.get("source") == "email":
+                        log.info(f"In Queue (Email-MD via Sidecar-Trigger): {md_path.name}")
+                        file_queue.put(md_path)
+                except Exception:
+                    pass
         elif suffix == ".enex":
             log.info(f"In Queue (ENEX): {path.name}")
             file_queue.put(("enex", path))
@@ -14004,9 +14270,18 @@ def main():
     threading.Thread(target=start_api_server, daemon=True).start()
     threading.Thread(target=tg_poll, daemon=True).start()
 
-    # Vorhandene PDFs und ENEX in WATCH_DIR (Root) verarbeiten
+    # Vorhandene PDFs, Email-MDs und ENEX in WATCH_DIR (Root) verarbeiten
     for f in WATCH_DIR.glob("*.pdf"):
         file_queue.put(f)
+    for f in WATCH_DIR.glob("*.md"):
+        if not f.name.startswith(".") and ".sync-conflict-" not in f.name:
+            sc = f.parent / (f.stem + ".meta.json")
+            if sc.exists():
+                try:
+                    if json.loads(sc.read_text(encoding="utf-8")).get("source") == "email":
+                        file_queue.put(f)
+                except Exception:
+                    pass
     for f in WATCH_DIR.glob("*.enex"):
         if not f.name.startswith(".") and ".sync-conflict-" not in f.name:
             file_queue.put(("enex", f))

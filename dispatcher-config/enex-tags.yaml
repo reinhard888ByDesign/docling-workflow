@@ -76,8 +76,11 @@ tag_rules:
     tag_output: ["Krankenversicherung/Tierarzt"]
 
   # --- Finanzen / Steuern ---
-  - evernote_tags: ["Steuerbescheid", "Finanzamt", "Agenzia", "IRPEF", "Steuer"]
-    match_mode: contains
+  # ACHTUNG: "Steuererklärung" als Evernote-Tag bedeutet nur "steuerrelevant",
+  # NICHT Steuerdokument → kein Match auf "Steuer" per contains!
+  # Nur exakte Steuer-Dokument-Tags matchen (Steuerbescheid, Finanzamt etc.)
+  - evernote_tags: ["Steuerbescheid", "Finanzamt", "Agenzia", "IRPEF"]
+    match_mode: exact
     kategorie: finanzen
     typ: steuerbescheid
     tag_output: ["Finanzen/Steuern"]
@@ -244,7 +247,7 @@ tag_filter:
 # Wird verwendet wenn kein Präfix und keine tag_rule greift.
 # ---------------------------------------------------------------------------
 fallback:
-  kategorie: immobilien_eigen
+  kategorie: null
   typ: enex_import
-  vault_folder: "50 Immobilien eigen"
+  vault_folder: "00 Inbox"
   tag_output: []
