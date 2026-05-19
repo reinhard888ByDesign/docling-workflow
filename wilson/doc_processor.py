@@ -1915,6 +1915,94 @@ def _clean_display_name(name: str) -> str:
     return name.replace('"', '').strip()
 
 
+def _extract_contact_from_signature(body_md: str) -> dict:
+    """Extrahiert Kontaktdaten aus dem Signatur-Bereich einer Email via LLM.
+    Gibt dict mit phone/postal/website/notes zurück (fehlende Felder fehlen im dict)."""
+    lines = body_md.strip().splitlines()
+    sig_area = "\n".join(lines[-35:]) if len(lines) > 35 else body_md
+    prompt = (
+        "Extrahiere Kontaktdaten aus diesem Email-Signatur-Bereich. "
+        "Antworte NUR mit einem JSON-Objekt, kein Text davor oder danach.\n\n"
+        f"---\n{sig_area}\n---\n\n"
+        '{"phone": "Telefonnummer oder null", '
+        '"postal": "Vollständige Postadresse einzeilig oder null", '
+        '"website": "Website-URL oder null", '
+        '"notes": "Kurze Anmerkung (z.B. Funktion, Firma) oder null"}'
+    )
+    content = ""
+    try:
+        if DEEPSEEK_KEY:
+            r = requests.post(
+                DEEPSEEK_URL,
+                json={"model": DEEPSEEK_MODEL,
+                      "messages": [{"role": "user", "content": prompt}],
+                      "temperature": 0, "max_tokens": 200},
+                headers={"Authorization": f"Bearer {DEEPSEEK_KEY}",
+                         "Content-Type": "application/json"},
+                timeout=30,
+            )
+            content = r.json()["choices"][0]["message"]["content"]
+        else:
+            r = requests.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={"model": OLLAMA_MODEL,
+                      "messages": [{"role": "user", "content": prompt}],
+                      "stream": False,
+                      "options": {"num_ctx": 2048, "temperature": 0}},
+                timeout=30,
+            )
+            content = r.json()["message"]["content"]
+        m = re.search(r"\{[\s\S]*\}", content or "")
+        if not m:
+            return {}
+        raw = json.loads(m.group())
+        return {k: v for k, v in raw.items() if v and v != "null" and k in ("phone", "postal", "website", "notes")}
+    except Exception as e:
+        log.warning(f"Signatur-Extraktion fehlgeschlagen: {e}")
+        return {}
+
+
+def _update_sender_contact_bg(sender_id: int, body_md: str):
+    """Hintergrund-Task: Kontaktdaten aus Signatur extrahieren und leere Felder befüllen.
+    Überschreibt nur NULL-Felder — manuell gepflegte Daten bleiben erhalten.
+    Läuft max. alle 90 Tage pro Absender."""
+    with get_db() as con:
+        row = con.execute(
+            "SELECT phone, postal, website, notes, contact_updated FROM email_senders WHERE id=?",
+            (sender_id,)
+        ).fetchone()
+    if not row:
+        return
+    # Prüfen ob Update nötig: alle Felder bereits befüllt ODER letztes Update < 90 Tage
+    all_filled = all(row[f] for f in ("phone", "postal", "website", "notes"))
+    if all_filled:
+        return
+    if row["contact_updated"]:
+        try:
+            last = datetime.fromisoformat(row["contact_updated"])
+            if (datetime.now() - last).days < 90:
+                return
+        except Exception:
+            pass
+    contact = _extract_contact_from_signature(body_md)
+    if not contact:
+        return
+    # Nur NULL-Felder aktualisieren
+    sets, params = [], []
+    for field in ("phone", "postal", "website", "notes"):
+        if field in contact and not row[field]:
+            sets.append(f"{field}=?")
+            params.append(contact[field])
+    if not sets:
+        return
+    sets.append("contact_updated=?")
+    params.append(datetime.now().isoformat(timespec="seconds"))
+    params.append(sender_id)
+    with get_db() as con:
+        con.execute(f"UPDATE email_senders SET {','.join(sets)} WHERE id=?", params)
+    log.info(f"Signatur-Kontakt aktualisiert für Absender {sender_id}: {[s.split('=')[0] for s in sets[:-1]]}")
+
+
 def _upsert_sender(address: str, display_name: str, status: str):
     """Legt Absender an oder aktualisiert seinen Status."""
     display_name = _clean_display_name(display_name)
@@ -2255,6 +2343,12 @@ def _do_full_email_processing(email_id: int, email_data: dict, pending_subdir: P
                     daemon=True, name=f"retro-{address[:20]}",
                 ).start()
                 log.info(f"Auto-Retro-Import gestartet für: {address}")
+            # Kontaktdaten aus Signatur im Hintergrund aktualisieren
+            threading.Thread(
+                target=_update_sender_contact_bg,
+                args=(sender_row["id"], body_md),
+                daemon=True, name=f"sig-{address[:20]}",
+            ).start()
     else:
         # ── Pfad B: Pending-Queue + Telegram-Review (bestehender Flow) ──────────
         with get_db() as con:
