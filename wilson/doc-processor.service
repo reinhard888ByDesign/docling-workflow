@@ -19,6 +19,14 @@ Environment=OLLAMA_MODEL=gemma4:e4b
 Environment=DEEPSEEK_MODEL=deepseek-chat
 Environment=PENDING_MINUTES=60
 Environment=POLL_INTERVAL=15
+Environment=GOG_BIN=/home/linuxbrew/.linuxbrew/bin/gog
+Environment=GOG_ACCOUNT=reinhard.janning@googlemail.com
+Environment=EMAIL_POLL_INTERVAL=300
+Environment=EMAIL_ARCHIVE_LABEL=Belege
+Environment=EMAIL_SEARCH_QUERY=in:inbox
+Environment=SENDER_UI_PORT=8771
+Environment=SENDER_UI_HOST=192.168.86.195
+Environment=SENDER_SCAN_QUERY=is:anywhere
 
 [Install]
 WantedBy=default.target

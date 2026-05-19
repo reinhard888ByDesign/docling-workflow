@@ -21,7 +21,7 @@ services:
   docling-serve:
     image: quay.io/docling-project/docling-serve:latest
     container_name: docling-serve
-    restart: unless-stopped
+    restart: no
     deploy:
       resources:
         limits:
@@ -67,6 +67,12 @@ services:
       - KK_EXTRACT_MODEL=qwen3:4b-instruct
       - IMMO_DB_PATH=/data/immobilien/immobilien.db
       - IMMO_EXTRACT_MODEL=qwen3:4b-instruct
+      - KFZ_DB_PATH=/data/kfz/kfz.db
+      - KFZ_EXTRACT_MODEL=qwen3:4b-instruct
+      - AV_DB_PATH=/data/altersvorsorge/altersvorsorge.db
+      - AV_EXTRACT_MODEL=qwen3:4b-instruct
+      - SV_DB_PATH=/data/sachversicherungen/sachversicherungen.db
+      - SV_EXTRACT_MODEL=qwen3:4b-instruct
       - TZ=Europe/Rome
     ports:
       - "8765:8765"
@@ -79,11 +85,25 @@ services:
       - /home/reinhard/.ssh/id_ed25519:/ssh/id_ed25519:ro
       - /home/reinhard/.claude/skills/leistungsabrechnung:/data/kv-skill
       - /home/reinhard/.claude/skills/immobilien:/data/immobilien
+      - /home/reinhard/.claude/skills/kfz:/data/kfz
+      - /home/reinhard/.claude/skills/altersvorsorge:/data/altersvorsorge
+      - /home/reinhard/.claude/skills/sachversicherungen:/data/sachversicherungen
     networks:
       - docling-net
       - ollama-net
     depends_on:
       - docling-serve
+
+  wilson-sender-proxy:
+    image: nginx:alpine
+    container_name: wilson-sender-proxy
+    restart: unless-stopped
+    ports:
+      - "8771:8771"
+    volumes:
+      - ./wilson/nginx-sender.conf:/etc/nginx/conf.d/sender.conf:ro
+    networks:
+      - docling-net
 
   cache-reader:
     build: ./cache-reader
