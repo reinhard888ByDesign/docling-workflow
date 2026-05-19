@@ -2739,6 +2739,12 @@ td.name-cell.has-data{color:#7c3aed}
 .add-row input:first-child{flex:2;min-width:200px}
 .add-row input:nth-child(2){flex:1;min-width:120px}
 .empty{text-align:center;padding:40px;color:#9ca3af}
+.tabs{display:flex;gap:4px;margin-bottom:14px;flex-wrap:wrap}
+.tab{border:1px solid #e5e7eb;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:.83rem;background:#fff;color:#6b7280;transition:all .15s}
+.tab:hover{border-color:#93c5fd;color:#2563eb}
+.tab.active{background:#2563eb;color:#fff;border-color:#2563eb}
+.badge{display:inline-block;background:#f3f4f6;color:#6b7280;border-radius:10px;padding:1px 7px;font-size:.75rem;margin-left:5px}
+.tab.active .badge{background:rgba(255,255,255,.25);color:#fff}
 </style>
 </head>
 <body>
@@ -2748,6 +2754,12 @@ td.name-cell.has-data{color:#7c3aed}
   <button class="btn btn-primary" id="scanBtn" onclick="startScan()">\U0001f50d Archiv scannen</button>
   <span id="progress"></span>
   <input id="searchBox" placeholder="\U0001f50d Suchen…" oninput="filterTable(this.value)">
+</div>
+<div class="tabs">
+  <button class="tab" id="tab-all" onclick="setTab('')">Alle <span class="badge" id="cnt-all">–</span></button>
+  <button class="tab active" id="tab-pending" onclick="setTab('pending')">⏳ Ausstehend <span class="badge" id="cnt-pending">–</span></button>
+  <button class="tab" id="tab-approved" onclick="setTab('approved')">✅ Genehmigt <span class="badge" id="cnt-approved">–</span></button>
+  <button class="tab" id="tab-blocked" onclick="setTab('blocked')">\U0001f6ab Blockiert <span class="badge" id="cnt-blocked">–</span></button>
 </div>
 <div class="legend">✅ <b>Genehmigt</b> — Email wird verarbeitet &nbsp;·&nbsp; ⏳ <b>Ausstehend</b> — nächste Email fragt per Telegram nach &nbsp;·&nbsp; \U0001f6ab <b>Blockiert</b> — Email wird ignoriert</div>
 <table>
@@ -2792,6 +2804,7 @@ td.name-cell.has-data{color:#7c3aed}
 const SL={approved:'✅ Genehmigt',blocked:'\U0001f6ab Blockiert',pending:'⏳ Ausstehend'};
 let cats=[];
 let pollTimer=null;
+let _activeTab='pending';
 
 async function init(){
   cats=await(await fetch('/api/categories')).json();
@@ -2813,7 +2826,14 @@ async function load(){
     tb.innerHTML='<tr><td colspan="6" class="empty">Keine Absender vorhanden. Archiv scannen oder manuell hinzufügen.</td></tr>';
     return;
   }
-  tb.innerHTML=rows.map(s=>`<tr id="r${s.id}">
+  // Update tab badge counts
+  const counts={all:rows.length,approved:0,pending:0,blocked:0};
+  rows.forEach(s=>{if(counts[s.status]!==undefined)counts[s.status]++;});
+  ['all','approved','pending','blocked'].forEach(k=>{
+    const el=document.getElementById('cnt-'+k);
+    if(el)el.textContent=counts[k];
+  });
+  tb.innerHTML=rows.map(s=>`<tr id="r${s.id}" data-status="${s.status}">
     <td class="mono addr" title="${esc(s.address)}">${esc(s.address)}</td>
     <td class="name-cell${(s.phone||s.postal||s.website||s.notes)?' has-data':''}" onclick="openContactFromEl(${s.id},this)" data-phone="${esc(s.phone||'')}" data-postal="${esc(s.postal||'')}" data-website="${esc(s.website||'')}" data-notes="${esc(s.notes||'')}" title="${(s.phone||s.postal||s.website||s.notes)?'Kontaktdaten bearbeiten':'Kontaktdaten hinzufügen'}">${esc(s.display_name||'–')}</td>
     <td class="cnt">${s.archive_count||0}</td>
@@ -2831,15 +2851,29 @@ async function load(){
 
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 
+function setTab(status){
+  _activeTab=status;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  const tid=status?'tab-'+status:'tab-all';
+  const el=document.getElementById(tid);
+  if(el)el.classList.add('active');
+  filterTable(document.getElementById('searchBox').value);
+}
+
 function filterTable(q){
   q=q.toLowerCase();
   document.querySelectorAll('#tbody tr').forEach(tr=>{
-    tr.style.display=tr.textContent.toLowerCase().includes(q)?'':'none';
+    const matchTab=!_activeTab||tr.dataset.status===_activeTab;
+    const matchSearch=!q||tr.textContent.toLowerCase().includes(q);
+    tr.style.display=(matchTab&&matchSearch)?'':'none';
   });
 }
 
 async function setStatus(id,status){
   await fetch('/api/senders/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
+  const tr=document.getElementById('r'+id);
+  if(tr)tr.dataset.status=status;
+  load();
 }
 async function setCat(id,cat){
   await fetch('/api/senders/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({category_id:cat})});
