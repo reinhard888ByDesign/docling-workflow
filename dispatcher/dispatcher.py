@@ -927,14 +927,14 @@ def _av_is_altersvorsorgedokument(result: dict) -> bool:
     if not AV_DB_PATH:
         return False
     cat = (result.get("category_id") or "")
-    return cat == "finanzen_versicherung_altersvorsorge"
+    return cat in ("altersvorsorge", "finanzen_versicherung_altersvorsorge")
 
 
 def _sv_is_sachversicherungsdokument(result: dict) -> bool:
     if not SV_DB_PATH:
         return False
     cat = (result.get("category_id") or "")
-    return cat == "finanzen_versicherung_sach"
+    return cat in ("versicherung", "finanzen_versicherung_sach")
 
 
 def _call_skill_analyze(skill_name: str, file_path: Path, beschreibung: str = "") -> None:
@@ -2920,52 +2920,57 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
 <div class="flow">
   <div class="flow-title">Dokumenten-Pipeline</div>
   <div class="flow-inner">
+    <span class="fgroup-label">Eingang</span>
     <span class="fstep" title="Foto oder PDF per Telegram senden">
       <span class="fi">📱</span><span class="fl">Telegram</span><span class="fs">Foto / PDF</span>
     </span>
+    <span class="farr">/</span>
+    <span class="fstep" title="Email-Eingang via Gmail (gog CLI) — Anhänge werden automatisch extrahiert">
+      <span class="fi">📧</span><span class="fl">Gmail</span><span class="fs">Email + Anhang</span>
+    </span>
     <span class="farr">→</span>
 
-    <a class="fstep" id="fstep-wilson" href="/wilson">
+    <a class="fstep" id="fstep-wilson" href="/wilson" title="Wilson klassifiziert Dokumente mit eigenem LLM (DeepSeek/Gemma) und erstellt Sidecar-Metadaten">
       <span class="fdot" id="fdot-wilson_pi"></span>
-      <span class="fi">🥧</span><span class="fl">Wilson / Pi</span><span class="fs">OpenClaw</span>
+      <span class="fi">🥧</span><span class="fl">Wilson / Pi</span><span class="fs">OpenClaw + LLM</span>
     </a>
     <span class="farr">→</span>
 
-    <a class="fstep" id="fstep-syncthing" href="#">
+    <a class="fstep" id="fstep-syncthing" href="#" title="Syncthing synchronisiert PDF + Sidecar (.meta.json) von Wilson zum Ryzen">
       <span class="fdot" id="fdot-syncthing"></span>
       <span class="fi">🔄</span><span class="fl">Syncthing</span><span class="fs">Pi → Ryzen</span>
     </a>
     <span class="farr">→</span>
 
-    <span class="fstep">
+    <span class="fstep" title="Docling OCR und Ollama-Klassifikation werden übersprungen wenn Wilson-Sidecar vorhanden (Bypass-Modus)">
       <span class="fdot" id="fdot-docling_serve"></span>
-      <span class="fi">🔍</span><span class="fl">Docling OCR</span><span class="fs">PDF → Markdown</span>
+      <span class="fi">🔍</span><span class="fl">Docling OCR</span><span class="fs">nur ohne Sidecar</span>
     </span>
     <span class="farr">→</span>
 
-    <span class="fstep">
-      <span class="fi">🌐</span><span class="fl">Spracherkennung</span><span class="fs">DE / IT / EN</span>
-    </span>
-    <span class="farr">→</span>
-
-    <a class="fstep" id="fstep-ollama" href="#">
+    <a class="fstep" id="fstep-ollama" href="#" title="Ollama LLM-Klassifikation — wird im Bypass-Modus (Wilson-Sidecar vorhanden) übersprungen">
       <span class="fdot" id="fdot-ollama"></span>
-      <span class="fi">🤖</span><span class="fl">Ollama LLM</span><span class="fs">Klassifikation</span>
+      <span class="fi">🤖</span><span class="fl">Ollama LLM</span><span class="fs">nur ohne Sidecar</span>
     </a>
     <span class="farr">→</span>
 
-    <a class="fstep" href="/pipeline">
+    <a class="fstep" href="/pipeline" title="Dispatcher: Routing in Vault-Ordner, DB-Speicherung, Skill-Extraktion">
       <span class="fdot" id="fdot-dispatcher"></span>
       <span class="fi">📄</span><span class="fl">Dispatcher</span><span class="fs">Routing + DB</span>
     </a>
     <span class="farr">→</span>
 
-    <a class="fstep" href="/vault">
+    <span class="fgroup-label">Ablage</span>
+    <a class="fstep" href="/vault" title="Obsidian Vault: Markdown + PDF nach Kategorie sortiert">
       <span class="fi">📁</span><span class="fl">Obsidian Vault</span><span class="fs">MD + PDF</span>
     </a>
+    <span class="farr">/</span>
+    <span class="fstep" title="Skill-Extraktion im Hintergrund: KFZ, Altersvorsorge, Sachversicherungen, Immobilien, KK-Leistungen → eigene SQLite-DBs">
+      <span class="fi">🗃</span><span class="fl">Skill-DBs</span><span class="fs">KFZ / AV / SV / Immo</span>
+    </span>
     <span class="farr">→</span>
 
-    <a class="fstep" id="fstep-enzyme" href="#">
+    <a class="fstep" id="fstep-enzyme" href="#" title="enzyme MCP indexiert den Vault für semantische Suche">
       <span class="fdot" id="fdot-enzyme"></span>
       <span class="fi">🧪</span><span class="fl">enzyme MCP</span><span class="fs">Vault indexieren</span>
     </a>

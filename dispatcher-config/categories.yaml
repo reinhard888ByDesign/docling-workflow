@@ -6,7 +6,7 @@ categories:
 
   versicherung:
     label: "Versicherungsdokument"
-    vault_folder: "49 Krankenversicherung"
+    vault_folder: "40 Finanzen"
     description: "Sachversicherungen, KFZ-Versicherung, Versicherungsscheine, Beitragsanpassungen"
 
   persoenlich:
@@ -38,6 +38,11 @@ categories:
     label: "Immobilien vermietet"
     vault_folder: "51 Immobilien vermietet"
     description: "Vermietete Immobilien: Lipowskystraße München, Kornstraße Bremen, Kolberger Straße Karlsruhe, Schießhausstraße Neuburg, Bahnhofstraße Schechen, Via dell'ospedale Seggiano"
+
+  altersvorsorge:
+    label: "Altersvorsorge"
+    vault_folder: "40 Finanzen"
+    description: "Rentenversicherung, Lebensversicherung, Direktversicherung, Pensionskasse, Standmitteilungen"
 
   finanzen_versicherung_altersvorsorge:
     label: "Altersvorsorge"
@@ -195,8 +200,17 @@ keyword_rules:
     category_id: finanzen
     beschreibung: "Kontoauszug"
 
+  # KFZ-Schutzregel: läuft VOR der KV-Regel — verhindert Fehlzuordnung bei Beitragserstattungen
+  - keywords: ["Kraftfahrtversicherung", "Kraftfahrzeugversicherung",
+               "Kraftfahrzeughaftpflicht", "Kfz-Haftpflicht", "KFZ-Haftpflicht",
+               "Versicherungsschein zur Kraftfahrt", "Fahrzeugversicherung",
+               "Kfz-Versicherung", "KFZ-Versicherung",
+               "casco", "Kasko", "Teilkasko", "Vollkasko"]
+    category_id: fahrzeuge
+    beschreibung: "KFZ-Versicherung / Kraftfahrtversicherung"
+
   - keywords: ["Leistungsabrechnung", "haben abgerechnet", "Erstattungsbetrag",
-               "Erstattung", "Einreichung", "eingereichte Belege",
+               "eingereichte Belege",
                "HUK-COBURG", "HUK COBURG", "Gothaer Krankenversicherung",
                "Barmenia Krankenversicherung", "vigo Krankenversicherung"]
     category_id: krankenversicherung
@@ -221,7 +235,7 @@ keyword_rules:
 
   # Altersvorsorge erkennen
   - keywords: ["Standmitteilung", "Stand der Versicherung", "Jahresinformation",
-               "Wertmitteilung", "Rückkaufswert", "Ablaufleistung", "Versicherungsschein",
+               "Wertmitteilung", "Rückkaufswert", "Ablaufleistung",
                "AXA Lebensversicherung", "AXA Colonia", "LV 1871", "LV1871",
                "Nürnberger Lebensversicherung", "Nürnberger Pensionskasse",
                "Nürnberger Direktversicherung", "Nürnberger U-Kasse",
@@ -235,8 +249,8 @@ keyword_rules:
                "Rechtsschutzversicherung", "Unfallversicherung", "D&O-Versicherung",
                "Schließfachversicherung", "Tierversicherung",
                "DOCURA", "VGH Versicherung", "VOV", "NV Versicherungen",
-               "Versicherungskammer Bayern", "CASAMIA", "Reale Mutua",
-               "Beitragsrechnung", "Prämienrechnung", "WGV Rechtsschutz",
-               "Nürnberger PrivatSchutz"]
+               "CASAMIA", "Reale Mutua",
+               "WGV Rechtsschutz", "Nürnberger PrivatSchutz",
+               "Versicherungskammer Bayern Hausrat", "Versicherungskammer Bayern Haftpflicht"]
     category_id: finanzen_versicherung_sach
     beschreibung: "Sachversicherung: Haftpflicht, Hausrat, Gebäude, Rechtsschutz"
