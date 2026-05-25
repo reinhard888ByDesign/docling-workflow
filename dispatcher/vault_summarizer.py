@@ -84,6 +84,39 @@ def strip_frontmatter(content: str) -> tuple[str, str]:
     return "", content
 
 
+def ensure_original_in_frontmatter(fm: str, body: str) -> str:
+    """Stellt sicher, dass die YAML-Frontmatter ein 'original:'-Feld enthält.
+    Extrahiert den PDF-Dateinamen aus Wikilinks oder JSON-Dokument-Metadaten im Body."""
+    if not fm:
+        return fm
+
+    # Prüfe ob original: bereits vorhanden
+    if re.search(r"^original:", fm, re.MULTILINE):
+        return fm
+
+    pdf_name = None
+
+    # 1. Wikilink [[...pdf]] im Body
+    m = re.search(r"\[\[([^\]|]+\.pdf)\]\]", body)
+    if m:
+        pdf_name = m.group(1).strip()
+    else:
+        # 2. JSON "filename":"...pdf" im Body (Docling-Format)
+        m = re.search(r'"filename"\s*:\s*"([^"]+\.pdf)"', body)
+        if m:
+            pdf_name = m.group(1).strip()
+
+    if not pdf_name:
+        return fm
+
+    # original: vor dem schließenden --- einfügen
+    lines = fm.split("\n")
+    # Finde die letzte Zeile vor dem schließenden ---
+    insert_at = len(lines) - 1  # vor dem letzten ---
+    lines.insert(insert_at, f"original: {pdf_name}")
+    return "\n".join(lines)
+
+
 MAX_INPUT_CHARS = 6000  # Prompt-Limit für LLM (vermeidet Timeouts bei langen OCR-Dokumenten)
 
 
@@ -237,6 +270,10 @@ def process_file(
 
     # Frontmatter trennen
     frontmatter, body = strip_frontmatter(content)
+
+    # PDF-Referenz aus Body retten bevor der Body durch Summary ersetzt wird
+    frontmatter = ensure_original_in_frontmatter(frontmatter, body)
+
     clean_body = clean_for_summarization(body)
 
     if test_mode:
