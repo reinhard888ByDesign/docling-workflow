@@ -1,7 +1,7 @@
 # Persönliches KI-gestütztes Dokumentenmanagement
 ## Projektbeschreibung und Umsetzungsplan
 
-*Stand: 2026-05-15 — laufend aktualisiert*
+*Stand: 2026-05-20 — laufend aktualisiert*
 
 ---
 
@@ -2095,6 +2095,95 @@ Greift sowohl im Wilson-Bypass-Pfad als auch im normalen LLM-Pfad:
 - `Steuererklärung`-Tag in Evernote bedeutet „steuerrelevant" — kein Steuerdokument
 - Match-Mode auf `exact` geändert, `Steuer` aus contains-Liste entfernt
 - Fallback-Kategorie von `immobilien_eigen` auf `null` (→ `00 Inbox`) geändert
+
+---
+
+### 2026-05-20 — Keyword-Regeln + Kategorie-ID-Fix + Dashboard
+
+#### Fehlklassifikation WGV-Versicherung (Root-Cause-Analyse + Fix)
+
+**Symptom:** `20260520_WGV-Versicherung_AG.pdf` (Versicherungsschein zur Kraftfahrtversicherung, Anhänger TS-QZ 566) wurde als `krankenversicherung` abgelegt statt `fahrzeuge`.
+
+**Root Cause:** Die KV-Keyword-Regel enthielt das generische Keyword `"Erstattung"`. Das Dokument enthielt eine Beitragsgutschrift (`-21,82 EUR` Erstattung für Vertragsaufhebung) — dies triggerte fälschlicherweise die KV-Regel, obwohl es sich um eine KFZ-Prämiengutschrift handelte.
+
+**Fix — Keyword-Regeln (`dispatcher-config/categories.yaml`):**
+
+1. **KFZ-Schutzregel** (neu, erste Position vor KV-Regel):
+   ```yaml
+   - keywords: ["Kraftfahrtversicherung", "Kraftfahrzeugversicherung", "Kraftfahrzeughaftpflicht",
+                "Kfz-Haftpflicht", "KFZ-Haftpflicht", "Versicherungsschein zur Kraftfahrt",
+                "Fahrzeugversicherung", "Kfz-Versicherung", "KFZ-Versicherung",
+                "casco", "Kasko", "Teilkasko", "Vollkasko"]
+     category_id: fahrzeuge
+   ```
+   Greift als First-Match — verhindert Fehlzuordnung bei KFZ-Beitragserstattungen.
+
+2. **KV-Regel bereinigt:** `"Erstattung"` und `"Einreichung"` entfernt (zu generisch).
+
+3. **AV-Regel bereinigt:** `"Versicherungsschein"` entfernt (matcht alle Versicherungsdokumente inkl. KFZ).
+
+4. **SV-Regel bereinigt:** `"Beitragsrechnung"` und `"Prämienrechnung"` entfernt; `"Versicherungskammer Bayern"` auf produktspezifische Varianten (`"Versicherungskammer Bayern Hausrat"`, `"Versicherungskammer Bayern Haftpflicht"`) eingeschränkt.
+
+**Manuelle Korrektur:**
+- Vault MD verschoben: `49 Krankenversicherung/` → `60 Fahrzeuge/2026/20260520_WGV-Versicherung_AG.md`
+- Dispatcher-DB: Record ID=4762 → `kategorie='fahrzeuge'`, `vault_kategorie='fahrzeuge'`, `vault_pfad` aktualisiert
+- Frontmatter-Tags: `fahrzeuge`, `kfz-versicherung`, `anhänger`, `TS-QZ566`
+
+#### Kategorie-ID-Mismatch-Fix (dispatcher.py)
+
+**Problem:** Wilson sendet im Sidecar `.meta.json` eigene Kategorie-IDs (`"altersvorsorge"`, `"versicherung"`), die von Ryzens Skill-Dispatch-Funktionen nicht erkannt wurden — diese prüften nur auf die internen Ryzen-IDs (`"finanzen_versicherung_altersvorsorge"`, `"finanzen_versicherung_sach"`). Dadurch wurden AV- und SV-Skills im Wilson-Bypass-Pfad **nie getriggert**.
+
+**Fix:**
+
+```python
+def _av_is_altersvorsorgedokument(result: dict) -> bool:
+    cat = (result.get("category_id") or "")
+    return cat in ("altersvorsorge", "finanzen_versicherung_altersvorsorge")
+
+def _sv_is_sachversicherungsdokument(result: dict) -> bool:
+    cat = (result.get("category_id") or "")
+    return cat in ("versicherung", "finanzen_versicherung_sach")
+```
+
+Alle 5 Skills (KFZ, KK, AV, SV, Immobilien) triggern jetzt korrekt im Wilson-Bypass-Pfad.
+
+#### Neue Kategorie `altersvorsorge` in Wilson und Ryzen
+
+Wilson `doc_processor.py` kannte `"altersvorsorge"` bisher nicht — AV-Dokumente wurden als `"finanzen"` klassifiziert.
+
+**Wilson-Änderungen:**
+- `CATEGORIES` dict: `"altersvorsorge": "Altersvorsorge — Rentenversicherung, Standmitteilungen"`
+- `_CAT_SHORT` dict: `"altersvorsorge": "Altersvorsorge"`
+- LLM-Prompt: Neue Regel 2 für AV-Dokumente (NÜRNBERGER, Zurich Life, AXA, HDI, Ergo, Standmitteilung, Rückkaufswert etc.)
+
+**Ryzen-Änderungen (`dispatcher-config/categories.yaml`):**
+```yaml
+altersvorsorge:
+  label: "Altersvorsorge"
+  vault_folder: "40 Finanzen"
+  description: "Rentenversicherung, Lebensversicherung, Direktversicherung, Pensionskasse, Standmitteilungen"
+```
+
+#### `versicherung` vault_folder-Fix
+
+`category_id: versicherung` hatte fälschlicherweise `vault_folder: "49 Krankenversicherung"`. Sachversicherungsdokumente (Hausrat, Haftpflicht etc.) landeten damit im KV-Ordner.
+
+**Fix:** `vault_folder: "49 Krankenversicherung"` → `"40 Finanzen"`
+
+#### Dashboard Pipeline-Diagramm aktualisiert
+
+Das Pipeline-Diagramm auf `/pipeline` war veraltet (zeigte noch alten Scan-only-Eingang).
+
+**Neue Darstellung:**
+- Gmail-Eingang als zweiter Eingangspfad (neben Scanner)
+- Wilson-Schritt: „OpenClaw + LLM" (statt nur „Wilson")
+- OCR/Ollama-Schritt: „nur ohne Sidecar" (Bypass-Pfad sichtbar)
+- Neuer Schritt: „Skill-DBs" (KFZ-DB, KK-DB, AV-DB, SV-DB, Immo-DB)
+- Tooltips auf allen Pipeline-Schritten
+
+Änderung in `dispatcher.py` baked → erforderte `docker compose build dispatcher`.
+
+**Commit:** `23028d3` (feat: KFZ keyword-Fix + altersvorsorge Kategorie + Dashboard-Update)
 
 ---
 

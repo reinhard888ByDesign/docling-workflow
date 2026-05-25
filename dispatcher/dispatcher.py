@@ -144,7 +144,8 @@ SQLite-Datenbank für Dokumente der Familie Janning.
 Tabelle: dokumente
   id, dateiname, rechnungsdatum TEXT (Format DD.MM.YYYY),
   kategorie TEXT (z.B. 'krankenversicherung', 'versicherung', 'finanzen', 'fahrzeuge',
-    'persoenlich', 'familie', 'fengshui', 'immobilien_eigen', 'immobilien_vermietet',
+    'persoenlich', 'familie', 'fengshui', 'immobilien',
+    'immobilien_eigen', 'immobilien_vermietet',
     'garten', 'italien', 'business', 'digitales', 'wissen', 'reisen',
     'bedienungsanleitung', 'archiv'),
   typ TEXT (bei KV z.B. 'leistungsabrechnung_reinhard', 'arztrechnung', 'rezept';
@@ -861,7 +862,7 @@ Objekte:
 - vm_2: Kornstrasse, Bremen
 - vm_3: Kolberger Strasse, Karlsruhe (Hausverwaltung: Troltsch)
 - vm_4: Schiesshausstrasse, Neuburg
-- vm_5: Bahnhofstrasse, Schechen
+- vm_5: Blumenstrasse 18, Schechen
 - vm_6: Via dell'ospedale, Seggiano
 
 Gib folgendes JSON zurueck (keine anderen Felder, kein Markdown):
@@ -887,15 +888,32 @@ Dokumenttext:
 """
 
 _OBJEKT_KEYWORDS = [
-    ("vm_1", ["lipowsky"]),
-    ("vm_2", ["kornstraße", "kornstr"]),
-    ("vm_3", ["kolberger", "troltsch"]),
-    ("vm_4", ["schießhaus", "schiesshaus"]),
-    ("vm_5", ["schechen"]),
-    ("vm_6", ["via dell'ospedale", "via dell.ospedale"]),
-    ("eigen_2", ["podere dei venti"]),
+    ("vm_1",    ["lipowsky"]),
+    ("vm_2",    ["kornstraße", "kornstr"]),
+    ("vm_3",    ["kolberger", "troltsch"]),
+    ("vm_4",    ["schießhaus", "schiesshaus"]),
+    ("vm_5",    ["schechen", "blumenstraße schechen", "blumenstrasse schechen"]),
+    ("vm_6",    ["via dell'ospedale", "via dell.ospedale"]),
+    ("eigen_2", ["podere dei venti", "poderedeiventi"]),
     ("eigen_1", ["grassauer", "übersee"]),
 ]
+
+_IMMO_OBJEKT_TAGS: dict[str, str] = {
+    "eigen_1": "immo-uebersee",
+    "eigen_2": "immo-podere",
+    "vm_1":    "immo-muenchen",
+    "vm_2":    "immo-bremen",
+    "vm_3":    "immo-karlsruhe",
+    "vm_4":    "immo-neuburg",
+    "vm_5":    "immo-schechen",
+    "vm_6":    "immo-seggiano-vm",
+}
+
+
+def _immo_tag_from_text(text: str) -> str | None:
+    """Leitet den immo-{objekt}-Tag aus Dokumenttext ab. Gibt None wenn kein Objekt erkannt."""
+    obj_id = _immo_match_objekt_keyword(text)
+    return _IMMO_OBJEKT_TAGS.get(obj_id) if obj_id else None
 
 
 def _immo_match_objekt_keyword(text: str) -> str | None:
@@ -913,7 +931,7 @@ def _immo_is_immobiliendokument(result: dict) -> bool:
     if not IMMO_DB_PATH:
         return False
     cat = (result.get("category_id") or "")
-    return cat in ("immobilien_eigen", "immobilien_vermietet")
+    return cat in ("immobilien", "immobilien_eigen", "immobilien_vermietet")
 
 
 def _kfz_is_fahrzeugdokument(result: dict) -> bool:
@@ -1170,7 +1188,7 @@ def _immo_extract_and_store(file_path: Path, result: dict) -> None:
             cat = result.get("category_id", "")
             if cat == "immobilien_eigen":
                 data["objekt_id"] = "eigen_2"
-            # immobilien_vermietet ohne Keyword bleibt null
+            # immobilien, immobilien_vermietet ohne Keyword bleibt null
 
         data["category_id"] = result.get("category_id", "")
         data["_rohtext_md5"] = hashlib.md5(text.encode("utf-8")).hexdigest()
@@ -1353,7 +1371,7 @@ def _summarizer_status() -> dict:
     try:
         if _SUMMARIZER_PROGRESS.exists():
             data = json.loads(_SUMMARIZER_PROGRESS.read_text())
-            total = 4894
+            total = len(list(VAULT_ROOT.rglob("*.md"))) if VAULT_ROOT and VAULT_ROOT.exists() else len(data)
             counts: dict[str, int] = {}
             for v in data.values():
                 s = v.get("status", "unknown") if isinstance(v, dict) else str(v)
@@ -11669,6 +11687,11 @@ def _build_frontmatter(result: dict, pdf_filename: str, category_id: str, type_i
         tags.append(category_id.replace("_", "-"))
     if type_id:
         tags.append(type_id.replace("_", "-"))
+    # Immobilien: Objekt-Tag (immo-{objekt}) aus vorbereitetem Feld
+    if category_id in ("immobilien", "immobilien_eigen", "immobilien_vermietet"):
+        immo_tag = r.get("immo_objekt_tag")
+        if immo_tag:
+            tags.append(immo_tag)
 
     def _q(val: str) -> str:
         """YAML-String mit doppelten Anführungszeichen, intern escapt."""
@@ -11756,6 +11779,17 @@ def move_to_vault(file_path: Path, temp_md: Path, category_id: str, type_id: str
     # vault_pfad + anlagen_dateiname im result-Dict vermerken (für SSE nach Vault-Move)
     result["vault_pfad"] = vault_pfad
     result["_anlagen_dateiname"] = pdf_filename
+
+    # Immobilien: Objekt-Tag aus OCR-Text ableiten
+    if category_id in ("immobilien", "immobilien_eigen", "immobilien_vermietet"):
+        try:
+            ocr_text = temp_md.read_text(encoding="utf-8")
+            immo_tag = _immo_tag_from_text(ocr_text)
+            if immo_tag:
+                result["immo_objekt_tag"] = immo_tag
+                log.info(f"Immo-Objekt-Tag gesetzt: {immo_tag}")
+        except Exception as e:
+            log.debug(f"Immo-Tag-Ableitung fehlgeschlagen: {e}")
 
     _write_vault_md(dest_pdf, dest_md, vault_pfad, temp_md, result, category_id, type_id, file_path.name)
 
@@ -12226,6 +12260,12 @@ def rescan_archived_pdf(pdf_path: Path, language_filter: str | None = None):
     # MD schreiben (PDF nicht verschieben!)
     try:
         ocr_content = temp_md.read_text(encoding="utf-8")
+        # Immobilien: Objekt-Tag aus OCR-Text ableiten
+        if category_id in ("immobilien", "immobilien_eigen", "immobilien_vermietet"):
+            immo_tag = _immo_tag_from_text(ocr_content)
+            if immo_tag:
+                result["immo_objekt_tag"] = immo_tag
+                log.info(f"Rescan Immo-Objekt-Tag: {immo_tag}")
         frontmatter = _build_frontmatter(result, pdf_filename, category_id or "", type_id or "")
         pdf_link_line = f"📎 [[Anlagen/{pdf_filename}]]\n\n"
         temp_md.write_text(frontmatter + pdf_link_line + ocr_content, encoding="utf-8")
@@ -12354,6 +12394,17 @@ def _process_email_md(file_path: Path):
 
     # Tags aus Kurzbezeichnung
     tags = [t.strip() for t in kurzbezeichnung.replace("-", " ").split() if t.strip()]
+
+    # Immobilien: Objekt-Tag aus Emailinhalt ableiten
+    if kategorie_id in ("immobilien", "immobilien_eigen", "immobilien_vermietet"):
+        try:
+            email_text_for_tags = f"{absender} {betreff} {beschreibung}"
+            immo_tag = _immo_tag_from_text(email_text_for_tags)
+            if immo_tag:
+                tags.append(immo_tag)
+                log.info(f"Email Immo-Objekt-Tag: {immo_tag}")
+        except Exception:
+            pass
 
     # Anhang-Wikilinks auflösen (versuche .md Einträge zu finden)
     anlage_links = []

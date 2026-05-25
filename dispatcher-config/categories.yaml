@@ -29,15 +29,20 @@ categories:
     vault_folder: "40 Finanzen"
     description: "Versicherungen (nicht Kranken/KFZ/Gebäude), Banken, Steuern, Rechnungen allgemein"
 
+  immobilien:
+    label: "Immobilien"
+    vault_folder: "50 Immobilien"
+    description: "Alle Immobilien-Dokumente: Podere dei venti Seggiano, Via dell'ospedale Seggiano, Lipowskystraße München, Kornstraße Bremen, Kolberger Straße Karlsruhe, Schießhausstraße Neuburg, Blumenstraße Schechen"
+
   immobilien_eigen:
-    label: "Immobilien eigen"
-    vault_folder: "50 Immobilien eigen"
-    description: "Eigene Immobilien: Grassauer Straße 64 Übersee (bis 2022), Podere dei venti Seggiano (ab 2022)"
+    label: "Immobilien eigen (Legacy)"
+    vault_folder: "50 Immobilien"
+    description: "LEGACY — nicht mehr verwenden. Eigene Immobilien: Grassauer Straße 64 Übersee (bis 2022), Podere dei venti Seggiano (ab 2022)"
 
   immobilien_vermietet:
-    label: "Immobilien vermietet"
-    vault_folder: "51 Immobilien vermietet"
-    description: "Vermietete Immobilien: Lipowskystraße München, Kornstraße Bremen, Kolberger Straße Karlsruhe, Schießhausstraße Neuburg, Bahnhofstraße Schechen, Via dell'ospedale Seggiano"
+    label: "Immobilien vermietet (Legacy)"
+    vault_folder: "50 Immobilien"
+    description: "LEGACY — nicht mehr verwenden. Vermietete Immobilien: Lipowskystraße München, Kornstraße Bremen, Kolberger Straße Karlsruhe, Schießhausstraße Neuburg, Blumenstraße Schechen, Via dell'ospedale Seggiano"
 
   altersvorsorge:
     label: "Altersvorsorge"
@@ -122,10 +127,9 @@ branchen_regeln:
       - Servizi Ecologici
       - Bausanierung
       - Abwasser
-    category_id: immobilien_eigen
+    category_id: immobilien
     hinweis: >
-      Bei expliziter Erwähnung eines Mietobjekts (z.B. Bremen, Schechen, Karlsruhe,
-      Neuburg, München) stattdessen category_id="immobilien_vermietet".
+      Gilt für alle Immobilien-Dokumente (eigen und vermietet).
 
 # ── Keyword-Override-Regeln ───────────────────────────────────────────────────
 # Laufen NACH dem LLM. Wenn ANY keyword im Dokumenttext gefunden wird, wird
@@ -154,7 +158,7 @@ keyword_rules:
 
   - keywords: ["Mietvertrag", "Mietzins", "Kaltmiete", "Warmmiete",
                "Mieter", "Vermieter", "Mietbeginn", "Mietzeit"]
-    category_id: immobilien_vermietet
+    category_id: immobilien
     beschreibung: "Mietvertrag"
 
   - keywords: ["Gehaltsabrechnung", "Lohnabrechnung", "Bruttolohn", "Nettolohn",
@@ -170,30 +174,30 @@ keyword_rules:
 
   - keywords: ["Kaufvertrag", "Grundbuchauszug", "Katasterauszug", "Notariell",
                "Notar", "Rogito", "Visura Catastale", "Baugenehmigung"]
-    category_id: immobilien_eigen
+    category_id: immobilien
     beschreibung: "Immobilien Kaufvertrag / Grundbuch"
 
   - keywords: ["Lipowskystraße", "Lipowskystrasse", "Lipowsky", "LipowskyStra", "LipowskyStr"]
-    category_id: immobilien_vermietet
-    beschreibung: "Lipowskystraße München (vermietet)"
+    category_id: immobilien
+    beschreibung: "Lipowskystraße München"
 
   - keywords: ["Schießhausstraße", "Schiesshaus", "Schiesshausstrasse", "Schießhaus",
                "SchieBhaus", "SchieBhausstra"]
-    category_id: immobilien_vermietet
-    beschreibung: "Schießhausstraße Neuburg (vermietet)"
+    category_id: immobilien
+    beschreibung: "Schießhausstraße Neuburg"
 
   - keywords: ["Kolberger Straße", "Kolberger Strasse", "Kolbergerstraße", "Kolbergerstrasse",
                "Kolberger Str", "Kolbergerstr", "KolbergerStra", "Troltsch"]
-    category_id: immobilien_vermietet
-    beschreibung: "Kolberger Straße Karlsruhe / Troltsch Hausverwaltung (vermietet)"
+    category_id: immobilien
+    beschreibung: "Kolberger Straße Karlsruhe / Troltsch Hausverwaltung"
 
   - keywords: ["Kornstraße", "Kornstrasse", "Kornstr"]
-    category_id: immobilien_vermietet
-    beschreibung: "Kornstraße Bremen (vermietet)"
+    category_id: immobilien
+    beschreibung: "Kornstraße Bremen"
 
-  - keywords: ["Schechen"]
-    category_id: immobilien_vermietet
-    beschreibung: "Bahnhofstraße Schechen (vermietet)"
+  - keywords: ["Schechen", "Blumenstraße Schechen", "Blumenstrasse Schechen"]
+    category_id: immobilien
+    beschreibung: "Blumenstraße Schechen"
 
   - keywords: ["Kontoauszug", "Kontoabschluss", "Umsatzübersicht",
                "Estratto conto", "Girokonto", "Bankabschluss"]
@@ -208,6 +212,29 @@ keyword_rules:
                "casco", "Kasko", "Teilkasko", "Vollkasko"]
     category_id: fahrzeuge
     beschreibung: "KFZ-Versicherung / Kraftfahrtversicherung"
+
+  # KFZ Italienisch: Polizza, Assicurazione, Carta di Circolazione — läuft VOR Immobilien
+  - keywords: ["polizza.*assicurazione", "assicurazione.*polizza",
+               "polizza n.", "polizza no.", "Polizza No",
+               "certificato di assicurazione", "carta verde.*assicurazione",
+               "assicurazione.*rca", "assicurazione.*rc auto",
+               "assicurazione.*responsabilit", "assicurazione.*veicolo",
+               "bollo auto", "tassa automobilistica", "superbollo",
+               "immatricolazione", "libretto di circolazione",
+               "carta di circolazione"]
+    category_id: fahrzeuge
+    beschreibung: "KFZ Italienisch: Polizza / Assicurazione / Bollo / Immatricolazione"
+
+  # KFZ Italienisch — Versicherer mit KFZ-Bezug (nur in Kombination mit Fahrzeug-Kontext)
+  - keywords: ["Allianz Next.*GY", "Allianz Next.*kfz",
+               "Zurich Insurance.*GY", "Zurich Insurance.*MB",
+               "Zurich.*polizza.*auto", "Zurich.*assicurazione.*auto",
+               "Reale Mutua.*Automia", "Reale Mutua.*polizza.*auto",
+               "Reale Mutua.*assicurazione.*trattore",
+               "Eisendle.*KFZ", "Eisendle.*polizza", "Eisendle.*assicurazione",
+               "LP PRATICHE AUTO", "L.P. PRATICHE AUTO"]
+    category_id: fahrzeuge
+    beschreibung: "KFZ Italienisch: Versicherer mit KFZ-Kontext"
 
   - keywords: ["Leistungsabrechnung", "haben abgerechnet", "Erstattungsbetrag",
                "eingereichte Belege",
@@ -244,13 +271,24 @@ keyword_rules:
     category_id: finanzen_versicherung_altersvorsorge
     beschreibung: "Altersvorsorge: Lebens-/Rentenversicherung, Standmitteilung"
 
+  # Immobilien-Versicherungen (läuft VOR sachversicherungen)
+  - keywords: ["Wohngebäudeversicherung", "Wohngebäude-Versicherung",
+               "Gebäudeversicherung", "Haus- und Grundbesitz", "Haus und Grundbesitz",
+               "Hausratversicherung", "Hausrat-Versicherung",
+               "Societa Reale Mutua", "Reale Mutua",
+               "AIG Europe", "AIG Gewerbe",
+               "Versicherungskammer Bayern Hausrat",
+               "Allianz Wohngebäude", "Allianz Hausrat"]
+    category_id: immobilien
+    beschreibung: "Immobilien-Versicherung: Wohngebäude, Hausrat, Gebäude"
+
   # Sachversicherungen erkennen
-  - keywords: ["Privathaftpflicht", "Hausratversicherung", "Wohngebäudeversicherung",
+  - keywords: ["Privathaftpflicht", "Haftpflichtversicherung",
                "Rechtsschutzversicherung", "Unfallversicherung", "D&O-Versicherung",
                "Schließfachversicherung", "Tierversicherung",
                "DOCURA", "VGH Versicherung", "VOV", "NV Versicherungen",
-               "CASAMIA", "Reale Mutua",
+               "CASAMIA",
                "WGV Rechtsschutz", "Nürnberger PrivatSchutz",
-               "Versicherungskammer Bayern Hausrat", "Versicherungskammer Bayern Haftpflicht"]
+               "Versicherungskammer Bayern Haftpflicht"]
     category_id: finanzen_versicherung_sach
-    beschreibung: "Sachversicherung: Haftpflicht, Hausrat, Gebäude, Rechtsschutz"
+    beschreibung: "Sachversicherung: Haftpflicht, Rechtsschutz, Unfall, D&O"
