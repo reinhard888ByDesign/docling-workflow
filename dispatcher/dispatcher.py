@@ -310,6 +310,9 @@ def init_db():
         if "ocr_error" not in cols_dok:
             con.execute("ALTER TABLE dokumente ADD COLUMN ocr_error TEXT")
             log.info("Migration: Spalte ocr_error in dokumente hinzugefügt")
+        if "konfidenz_source" not in cols_dok:
+            con.execute("ALTER TABLE dokumente ADD COLUMN konfidenz_source TEXT")
+            log.info("Migration: Spalte konfidenz_source in dokumente hinzugefügt")
         # lernregeln-Tabelle
         con.execute("""
             CREATE TABLE IF NOT EXISTS lernregeln (
@@ -456,35 +459,79 @@ def save_to_db(file_path: Path, result: dict) -> list[dict]:
         log.warning(f"MD5-Hash konnte nicht berechnet werden: {e}")
 
     with get_db() as con:
-        # Duplikat-Schutz 1: bereits verarbeiteter Dateiname
+        # Existierenden Eintrag finden: zuerst per Dateiname, dann per Anlagen-Dateiname,
+        # dann per PDF-Hash (Batch verarbeitet PDFs aus dem Vault, deren Name oft
+        # vom ursprünglichen Scan-Namen abweicht).
         existing = con.execute(
-            "SELECT id FROM dokumente WHERE dateiname = ?", (file_path.name,)
+            "SELECT id, dateiname FROM dokumente WHERE dateiname = ?", (file_path.name,)
         ).fetchone()
-        if existing:
-            log.info(f"Bereits in DB (Dateiname): {file_path.name} — überspringe DB-Insert")
-            result["_dok_id"] = existing["id"]
-            return []
+        match_type = None
 
-        # Duplikat-Schutz 2: identischer PDF-Inhalt (anderer Dateiname)
-        if pdf_hash:
-            hash_existing = con.execute(
+        if not existing:
+            existing = con.execute(
+                "SELECT id, dateiname FROM dokumente WHERE anlagen_dateiname = ?",
+                (file_path.name,)
+            ).fetchone()
+            if existing:
+                match_type = "anlagen_dateiname"
+
+        if not existing and pdf_hash:
+            existing = con.execute(
                 "SELECT id, dateiname FROM dokumente WHERE pdf_hash = ?", (pdf_hash,)
             ).fetchone()
-            if hash_existing:
-                log.warning(
-                    f"Duplikat erkannt (MD5 {pdf_hash[:8]}…): "
-                    f"{file_path.name} ist identisch mit {hash_existing['dateiname']} "
-                    f"(id={hash_existing['id']}) — überspringe"
+            if existing:
+                match_type = "pdf_hash"
+
+        if existing:
+            # Batch classify-only/structured: UPDATE mit neuer Klassifikation
+            if _batch_active() and _batch_output_mode() in ("classify-only", "structured"):
+                con.execute(
+                    """UPDATE dokumente SET rechnungsdatum=?, kategorie=?, typ=?,
+                       absender=?, adressat=?, konfidenz=?, konfidenz_source=?,
+                       anlagen_dateiname=COALESCE(anlagen_dateiname, ?)
+                       WHERE id=?""",
+                    (
+                        result.get("rechnungsdatum"),
+                        category_id,
+                        type_id,
+                        result.get("absender"),
+                        result.get("adressat"),
+                        result.get("konfidenz"),
+                        result.get("konfidenz_source"),
+                        file_path.name,
+                        existing["id"],
+                    )
                 )
-                result["_dok_id"] = hash_existing["id"]
-                result["_is_hash_duplicate"] = True
-                return []
+                log.info(
+                    f"Batch-Update ({match_type or 'dateiname'}): {file_path.name}"
+                    f" → {category_id}/{type_id} (id={existing['id']}, konfidenz={result.get('konfidenz')})"
+                )
+                result["_dok_id"] = existing["id"]
+                result["_batch_updated"] = True
+            else:
+                log.info(
+                    f"Bereits in DB ({match_type or 'dateiname'}):"
+                    f" {file_path.name} = {existing['dateiname']} — überspringe DB-Insert"
+                )
+                result["_dok_id"] = existing["id"]
+                if match_type == "pdf_hash":
+                    result["_is_hash_duplicate"] = True
+            return []
+
+        # Im Batch classify-only/structured: keine neuen Dokumente einfügen.
+        # Nur bestehende Einträge werden aktualisiert (siehe oben).
+        if _batch_active() and _batch_output_mode() in ("classify-only", "structured"):
+            log.info(
+                f"Batch ({_batch_output_mode()}): Kein DB-Eintrag für {file_path.name}"
+                f" — überspringe (nur Updates, keine neuen Dokumente)"
+            )
+            return []
 
         # 1. Dokument speichern
         cur = con.execute(
             """INSERT INTO dokumente
-               (dateiname, pdf_hash, rechnungsdatum, kategorie, typ, absender, adressat, konfidenz)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (dateiname, pdf_hash, rechnungsdatum, kategorie, typ, absender, adressat, konfidenz, konfidenz_source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 file_path.name,
                 pdf_hash,
@@ -494,6 +541,7 @@ def save_to_db(file_path: Path, result: dict) -> list[dict]:
                 result.get("absender"),
                 result.get("adressat"),
                 result.get("konfidenz"),
+                result.get("konfidenz_source"),
             )
         )
         dok_id = cur.lastrowid
@@ -843,6 +891,12 @@ def _kv_extract_and_store(file_path: Path, result: dict) -> None:
         n = _write_kk_leistungen_db(result, file_path)
         log.info(f"KV-Bypass-Extraktion: {n} Position(en) → kk_leistungen.db ({file_path.name})")
 
+        # dispatcher.db mit verbesserten KV-Daten aktualisieren
+        _update_dispatcher_after_skill(file_path, "kv", {
+            "rechnungsdatum": result.get("rechnungsdatum"),
+            "konfidenz": "hoch",
+        })
+
     except Exception as e:
         log.warning(f"KV-Bypass-Extraktion fehlgeschlagen für {file_path.name}: {e}")
 
@@ -955,8 +1009,44 @@ def _sv_is_sachversicherungsdokument(result: dict) -> bool:
     return cat in ("versicherung", "finanzen_versicherung_sach")
 
 
+def _update_dispatcher_after_skill(file_path: Path, skill_name: str,
+                                    updates: dict) -> None:
+    """Schreibt verbesserte Metadaten aus Skill-Extraktion in dispatcher.db zurück."""
+    try:
+        with get_db() as con:
+            set_parts = []
+            params = []
+            for col in ("rechnungsdatum", "kategorie", "typ", "absender", "adressat", "konfidenz"):
+                if col in updates:
+                    set_parts.append(f"{col} = ?")
+                    params.append(updates[col])
+            if "konfidenz_source" not in updates:
+                set_parts.append("konfidenz_source = ?")
+                params.append(f"skill_{skill_name}")
+            else:
+                set_parts.append("konfidenz_source = ?")
+                params.append(updates["konfidenz_source"])
+            if not set_parts:
+                return
+            params.append(file_path.name)
+            con.execute(
+                f"UPDATE dokumente SET {', '.join(set_parts)} WHERE dateiname = ?",
+                params,
+            )
+            log.info(
+                f"dispatcher.db aktualisiert durch Skill {skill_name}: "
+                f"{file_path.name} → {updates}"
+            )
+    except Exception as e:
+        log.warning(f"dispatcher.db Update durch Skill {skill_name} fehlgeschlagen: {e}")
+
+
 def _call_skill_analyze(skill_name: str, file_path: Path, beschreibung: str = "") -> None:
-    """Ruft analyze.py text im Hintergrund auf (non-blocking via subprocess.Popen)."""
+    """Ruft analyze.py text im Hintergrund auf (non-blocking via subprocess.Popen).
+
+    Erfasst stdout/stderr und schreibt nach Abschluss einen Skill-verarbeitet-Vermerk
+    in dispatcher.db, damit das Dashboard die Nachbearbeitung anzeigen kann.
+    """
     script = Path("/data") / skill_name / "analyze.py"
     if not script.exists():
         log.warning(f"Skill-Script nicht gefunden: {script}")
@@ -966,11 +1056,39 @@ def _call_skill_analyze(skill_name: str, file_path: Path, beschreibung: str = ""
         "text", (beschreibung or "")[:12000],
         "--quelle", str(file_path.name),
     ]
+
+    def _run_and_update() -> None:
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if result.returncode == 0:
+                # Skill erfolgreich → dispatcher.db updaten
+                _update_dispatcher_after_skill(
+                    file_path, skill_name,
+                    {"konfidenz": "hoch"}
+                )
+                log.info(
+                    f"Skill {skill_name} abgeschlossen: {file_path.name}"
+                    f" (stdout={len(result.stdout)} chars)"
+                )
+            else:
+                log.warning(
+                    f"Skill {skill_name} Fehler (rc={result.returncode}): "
+                    f"{file_path.name} stderr={result.stderr[:200]}"
+                )
+        except subprocess.TimeoutExpired:
+            log.warning(f"Skill {skill_name} Timeout: {file_path.name}")
+        except Exception as e:
+            log.warning(f"Skill {skill_name} fehlgeschlagen: {e}")
+
     try:
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        log.info(f"Skill {skill_name} gestartet: {file_path.name}")
+        threading.Thread(
+            target=_run_and_update,
+            daemon=True,
+            name=f"skill-{skill_name}-{file_path.stem}",
+        ).start()
+        log.info(f"Skill {skill_name} gestartet (Hintergrund): {file_path.name}")
     except Exception as e:
-        log.warning(f"Skill {skill_name} fehlgeschlagen: {e}")
+        log.warning(f"Skill {skill_name} Thread-Start fehlgeschlagen: {e}")
 
 
 def _ensure_immo_schema(con):
@@ -1195,6 +1313,14 @@ def _immo_extract_and_store(file_path: Path, result: dict) -> None:
         n = _write_immobilien_db(data, file_path)
         log.info(f"Immo-Bypass-Extraktion: {n} Dok → immobilien.db ({file_path.name})")
 
+        # dispatcher.db mit verbesserten Immo-Daten aktualisieren
+        immo_updates = {"konfidenz": "hoch"}
+        if data.get("datum_dokument"):
+            immo_updates["rechnungsdatum"] = data["datum_dokument"]
+        if data.get("absender"):
+            immo_updates["absender"] = data["absender"]
+        _update_dispatcher_after_skill(file_path, "immo", immo_updates)
+
     except Exception as e:
         log.warning(f"Immo-Bypass-Extraktion fehlgeschlagen fuer {file_path.name}: {e}")
 
@@ -1339,11 +1465,19 @@ def _summarizer_pid() -> int | None:
     if _summarizer_proc is not None and _summarizer_proc.poll() is None:
         return _summarizer_proc.pid
     _summarizer_proc = None
-    # Fallback: Prozess suchen der unabhängig gestartet wurde
+    # Fallback: Prozess suchen der unabhängig gestartet wurde.
+    # Container-Minimal-Image hat kein pgrep/ps → /proc-Direktscan.
     try:
-        r = subprocess.run(["pgrep", "-f", "vault_summarizer.py"], capture_output=True, text=True)
-        pids = [int(p) for p in r.stdout.split() if p.strip().isdigit()]
-        return pids[0] if pids else None
+        for pid_str in os.listdir("/proc"):
+            if not pid_str.isdigit():
+                continue
+            try:
+                cmdline = open(f"/proc/{pid_str}/cmdline", "rb").read()
+                if b"vault_summarizer.py" in cmdline:
+                    return int(pid_str)
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                continue
+        return None
     except Exception:
         return None
 
@@ -2155,6 +2289,37 @@ print(json.dumps(result, ensure_ascii=False))
 """
 
 _WILSON_HOST = os.environ.get("WILSON_PI_HOST", "192.168.3.124")
+_WILSON_SENDER_UI_PORT = int(os.environ.get("WILSON_SENDER_UI_PORT", "8771"))
+
+
+def _notify_wilson_completed(orig_name: str):
+    """Fire-and-forget: meldet Wilson dass ein Dokument erfolgreich im Vault gelandet ist."""
+    import urllib.request
+    try:
+        payload = json.dumps({"orig_name": orig_name, "status": "completed"}).encode()
+        req = urllib.request.Request(
+            f"http://{_WILSON_HOST}:{_WILSON_SENDER_UI_PORT}/api/status-update",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=5)
+        log.info(f"Wilson notified: {orig_name} → completed")
+    except Exception as e:
+        log.debug(f"Wilson notify failed (non-critical): {e}")
+
+
+def _fetch_wilson_senders() -> list:
+    """Proxy: Holt Email-Sender von Wilsons API (wilson-sender-proxy:8771)."""
+    import urllib.request
+    try:
+        resp = urllib.request.urlopen(
+            f"http://wilson-sender-proxy:{_WILSON_SENDER_UI_PORT}/api/senders",
+            timeout=10,
+        )
+        return json.loads(resp.read())
+    except Exception as e:
+        log.warning(f"Wilson sender API nicht erreichbar: {e}")
+        return []
 
 
 def _collect_wilson_status() -> dict:
@@ -2901,6 +3066,19 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
 .adressat-tag{font-size:11px;padding:1px 7px;border-radius:4px;background:#f1f2f6}
 @keyframes flashRow{0%{background:#e0e7ff}100%{background:transparent}}
 
+/* Inline-Edit */
+.editable-cat, .editable-date{cursor:pointer;border-radius:4px;transition:background .15s}
+.editable-cat:hover, .editable-date:hover{background:#eef0ff;outline:1px dashed var(--accent)}
+.cat-select{font-size:12px;padding:3px 5px;border:1px solid var(--accent);border-radius:4px;background:var(--surface);max-width:180px}
+.type-select{font-size:12px;padding:3px 5px;border:1px solid var(--accent);border-radius:4px;background:var(--surface);margin-left:4px;max-width:140px}
+.date-input{font-size:12px;padding:3px 5px;border:1px solid var(--accent);border-radius:4px}
+.btn-inline-save{font-size:11px;padding:2px 8px;margin-left:4px;background:var(--ok);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600}
+.btn-inline-cancel{font-size:11px;padding:2px 8px;margin-left:2px;background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer}
+.btn-inline-save:hover{opacity:.85}
+.btn-inline-cancel:hover{color:var(--err);border-color:var(--err)}
+.toast{position:fixed;bottom:20px;right:20px;background:#f0fdf4;border:1px solid var(--ok);color:var(--ok);padding:10px 16px;border-radius:8px;font-size:13px;z-index:999;display:none}
+.toast.error{background:#fef2f2;border-color:var(--err);color:var(--err)}
+
 /* Footer */
 .footer{text-align:center;padding:12px;font-size:12px;color:var(--muted);background:var(--surface);border-top:1px solid var(--border);margin-top:8px}
 #countdown{color:var(--accent);font-weight:700}
@@ -2920,6 +3098,7 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
     <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
     <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
+    <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
     <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
     <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
     <a href="/db" target="_blank" rel="noopener">🗄️ DB</a>
@@ -3061,6 +3240,7 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
   </table>
 </div>
 <div class="footer">Auto-Refresh in <span id="countdown">30</span>s &nbsp;·&nbsp; <a href="#" onclick="loadAll();return false;" style="color:var(--accent)">Jetzt aktualisieren</a></div>
+<div class="toast" id="dash-toast"></div>
 
 <script>
 // Service metadata: icon, link-fn, description
@@ -3425,13 +3605,15 @@ async function loadDocs() {
       const ts=(d.erstellt_am||'').slice(0,16).replace('T',' ');
       const abs=(d.absender||'—').slice(0,30);
       const pdfName=d.pdf_name||d.dateiname||'';
-      return `<tr>
-        <td>${d.rechnungsdatum||'—'}</td>
+      const catId=d.kategorie||'';
+      const catLabel=_allCats&&_allCats[catId]?_allCats[catId].label:catId;
+      return `<tr data-id="${d.id}" data-cat="${catId}" data-typ="${d.typ||''}" data-datum="${d.rechnungsdatum||''}">
+        <td class="editable-date">${d.rechnungsdatum||'—'}</td>
         <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.dateiname||''}">
-          <a href="/api/pdf/${encodeURIComponent(pdfName)}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:500"
+          <a href="/api/doc-pdf/${d.id}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:500"
              onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${pdfName||'—'}</a>
         </td>
-        <td><span class="cat-tag">${d.kategorie||'—'}</span></td>
+        <td class="editable-cat"><span class="cat-tag">${catLabel||'—'}</span></td>
         <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.absender||''}">${abs}</td>
         <td><span class="adressat-tag">${d.adressat||'—'}</span></td>
         <td><span class="kbadge ${kc}">${k||'—'}</span></td>
@@ -3444,6 +3626,157 @@ async function loadDocs() {
   }
 }
 
+// ── Inline-Edit ───────────────────────────────────────────────
+function showToast(msg, err) {
+  const t = document.getElementById('dash-toast');
+  if (!t) return;
+  t.textContent = msg;
+  t.className = 'toast' + (err ? ' error' : '');
+  t.style.display = 'block';
+  clearTimeout(t._timeout);
+  t._timeout = setTimeout(() => { t.style.display = 'none'; }, 3000);
+}
+
+function cancelInline(tr) {
+  const catTd = tr.querySelector('.editable-cat');
+  const dateTd = tr.querySelector('.editable-date');
+  if (catTd && catTd.dataset.original) {
+    catTd.innerHTML = catTd.dataset.original;
+    delete catTd.dataset.original;
+  }
+  if (dateTd && dateTd.dataset.original) {
+    dateTd.textContent = dateTd.dataset.original;
+    delete dateTd.dataset.original;
+  }
+}
+
+async function saveInline(tr) {
+  const catSel = tr.querySelector('.cat-select');
+  const typeSel = tr.querySelector('.type-select');
+  const dateInput = tr.querySelector('.date-input');
+  const docId = tr.dataset.id;
+  if (!docId) return showToast('Keine doc_id', true);
+  const cat = catSel ? catSel.value : (tr.dataset.cat || '');
+  const typ = typeSel && typeSel.style.display !== 'none' ? typeSel.value : (tr.dataset.typ || '');
+  const datumVal = dateInput ? dateInput.value : '';  // YYYY-MM-DD
+  let datumDDMM = '';
+  if (datumVal) {
+    const parts = datumVal.split('-');
+    datumDDMM = parts[2] + '.' + parts[1] + '.' + parts[0];
+  }
+  if (!cat) return showToast('Bitte Kategorie wählen', true);
+
+  const body = { doc_id: parseInt(docId), category: cat, type_id: typ || '' };
+  if (datumDDMM) body.rechnungsdatum = datumDDMM;
+
+  try {
+    const r = await fetch('/api/correct', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    // Update row data
+    tr.dataset.cat = cat;
+    tr.dataset.typ = typ || '';
+    if (datumDDMM) tr.dataset.datum = datumDDMM;
+    // Restore cat cell
+    const catTd = tr.querySelector('.editable-cat');
+    if (catTd) {
+      const catLabel = _allCats && _allCats[cat] ? _allCats[cat].label : cat;
+      catTd.innerHTML = '<span class="cat-tag">' + (catLabel || '—') + '</span>';
+      delete catTd.dataset.original;
+    }
+    // Restore date cell
+    const dateTd = tr.querySelector('.editable-date');
+    if (dateTd && datumDDMM) {
+      dateTd.textContent = datumDDMM;
+      delete dateTd.dataset.original;
+    }
+    showToast('✓ Gespeichert');
+  } catch (e) {
+    showToast(e.message || 'Fehler', true);
+  }
+}
+
+function editCat(tr) {
+  const td = tr.querySelector('.editable-cat');
+  if (!td || td.dataset.original) return;  // already editing
+  td.dataset.original = td.innerHTML;
+  const curCat = tr.dataset.cat || '';
+  const curTyp = tr.dataset.typ || '';
+  let html = '<select class="cat-select" onchange="onInlineCatChange(this)">';
+  html += '<option value="">— wählen —</option>';
+  if (_allCats) {
+    for (const [id, c] of Object.entries(_allCats)) {
+      html += '<option value="' + id + '"' + (id === curCat ? ' selected' : '') + '>' + (c.label || id) + '</option>';
+    }
+  }
+  html += '</select>';
+  // Type select (shown only when cat has types)
+  html += '<select class="type-select"' + (curCat && _allCats && _allCats[curCat] && _allCats[curCat].types && _allCats[curCat].types.length ? '' : ' style="display:none"') + '>';
+  html += '<option value="">— Typ —</option>';
+  if (curCat && _allCats && _allCats[curCat] && _allCats[curCat].types) {
+    for (const t of _allCats[curCat].types) {
+      html += '<option value="' + t.id + '"' + (t.id === curTyp ? ' selected' : '') + '>' + t.label + '</option>';
+    }
+  }
+  html += '</select>';
+  html += '<button class="btn-inline-save" onclick="saveInline(this.closest(\'tr\'))">✓</button>';
+  html += '<button class="btn-inline-cancel" onclick="cancelInline(this.closest(\'tr\'))">✕</button>';
+  td.innerHTML = html;
+}
+
+function onInlineCatChange(sel) {
+  const td = sel.closest('td');
+  const typeSel = td.querySelector('.type-select');
+  const catId = sel.value;
+  let opts = '<option value="">— Typ —</option>';
+  if (catId && _allCats && _allCats[catId] && _allCats[catId].types) {
+    for (const t of _allCats[catId].types) {
+      opts += '<option value="' + t.id + '">' + t.label + '</option>';
+    }
+    typeSel.style.display = '';
+  } else {
+    typeSel.style.display = 'none';
+  }
+  typeSel.innerHTML = opts;
+}
+
+function editDate(tr) {
+  const td = tr.querySelector('.editable-date');
+  if (!td || td.dataset.original) return;  // already editing
+  td.dataset.original = td.textContent;
+  const datum = tr.dataset.datum || '';
+  let isoDate = '';
+  if (datum && datum.includes('.')) {
+    const parts = datum.split('.');
+    if (parts.length === 3) isoDate = parts[2] + '-' + parts[1] + '-' + parts[0];
+  }
+  td.innerHTML = '<input type="date" class="date-input" value="' + isoDate + '" style="width:130px">'
+    + '<button class="btn-inline-save" onclick="saveInline(this.closest(\'tr\'))">✓</button>'
+    + '<button class="btn-inline-cancel" onclick="cancelInline(this.closest(\'tr\'))">✕</button>';
+}
+
+// Dblclick to edit
+document.addEventListener('DOMContentLoaded', function() {
+  const tbody = document.getElementById('docs-body');
+  if (tbody) {
+    tbody.addEventListener('dblclick', function(e) {
+      const td = e.target.closest('td');
+      if (!td) return;
+      const tr = td.closest('tr');
+      if (!tr || !tr.dataset.id) return;
+      if (td.classList.contains('editable-cat')) {
+        editCat(tr);
+      } else if (td.classList.contains('editable-date')) {
+        editDate(tr);
+      }
+    });
+  }
+});
+
 async function loadAll(){await Promise.all([loadData(),loadDocs()]);}
 
 // SSE
@@ -3452,14 +3785,20 @@ function prependDoc(d) {
   const kc=['hoch','mittel','niedrig'].includes(k)?k:'null';
   const ts=(d.erstellt_am||'').slice(0,16).replace('T',' ');
   const pdfName=d.pdf_name||d.dateiname||'';
+  const catId=d.kategorie||'';
+  const catLabel=_allCats&&_allCats[catId]?_allCats[catId].label:catId;
   const row=document.createElement('tr');
+  row.dataset.id=d.id||'';
+  row.dataset.cat=catId;
+  row.dataset.typ=d.typ||'';
+  row.dataset.datum=d.rechnungsdatum||'';
   row.style.animation='flashRow 1.5s ease-out';
   row.innerHTML=`
-    <td>${d.rechnungsdatum||'—'}</td>
+    <td class="editable-date">${d.rechnungsdatum||'—'}</td>
     <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
       <a href="/api/pdf/${encodeURIComponent(pdfName)}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:500">${pdfName||'—'}</a>
     </td>
-    <td><span class="cat-tag">${d.kategorie||'—'}</span></td>
+    <td class="editable-cat"><span class="cat-tag">${catLabel||'—'}</span></td>
     <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(d.absender||'—').slice(0,30)}</td>
     <td><span class="adressat-tag">${d.adressat||'—'}</span></td>
     <td><span class="kbadge ${kc}">${k||'—'}</span></td>
@@ -3475,6 +3814,22 @@ function connectSSE() {
   const dot=document.getElementById('sse-dot');
   es.onopen=()=>{if(dot){dot.style.background='var(--ok)';dot.title='Live';}};
   es.addEventListener('doc_processed',e=>{try{prependDoc(JSON.parse(e.data));}catch(_){}});
+  es.addEventListener('doc_corrected',e=>{
+    try {
+      const d = JSON.parse(e.data);
+      const tr = document.querySelector('tr[data-id="'+d.id+'"]');
+      if (!tr) return;
+      const catId = d.category || '';
+      const catLabel = _allCats && _allCats[catId] ? _allCats[catId].label : catId;
+      tr.dataset.cat = catId;
+      tr.dataset.typ = d.type_id || '';
+      if (d.rechnungsdatum) tr.dataset.datum = d.rechnungsdatum;
+      const catTd = tr.querySelector('.editable-cat');
+      if (catTd) catTd.innerHTML = '<span class="cat-tag">' + (catLabel || '—') + '</span>';
+      const dateTd = tr.querySelector('.editable-date');
+      if (dateTd && d.rechnungsdatum) dateTd.textContent = d.rechnungsdatum;
+    } catch(_) {}
+  });
   es.addEventListener('enzyme_refresh_done',e=>{
     try{
       const d=JSON.parse(e.data);
@@ -3553,8 +3908,8 @@ _ENZYME_HTML = r"""<!DOCTYPE html>
 body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;min-height:100vh}
 header{border-bottom:1px solid var(--border);padding:13px 24px;display:flex;align-items:center;gap:10px;background:var(--surface);flex-wrap:wrap}
 header h1{font-size:16px;font-weight:700;color:var(--accent);white-space:nowrap}
-nav a{font-size:12px;padding:4px 12px;border:1px solid var(--border);border-radius:7px;color:var(--text);text-decoration:none;font-weight:600;white-space:nowrap;transition:all .15s;margin-right:4px}
-nav a:hover{border-color:var(--accent);color:var(--accent)}
+nav a{font-size:12px;padding:4px 12px;border:1px solid var(--border);border-radius:7px;color:var(--text);text-decoration:none;font-weight:600;white-space:nowrap;transition:all .15s;margin-right:5px}
+nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
 /* Pipeline */
 .pipeline{background:linear-gradient(135deg,#eef2ff,#f0fdf4);border-bottom:1px solid var(--border);padding:20px 28px;overflow-x:auto}
 .pipeline-title{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:14px}
@@ -6532,6 +6887,96 @@ document.getElementById('help-overlay').addEventListener('click',e=>{if(e.target
 
 CACHE_READER_URL = os.environ.get("CACHE_READER_URL", "http://cache-reader:8501")
 
+_ADRESSBUCH_HTML = r"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adressbuch · Email-Sender</title>
+<style>
+:root{--bg:#f4f5f7;--surface:#fff;--border:#dde1ea;--text:#1a1d2e;--muted:#6b7280;--ok:#059669;--warn:#d97706;--err:#dc2626;--accent:#4f46e5}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Inter','Segoe UI',system-ui,sans-serif;font-size:13px;min-height:100vh}
+header{border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;gap:12px;background:var(--surface)}
+header h1{font-size:15px;font-weight:700;color:var(--accent)}
+.back-link{font-size:11px;color:var(--muted);text-decoration:none;border:1px solid var(--border);border-radius:6px;padding:3px 9px}
+.back-link:hover{color:var(--accent);border-color:var(--accent)}
+.stats{display:flex;gap:8px;margin-left:auto;font-size:11px}
+.stat{padding:3px 10px;border-radius:999px;font-weight:600}
+.stat.ok{background:#d1fae5;color:var(--ok)}
+.stat.err{background:#fee2e2;color:var(--err)}
+.stat.info{background:#eff6ff;color:#1d4ed8}
+.toolbar{display:flex;gap:10px;padding:10px 20px;background:var(--surface);border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center}
+.toolbar input,.toolbar select{padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px}
+.toolbar input{flex:1;min-width:200px}
+.toolbar select{min-width:130px}
+table{width:100%;border-collapse:collapse}
+thead{position:sticky;top:0;z-index:1}
+th{text-align:left;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;background:var(--bg);border-bottom:2px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap}
+th:hover{color:var(--accent)}
+td{padding:6px 10px;font-size:12px;border-bottom:1px solid #f0f1f5;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+tr:hover td{background:#f8f9ff}
+.badge{font-size:10px;padding:2px 8px;border-radius:999px;font-weight:600;display:inline-block}
+.badge.ok{background:#d1fae5;color:var(--ok)}
+.badge.err{background:#fee2e2;color:var(--err)}
+.badge.info{background:#eff6ff;color:#1d4ed8}
+.cat-badge{font-size:10px;padding:1px 6px;border-radius:4px;background:#f1f2f6;color:var(--muted)}
+.empty{text-align:center;padding:40px;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>📇 Adressbuch · Email-Sender</h1>
+  <a href="/" class="back-link">← Dashboard</a>
+  <div class="stats">
+    <span class="stat info" id="stat-total">—</span>
+    <span class="stat ok" id="stat-approved">—</span>
+    <span class="stat err" id="stat-blocked">—</span>
+  </div>
+</header>
+<div class="toolbar">
+  <input type="text" id="search" placeholder="Suche nach Name oder Email..." oninput="render()">
+  <select id="status-filter" onchange="render()">
+    <option value="all">Alle Status</option>
+    <option value="approved">✅ Approved</option>
+    <option value="blocked">🚫 Blocked</option>
+  </select>
+  <select id="cat-filter" onchange="render()">
+    <option value="all">Alle Kategorien</option>
+  </select>
+</div>
+<table>
+  <thead>
+    <tr>
+      <th onclick="sort('display_name')">Name ▾</th>
+      <th onclick="sort('address')">Email ▾</th>
+      <th onclick="sort('status')">Status ▾</th>
+      <th onclick="sort('category_id')">Kategorie ▾</th>
+      <th onclick="sort('adressat')">Adressat ▾</th>
+      <th onclick="sort('archive_count')"># ▾</th>
+      <th onclick="sort('last_scanned')">Letzter Scan ▾</th>
+    </tr>
+  </thead>
+  <tbody id="tbody"></tbody>
+</table>
+<div class="empty" id="empty" style="display:none">Keine Sender gefunden.</div>
+<script>
+let senders=[],sortCol='archive_count',sortDir='desc';
+async function load(){try{const r=await fetch('/api/wilson/senders');senders=await r.json();buildCatFilter();render();updateStats()}catch(e){document.getElementById('tbody').innerHTML='<tr><td colspan="7" class="empty">Ladefehler: '+e.message+'</td></tr>'}}
+function buildCatFilter(){const cats=new Set();senders.forEach(s=>{if(s.category_id)cats.add(s.category_id)});const sel=document.getElementById('cat-filter');[...cats].sort().forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;sel.appendChild(o)})}
+function updateStats(){const total=senders.length;const approved=senders.filter(s=>s.status==='approved').length;const blocked=senders.filter(s=>s.status==='blocked').length;document.getElementById('stat-total').textContent='📊 '+total+' Sender';document.getElementById('stat-approved').textContent='✅ '+approved+' approved';document.getElementById('stat-blocked').textContent='🚫 '+blocked+' blocked'}
+function sort(col){if(sortCol===col)sortDir=sortDir==='asc'?'desc':'asc';else{sortCol=col;sortDir='desc'}render()}
+function render(){const q=(document.getElementById('search').value||'').toLowerCase();const sf=document.getElementById('status-filter').value;const cf=document.getElementById('cat-filter').value;let filtered=senders.filter(s=>{if(sf!=='all'&&s.status!==sf)return false;if(cf!=='all'&&s.category_id!==cf)return false;if(q){const hay=(s.display_name+' '+s.address).toLowerCase();if(!hay.includes(q))return false}return true});filtered.sort((a,b)=>{let va=a[sortCol]||'',vb=b[sortCol]||'';if(typeof va==='number')return sortDir==='asc'?va-vb:vb-va;va=String(va).toLowerCase();vb=String(vb).toLowerCase();return sortDir==='asc'?va.localeCompare(vb):vb.localeCompare(va)});const tbody=document.getElementById('tbody');if(!filtered.length){tbody.innerHTML='';document.getElementById('empty').style.display='block';return}document.getElementById('empty').style.display='none';tbody.innerHTML=filtered.map(s=>'<tr><td>'+(s.display_name||'<i>—</i>')+'</td><td>'+esc(s.address||'')+'</td><td><span class="badge '+(s.status==='approved'?'ok':'err')+'">'+(s.status==='approved'?'✅':'🚫')+' '+s.status+'</span></td><td>'+(s.category_id?'<span class="cat-badge">'+esc(s.category_id)+'</span>':'—')+'</td><td>'+(s.adressat||'—')+'</td><td>'+(s.archive_count||0)+'</td><td>'+fmtDate(s.last_scanned)+'</td></tr>').join('')}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function fmtDate(d){if(!d)return'—';try{return new Date(d).toLocaleDateString('de-DE')}catch(e){return String(d).substring(0,10)}}
+load();
+</script>
+</body>
+</html>"""
+
+CACHE_READER_URL = os.environ.get("CACHE_READER_URL", "http://cache-reader:8501")
+
+
 
 _CACHE_HTML = r"""<!DOCTYPE html>
 <html lang="de">
@@ -6617,6 +7062,7 @@ nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
     <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
     <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
+    <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
     <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
     <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
     <a href="/db" target="_blank" rel="noopener">🗄️ DB</a>
@@ -6966,6 +7412,7 @@ table.items tr.item-error td.err-cell{color:var(--err)}
     <a href="/batch" class="hl">🧰 Batch</a>
     <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
+    <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
     <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
     <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
     <a href="/db" target="_blank" rel="noopener">🗄️ DB</a>
@@ -7349,6 +7796,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
     <a href="/batch">🧰 Batch</a>
     <a href="/enex">🐘 ENEX</a>
     <a href="/wilson">🥧 Wilson</a>
+    <a href="/adressbuch">📇 Adressbuch</a>
     <a href="/frontmatter">🏷️ Frontmatter</a>
     <a href="/db">🗄️ DB</a>
   </nav>
@@ -7723,6 +8171,7 @@ pre{background:#0f1117;border:1px solid var(--border);border-radius:6px;padding:
     <a href="/batch">🧰 Batch</a>
     <a href="/enex">🐘 ENEX</a>
     <a href="/wilson">🥧 Wilson</a>
+    <a href="/adressbuch">📇 Adressbuch</a>
     <a href="/duplikate">&#127366; Duplikate</a>
     <a href="/db">🗄️ DB</a>
   </nav>
@@ -7974,6 +8423,7 @@ table.docs tr:hover td{background:#fafbfc}
     <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
     <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
+    <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
     <a href="/db" class="hl">🗄️ DB</a>
   </nav>
   <button onclick="openHelp()" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;white-space:nowrap">❓ Hilfe</button>
@@ -9335,6 +9785,15 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._html_response(_WILSON_HTML)
             return
 
+        elif path == "/adressbuch":
+            self._html_response(_ADRESSBUCH_HTML)
+            return
+
+        # GET /api/wilson/senders — Proxy zu Wilson email_senders
+        elif path == "/api/wilson/senders":
+            self._json_response(_fetch_wilson_senders())
+            return
+
         # GET /api/wilson/status — Wilson Status via SSH
         elif path == "/api/wilson/status":
             self._json_response(_collect_wilson_status())
@@ -9758,6 +10217,69 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
 
+        # GET /api/doc-pdf/<id> — PDF per Dokument-ID ausliefern
+        elif path.startswith("/api/doc-pdf/"):
+            try:
+                doc_id = int(path.split("/")[-1])
+            except ValueError:
+                self._json_response({"error": "Ungültige ID"}, 400); return
+            with get_db() as con:
+                row = con.execute(
+                    "SELECT anlagen_dateiname, vault_pfad, dateiname FROM dokumente WHERE id=?",
+                    (doc_id,)
+                ).fetchone()
+            if not row:
+                self._json_response({"error": "Dokument nicht gefunden"}, 404); return
+            base = VAULT_PDF_ARCHIV or (VAULT_ROOT / "Anlagen" if VAULT_ROOT else None)
+            pdf_path = None
+            # 1) anlagen_dateiname (exakter Name in Anlagen/)
+            if row["anlagen_dateiname"] and base:
+                c = base / row["anlagen_dateiname"]
+                if c.exists():
+                    pdf_path = c
+            # 2) rekursiv nach anlagen_dateiname suchen
+            if not pdf_path and row["anlagen_dateiname"] and base:
+                hits = list(base.rglob(row["anlagen_dateiname"]))
+                pdf_path = next((h for h in hits if h.suffix.lower() == ".pdf"), None)
+            # 3) aus vault MD extrahieren (original: wikilink)
+            if not pdf_path and row["vault_pfad"] and VAULT_ROOT:
+                md_path = VAULT_ROOT / row["vault_pfad"]
+                if md_path.exists():
+                    m = re.search(r'\[\[([^\]]+\.pdf)\]\]', md_path.read_text(encoding="utf-8", errors="replace"))
+                    if m:
+                        c = VAULT_ROOT / m.group(1)
+                        if c.exists():
+                            pdf_path = c
+            # 3b) PDF neben der Vault-MD (gleicher Ordner, gleicher Stamm)
+            if not pdf_path and row["vault_pfad"] and VAULT_ROOT:
+                sibling_pdf = (VAULT_ROOT / row["vault_pfad"]).with_suffix(".pdf")
+                if sibling_pdf.exists():
+                    pdf_path = sibling_pdf
+            # 4) dateiname direkt oder rekursiv
+            if not pdf_path and row["dateiname"] and base:
+                c = base / row["dateiname"]
+                pdf_path = c if c.exists() else None
+            if not pdf_path and row["dateiname"] and base:
+                hits = list(base.rglob(row["dateiname"]))
+                pdf_path = next((h for h in hits if h.suffix.lower() == ".pdf"), None)
+            # 5) rekursiv im gesamten VAULT_ROOT suchen (letzter Fallback)
+            if not pdf_path and row["anlagen_dateiname"] and VAULT_ROOT:
+                hits = list(VAULT_ROOT.rglob(row["anlagen_dateiname"]))
+                pdf_path = next((h for h in hits if h.suffix.lower() == ".pdf"), None)
+            if not pdf_path and row["dateiname"] and VAULT_ROOT:
+                hits = list(VAULT_ROOT.rglob(row["dateiname"]))
+                pdf_path = next((h for h in hits if h.suffix.lower() == ".pdf"), None)
+            if not pdf_path:
+                self._json_response({"error": "PDF nicht gefunden"}, 404); return
+            data = pdf_path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", len(data))
+            self.send_header("Content-Disposition", f'inline; filename="{pdf_path.name}"')
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
         elif path.startswith("/api/pdf/"):
             from urllib.parse import unquote
             filename = unquote(path[len("/api/pdf/"):])
@@ -10155,9 +10677,21 @@ class _ApiHandler(BaseHTTPRequestHandler):
             doc_id = data.get("doc_id")
             category = data.get("category")
             type_id = data.get("type_id", "allgemein")
+            rechnungsdatum = data.get("rechnungsdatum")
             if not doc_id or not category:
                 self._json_response({"error": "doc_id und category sind Pflicht"}, 400); return
             result = handle_correction(int(doc_id), category, type_id)
+            # Optionale Datum-Korrektur (nur DB, keine Vault-Verschiebung)
+            if rechnungsdatum:
+                try:
+                    with get_db() as con:
+                        con.execute(
+                            "UPDATE dokumente SET rechnungsdatum=? WHERE id=?",
+                            (rechnungsdatum, int(doc_id))
+                        )
+                    result += f"\n📅 Datum: {rechnungsdatum}"
+                except Exception as e:
+                    log.warning(f"Datum-Update fehlgeschlagen: {e}")
             tg_send(result)
             rule_id = None
             lernregel = data.get("lernregel")
@@ -10180,6 +10714,14 @@ class _ApiHandler(BaseHTTPRequestHandler):
                         ).start()
                 except Exception as e:
                     log.warning(f"Lernregel speichern fehlgeschlagen: {e}")
+            # SSE-Broadcast für Live-Update in allen Dashboard-Tabs
+            try:
+                sse_broadcast("doc_corrected", {
+                    "id": int(doc_id), "category": category, "type_id": type_id,
+                    "rechnungsdatum": rechnungsdatum or None,
+                })
+            except Exception:
+                pass
             self._json_response({"result": result, "rule_id": rule_id})
 
         # POST /api/tg/callback — Relay von Wilson für Dispatcher-Callbacks (cat/sc/st/ok/cancel)
@@ -10871,28 +11413,52 @@ def detect_document_language(md_content: str) -> tuple[str, float]:
 
 
 
+def _build_person_names_pattern() -> re.Pattern | None:
+    """Baut einen Regex für alle Namen aus personen.yaml (Nachname + Vornamen)."""
+    personen = load_personen()
+    names = set()
+    for pdata in personen.values():
+        full = pdata.get("name", "")
+        for part in full.split():
+            if len(part) >= 3:  # Sehr kurze Namensfragmente ignorieren
+                names.add(re.escape(part))
+    if not names:
+        return None
+    return re.compile(r"\b(" + "|".join(sorted(names, key=len, reverse=True)) + r")\b", re.IGNORECASE)
+
+
+_person_names_re: re.Pattern | None = None  # lazy-init
+
+
 def extract_document_header(md_content: str) -> dict:
-    """Extrahiert Absender/Empfänger aus den ersten ~40 Zeilen (regex, kein LLM).
+    """Extrahiert Absender/Empfänger aus den ersten ~100 Zeilen (regex, kein LLM).
 
     Rückgabe: {"absender": {...}, "empfaenger": {...}}. Jedes Unter-Dict hat
     firma, name, strasse, plz, ort, land — jeweils str oder None. Wirft nie.
     """
+    global _person_names_re
     empty = {"firma": None, "name": None, "strasse": None, "plz": None, "ort": None, "land": None}
     try:
-        lines = [l.rstrip() for l in md_content.splitlines()[:40]]
+        lines = [l.rstrip() for l in md_content.splitlines()[:100]]
     except Exception:
         return {"absender": dict(empty), "empfaenger": dict(empty)}
 
+    # Lazy-Init: Personennamen aus personen.yaml (statt hart \"Janning\")
+    if _person_names_re is None:
+        _person_names_re = _build_person_names_pattern()
+
     plz_re = re.compile(r"\b(\d{5})\s+([A-ZÄÖÜ][\wäöüß\-\.'/]+(?:\s+[A-ZÄÖÜa-zäöüß\-\.'/]+){0,3})")
+    # Deutsche + Italienische Rechtsformen
     firma_re = re.compile(
         r"\b(GmbH|AG|KG|OHG|mbH|e\.?\s*V\.?|S\.?R\.?L\.?|SRL|S\.?p\.?A\.?|SpA|"
-        r"S\.?N\.?C\.?|SNC|Srl|Cooperativa|Ges\.m\.b\.H)\b",
+        r"S\.?N\.?C\.?|SNC|Srl|Cooperativa|Ges\.m\.b\.H|S\.?a\.?s\.?|Sas|"
+        r"S\.?c\.?a\.?r\.?l\.?|Scarl|S\.?u\.?r\.?l\.?)\b",
         re.IGNORECASE,
     )
-    person_re = re.compile(r"\bJanning\b", re.IGNORECASE)
+    person_re = _person_names_re  # aus personen.yaml gebaut
     strasse_re = re.compile(
         r"\b(straße|strasse|str\.|weg|gasse|platz|allee|via|viale|piazza|corso|"
-        r"largo|vicolo|contrada)\b",
+        r"largo|vicolo|contrada|v\.le|p\.za|p\.le)\b",
         re.IGNORECASE,
     )
 
@@ -10916,7 +11482,7 @@ def extract_document_header(md_content: str) -> dict:
     for block in candidates:
         joined = " ".join(block)
         has_firma = bool(firma_re.search(joined))
-        has_person = bool(person_re.search(joined))
+        has_person = bool(person_re and person_re.search(joined))
         if has_person and empfaenger_block is None:
             empfaenger_block = block
         elif has_firma and absender_block is None:
@@ -10925,6 +11491,12 @@ def extract_document_header(md_content: str) -> dict:
     if absender_block is None:
         for block in candidates:
             if block is not empfaenger_block:
+                absender_block = block
+                break
+    # Zweiter Fallback: wenn trotzdem nichts gefunden, nimm Block MIT Firma (auch wenn Empfänger)
+    if absender_block is None and empfaenger_block is not None:
+        for block in candidates:
+            if block is not empfaenger_block and any(firma_re.search(l) for l in block):
                 absender_block = block
                 break
 
@@ -10940,7 +11512,7 @@ def extract_document_header(md_content: str) -> dict:
             if firma_re.search(l) and not firma:
                 firma = l
         for l in block:
-            if person_re.search(l) and not name:
+            if person_re and person_re.search(l) and not name:
                 name = l
         for l in block:
             if plz_re.search(l):
@@ -10951,7 +11523,10 @@ def extract_document_header(md_content: str) -> dict:
                 strasse = l
                 break
         land = None
-        if firma and re.search(r"\b(SRL|Srl|S\.?R\.?L\.?|SpA|S\.?p\.?A\.?|SNC|S\.?N\.?C\.?|Cooperativa)\b", firma):
+        if firma and re.search(
+            r"\b(SRL|Srl|S\.?R\.?L\.?|SpA|S\.?p\.?A\.?|SNC|S\.?N\.?C\.?|Cooperativa|Sas|Scarl|S\.?u\.?r\.?l\.?)\b",
+            firma
+        ):
             land = "IT"
         elif plz and plz.startswith("39"):
             land = "IT"
@@ -11499,7 +12074,7 @@ Regeln für Per-Feld-Konfidenz:
 Antworte AUSSCHLIESSLICH mit validem JSON, kein Text davor oder danach.
 
 Dokument:
-{md_content[:6000]}"""
+{md_content[:12000]}"""
 
     try:
         t0 = time.time()
@@ -11511,9 +12086,9 @@ Dokument:
             "options": {"temperature": 0.1, "num_ctx": OLLAMA_NUM_CTX},
         }
         r = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=OLLAMA_TIMEOUT)
-        # GPU-Hang auf AMD iGPU: einmal retry nach 500 (model runner nach cold-load crash)
-        if r.status_code == 500 and "model runner" in r.text:
-            log.warning(f"Ollama GPU-Hang (cold-load) — retry in 5s")
+        # GPU-Hang auf AMD iGPU: einmal retry nach 500 (model runner/unexpected EOF nach cold-load crash)
+        if r.status_code == 500 and ("model runner" in r.text or "unexpected EOF" in r.text):
+            log.warning(f"Ollama GPU-Hang/Crash (cold-load) — retry in 5s")
             time.sleep(5)
             r = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=OLLAMA_TIMEOUT)
         duration_ms = int((time.time() - t0) * 1000)
@@ -11556,6 +12131,7 @@ def aggregate_konfidenz(result: dict) -> str:
     """Berechnet Gesamtkonfidenz als Minimum der Per-Feld-Konfidenz-Werte.
 
     Rückfall auf Legacy-Feld 'konfidenz' wenn keine Per-Feld-Werte vorhanden.
+    Setzt zusätzlich result['konfidenz_source'] für Transparenz im Dashboard.
     """
     per_feld = [
         result.get("konfidenz_category"),
@@ -11566,9 +12142,14 @@ def aggregate_konfidenz(result: dict) -> str:
     ]
     werte = [_KONFIDENZ_RANK[v] for v in per_feld if v in _KONFIDENZ_RANK]
     if werte:
+        result["konfidenz_source"] = "llm"
         return _KONFIDENZ_FROM_RANK[min(werte)]
-    # Fallback: altes Einzel-Konfidenz-Feld
-    return result.get("konfidenz") or "mittel"
+    # Fallback: altes Einzel-Konfidenz-Feld, sonst "niedrig" (kein Signal ≠ mittel)
+    if result.get("konfidenz"):
+        result["konfidenz_source"] = "fallback"
+        return result["konfidenz"]
+    result["konfidenz_source"] = "fallback"
+    return "niedrig"
 
 
 # ── Verarbeitung ───────────────────────────────────────────────────────────────
@@ -11836,33 +12417,61 @@ def _write_vault_md(pdf_dest: Path, dest_md: Path, vault_pfad: str,
         log.warning(f"vault_pfad DB-Update fehlgeschlagen: {e}")
 
 
+def _keyword_rule_score(rule: dict, text_lower: str) -> tuple[int, int, bool]:
+    """Berechnet Spezifitäts-Score für eine Keyword-Rule.
+    Rückgabe: (matched_count, total_keywords, alle_keywords)
+    Höhere matched_count = spezifischer. AND-Regeln schlagen OR-Regeln bei gleicher Count.
+    """
+    keywords = rule.get("keywords", [])
+    alle = rule.get("alle_keywords", False)
+    matched = sum(1 for kw in keywords if kw.lower() in text_lower)
+    if alle:
+        all_matched = matched == len(keywords)
+        return (matched, len(keywords), True) if all_matched else (0, len(keywords), True)
+    else:
+        return (matched, len(keywords), False)
+
+
 def apply_keyword_rules(result: dict, text: str, categories: dict) -> dict:
     """Überschreibt LLM-Klassifikation mit deterministischen Keyword-Rules.
-    Läuft nach dem LLM. Greift nur wenn ein Keyword im Text gefunden wird."""
+    Läuft nach dem LLM. Alle passenden Regeln werden gesammelt, die spezifischste gewinnt.
+    Spezifität = Anzahl gematchter Keywords; AND schlägt OR bei gleicher Keyword-Zahl.
+    """
     text_lower = text.lower()
+    best_rule = None
+    best_score = (0, 0, False)  # (matched, total, alle_keywords)
+
     for rule in KEYWORD_RULES:
-        keywords = rule.get("keywords", [])
-        alle = rule.get("alle_keywords", False)
-        if alle:
-            match = all(kw.lower() in text_lower for kw in keywords)
-        else:
-            match = any(kw.lower() in text_lower for kw in keywords)
-        if not match:
+        score = _keyword_rule_score(rule, text_lower)
+        matched, total, alle = score
+        if matched == 0:
             continue
-        cat_id  = rule.get("category_id")
-        type_id = rule.get("type_id")
+        cat_id = rule.get("category_id")
         if not cat_id or cat_id not in categories:
             continue
-        # Nur überschreiben wenn Regel stärker als LLM-Ergebnis
-        old_cat  = result.get("category_id")
-        old_conf = result.get("konfidenz_category", "niedrig")
-        if old_cat == cat_id and old_conf in ("hoch", "mittel"):
-            continue  # LLM war schon korrekt und sicher
-        result["category_id"]        = cat_id
-        result["type_id"]            = type_id  # None wenn nicht in Regel gesetzt
-        result["konfidenz_category"] = "hoch"
-        log.info(f"Keyword-Rule greift: '{rule.get('beschreibung', cat_id)}' → {cat_id}")
-        break  # Erste passende Regel gewinnt
+        # Score-Vergleich: mehr gematchte Keywords = spezifischer; bei Gleichstand: AND > OR
+        if matched > best_score[0] or (matched == best_score[0] and alle and not best_score[2]):
+            best_score = score
+            best_rule = rule
+
+    if best_rule is None:
+        return result
+
+    cat_id = best_rule.get("category_id")
+    type_id = best_rule.get("type_id")
+    old_cat = result.get("category_id")
+    old_conf = result.get("konfidenz_category", "niedrig")
+    if old_cat == cat_id and old_conf in ("hoch", "mittel"):
+        return result  # LLM war schon korrekt und sicher
+
+    result["category_id"] = cat_id
+    result["type_id"] = type_id
+    result["konfidenz_category"] = "hoch"
+    result["konfidenz_keyword"] = "hoch"
+    log.info(
+        f"Keyword-Rule greift: '{best_rule.get('beschreibung', cat_id)}' → {cat_id}"
+        f" (matched={best_score[0]}/{best_score[1]}, alle={best_score[2]})"
+    )
     return result
 
 
@@ -12158,10 +12767,25 @@ def rescan_archived_pdf(pdf_path: Path, language_filter: str | None = None):
     )
 
     dur_llm = (datetime.now() - t2).total_seconds() * 1000
+    # Retry mit kürzerem Prompt wenn Klassifizierung fehlschlug oder category_id null
     if not result or not result.get("category_id"):
-        result = result or {}
-        result["category_id"] = None
-        result["type_id"] = None
+        reason = "None" if not result else "category_id=null"
+        log.info(f"LLM-Retry ({reason}) mit kürzerem Prompt für: {pdf_path.name}")
+        classify_input_short = md_content[:4000]
+        result = classify_with_ollama(
+            classify_input_short,
+            categories,
+            header=header,
+            identifiers=idents,
+            adressat_match=adressat_match,
+            absender_match=absender_match,
+            doc_type_info=doc_type,
+        )
+        if not result or not result.get("category_id"):
+            result = result or {}
+            result["category_id"] = None
+            result["type_id"] = None
+            log.warning(f"LLM-Retry gescheitert für: {pdf_path.name}")
 
     # Halluzinations-Guard + Overrides
     if result.get("category_id") and result["category_id"] not in categories:
@@ -12717,6 +13341,10 @@ def process_file(file_path: Path):
             except Exception as e:
                 log.warning(f"Sidecar löschen fehlgeschlagen: {e}")
 
+            # Wilson-Status-Rückkanal: transferred → completed
+            _orig_name = dok.get("orig_name", f"{force_stem}.pdf")
+            _notify_wilson_completed(_orig_name)
+
             return
         else:
             log.warning(f"Sidecar ungültig oder falsche Version — falle auf normale Pipeline zurück")
@@ -12872,6 +13500,24 @@ def process_file(file_path: Path):
                extracted={k: v for k, v in (result or {}).items() if not k.startswith("_")},
                duration_ms=(time.monotonic() - _t0) * 1000)
 
+    # Retry: Wenn Klassifizierung fehlschlaegt ODER category_id null,
+    # vereinfachter Prompt mit kuerzerem Text (qwen3 crashed bei zu langen Prompts).
+    if not result or not result.get("category_id"):
+        reason = "None" if not result else "category_id=null"
+        log.info(f"LLM-Retry ({reason}) mit vereinfachtem Prompt fuer: {_fn}")
+        classify_input_short = md_content[:4000]
+        result = classify_with_ollama(
+            classify_input_short,
+            categories,
+            header=header_info,
+            identifiers=identifiers,
+            adressat_match=adressat_match,
+            absender_match=absender_match,
+            doc_type_info=doc_type_info,
+        )
+        if result and result.get("category_id"):
+            log.info(f"LLM-Retry erfolgreich fuer: {_fn}")
+
     # Sprache im Result speichern (für Telegram-Ausgabe)
     if result:
         result["_lang"] = lang
@@ -12934,9 +13580,11 @@ def process_file(file_path: Path):
 
     # Taxonomie-Validierung: halluzinierter type_id bei gültiger Kategorie → type auf None,
     # Kategorie bleibt erhalten (Datei landet in Kategorie-Wurzel statt Typ-Unterordner).
+    # Nur ablehnen wenn eine Whitelist existiert und der type_id nicht darin ist.
+    # Leere Whitelist (keine types: in categories.yaml) → type_id durchlassen.
     if result and result.get("category_id") and result.get("type_id"):
         valid_type_ids = {t["id"] for t in categories[result["category_id"]].get("types", [])}
-        if result["type_id"] not in valid_type_ids:
+        if valid_type_ids and result["type_id"] not in valid_type_ids:
             log.warning(
                 f"LLM halluzinierte Typ '{result['type_id']}' in Kategorie '{result['category_id']}' "
                 f"— Typ auf null zurückgesetzt (bleibt in Kategorie-Wurzel)"
@@ -13753,6 +14401,7 @@ def _dashboard_batch_runner(run_id: int, input_path: Path, ocr_mode: str,
                             output_mode: str, output_dir: Path | None, limit: int):
     """Hintergrund-Thread für Dashboard-getriggerte Läufe.
     run_id wurde bereits vom API-Endpoint angelegt — run_batch() nutzt ihn wieder."""
+    start_ts = datetime.now()
     try:
         run_batch(
             input_path=input_path,
@@ -13763,12 +14412,24 @@ def _dashboard_batch_runner(run_id: int, input_path: Path, ocr_mode: str,
             dry_run=False,
             run_id=run_id,
         )
+        status = "done"
     except Exception as e:
         log.error(f"Dashboard-Batch {run_id} fehlgeschlagen: {e}")
         try:
             _batch_run_finish(run_id, "error")
         except Exception:
             pass
+        status = "error"
+    elapsed = datetime.now() - start_ts
+    hours, rem = divmod(elapsed.total_seconds(), 3600)
+    minutes = rem // 60
+    msg = (
+        f"🤖 Batch {run_id} beendet\n"
+        f"Status: {status}\n"
+        f"Laufzeit: {int(hours)}h {int(minutes)}m\n"
+        f"Modus: {ocr_mode} / {output_mode}"
+    )
+    tg_send(msg)
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────

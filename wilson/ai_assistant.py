@@ -279,7 +279,7 @@ def ask_deepseek(messages: list, system: str) -> str:
             DEEPSEEK_URL,
             json={
                 "model": DEEPSEEK_MODEL,
-                "messages": [{"role": "system", "content": system}] + messages,
+                "messages": [{"role": "user", "content": system}] + messages,
                 "max_tokens": 1500,
                 "temperature": 0.7,
             },

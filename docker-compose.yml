@@ -21,7 +21,7 @@ services:
   docling-serve:
     image: quay.io/docling-project/docling-serve:latest
     container_name: docling-serve
-    restart: no
+    restart: unless-stopped
     deploy:
       resources:
         limits:
