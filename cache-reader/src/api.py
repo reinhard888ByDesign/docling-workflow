@@ -93,6 +93,18 @@ button:hover{{opacity:.9}}
 .links a{{font-size:.8rem;padding:5px 12px;border:1px solid var(--border);border-radius:6px;text-decoration:none;color:var(--accent)}}
 .links a:hover{{background:rgba(0,113,227,0.06)}}
 .error{{color:#dc2626;font-size:.82rem;padding:10px;background:#fef2f2;border-radius:6px;margin-top:8px;display:none}}
+/* Hilfe-Overlay */
+.help-overlay{{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;display:none;justify-content:center;align-items:center;padding:20px}}
+.help-overlay.open{{display:flex}}
+.help-box{{background:var(--card);border-radius:var(--radius);padding:28px 32px;max-width:600px;width:100%;max-height:80vh;overflow-y:auto}}
+.help-box h3{{margin:16px 0 6px;font-size:1rem}}
+.help-box h3:first-of-type{{margin-top:0}}
+.help-box p,.help-box ul{{font-size:.85rem;color:var(--muted);line-height:1.6;margin-bottom:8px}}
+.help-box ul{{padding-left:20px}}
+.help-box code{{background:#f0f0f5;padding:1px 5px;border-radius:3px;font-size:.8rem}}
+.help-close{{float:right;background:none;border:none;font-size:1.4rem;cursor:pointer;padding:0;line-height:1;color:var(--muted)}}
+.help-btn{{display:inline-flex;align-items:center;gap:4px;font-size:.8rem;padding:5px 12px;border:1px solid var(--border);border-radius:6px;text-decoration:none;color:var(--accent);cursor:pointer;background:none}}
+.help-btn:hover{{background:rgba(0,113,227,0.06)}}
 </style>
 </head>
 <body>
@@ -118,9 +130,58 @@ button:hover{{opacity:.9}}
   <a href="/openapi.json">📋 OpenAPI</a>
   <a href="/health">💚 Health</a>
   <a href="/stats">📊 Stats (JSON)</a>
+  <button class="help-btn" onclick="openHelp()">❓ Hilfe</button>
+</div>
+</div>
+
+<!-- Hilfe-Overlay -->
+<div class="help-overlay" id="helpOverlay" onclick="if(event.target===this)closeHelp()">
+<div class="help-box">
+<button class="help-close" onclick="closeHelp()">✕</button>
+<h2>❓ Cache Reader — Hilfe</h2>
+
+<h3>Was ist der Cache Reader?</h3>
+<p>Der Cache Reader ist der <strong>Volltextsuchdienst</strong> im Docling-Workflow. Er durchsucht
+alle vom Docling-OCR-Prozess extrahierten PDF-Texte und ermöglicht eine schnelle
+Stichwortsuche über den gesamten Dokumentenbestand.</p>
+
+<h3>Wie funktioniert es?</h3>
+<p>Jedes verarbeitete PDF wird von einer OCR-Pipeline (Docling) in Text umgewandelt und
+in einem Cache-Verzeichnis gespeichert. Der Cache Reader baut daraus einen
+<strong>SQLite-FTS5-Volltextindex</strong> auf. Ein File-Watcher erkennt Änderungen
+automatisch und hält den Index aktuell.</p>
+
+<h3>Suche</h3>
+<ul>
+  <li>Suchbegriff ins Suchfeld eingeben und <strong>Enter</strong> drücken</li>
+  <li>Es wird nach exakten Wörtern gesucht (FTS5-Phrasensuche)</li>
+  <li>Die Ergebnisse zeigen den <strong>Vault-Pfad</strong>, einen Textauszug und den Score</li>
+  <li>Der Score (bm25) bewertet die Relevanz: je höher, desto besser der Treffer</li>
+</ul>
+
+<h3>Neu-Indizierung</h3>
+<p>Normalerweise nie nötig — Änderungen werden automatisch erkannt. Nur bei
+beschädigtem Index oder nach großen Batch-Importen manuell über
+<code>POST /reindex</code> auslösen.</p>
+
+<h3>Integration</h3>
+<p>Der Cache Reader ist im Dispatcher-Dashboard unter <code>/cache</code> eingebettet.
+Dort können Suchergebnisse direkt an den Batch-Prozessor übergeben werden,
+um Dokumente gezielt neu zu klassifizieren.</p>
 </div>
 </div>
 <script>
+// Path-Interceptor: Rewrite fetch()-URLs wenn in Hub-iframe eingebettet
+(function(){{
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {{
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {{
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    }};
+  }}
+}})();
 async function loadStats() {{
   try {{
     const r = await fetch('/stats');
@@ -157,6 +218,8 @@ async function doSearch(e) {{
     results.innerHTML = '';
   }}
 }}
+function openHelp(){{document.getElementById('helpOverlay').classList.add('open')}}
+function closeHelp(){{document.getElementById('helpOverlay').classList.remove('open')}}
 loadStats();
 </script>
 </body>

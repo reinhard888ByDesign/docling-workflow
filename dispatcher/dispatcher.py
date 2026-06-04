@@ -2308,8 +2308,9 @@ def _notify_wilson_completed(orig_name: str):
         log.debug(f"Wilson notify failed (non-critical): {e}")
 
 
-def _fetch_wilson_senders() -> list:
-    """Proxy: Holt Email-Sender von Wilsons API (wilson-sender-proxy:8771)."""
+def _fetch_wilson_senders() -> list | None:
+    """Proxy: Holt Email-Sender von Wilsons API (wilson-sender-proxy:8771).
+    Returns None wenn Wilson nicht erreichbar ist (→ 503 im UI)."""
     import urllib.request
     try:
         resp = urllib.request.urlopen(
@@ -2319,7 +2320,7 @@ def _fetch_wilson_senders() -> list:
         return json.loads(resp.read())
     except Exception as e:
         log.warning(f"Wilson sender API nicht erreichbar: {e}")
-        return []
+        return None
 
 
 def _collect_wilson_status() -> dict:
@@ -7431,7 +7432,11 @@ async function openFullText(r){
   modal.classList.add('open');
   try{
     const resp = await fetch('/api/cache/file?path=' + encodeURIComponent(r.path));
-    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    if(!resp.ok){
+      let detail = 'HTTP '+resp.status;
+      try{ const err = await resp.json(); if(err.detail) detail = err.detail; }catch(_){}
+      throw new Error(detail);
+    }
     const data = await resp.json();
     body.textContent = data.text || '(kein Text)';
   }catch(e){
@@ -10126,7 +10131,11 @@ class _ApiHandler(BaseHTTPRequestHandler):
 
         # GET /api/wilson/senders — Proxy zu Wilson email_senders
         elif path == "/api/wilson/senders":
-            self._json_response(_fetch_wilson_senders())
+            senders = _fetch_wilson_senders()
+            if senders is None:
+                self._json_response({"error": "Wilson (email-sender) nicht erreichbar"}, 503)
+            else:
+                self._json_response(senders)
             return
 
         # GET /api/wilson/status — Wilson Status via SSH
