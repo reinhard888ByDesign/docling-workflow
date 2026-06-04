@@ -61,9 +61,10 @@ class RoutingResult:
 class EnexTagMapper:
     """
     Liest enex-tags.yaml und bietet:
-      - route_by_prefix(prefix, tags)  → Routing via Dateiname-Präfix
-      - route_by_tags(tags)            → Routing via Tag-Regeln
-      - filter_tags(tags)              → Jahreszahlen, Hex-Codes etc. entfernen
+      - route_by_prefix(prefix, tags)   → Routing via Dateiname-Präfix
+      - route_by_filename(stem, tags)   → Routing via filename_rules (Fallback)
+      - route_by_tags(tags)             → Routing via Tag-Regeln
+      - filter_tags(tags)               → Jahreszahlen, Hex-Codes etc. entfernen
     """
 
     def __init__(self, config_path: str | Path):
@@ -83,6 +84,7 @@ class EnexTagMapper:
 
         self.prefix_map: Dict[str, Dict] = cfg.get("prefix_map", {})
         self.tag_rules: List[Dict] = cfg.get("tag_rules", [])
+        self.filename_rules: List[Dict] = cfg.get("filename_rules", [])
         self.fallback: Dict = cfg.get("fallback", {
             "vault_folder": "00 Inbox",
             "kategorie": None,
@@ -95,8 +97,8 @@ class EnexTagMapper:
         self._remove_patterns = [re.compile(p) for p in remove_patterns]
 
         logger.debug(
-            "EnexTagMapper: %d Präfixe, %d Tag-Regeln, %d Filter-Pattern",
-            len(self.prefix_map), len(self.tag_rules), len(self._remove_patterns)
+            "EnexTagMapper: %d Präfixe, %d Tag-Regeln, %d Filename-Regeln, %d Filter-Pattern",
+            len(self.prefix_map), len(self.tag_rules), len(self.filename_rules), len(self._remove_patterns)
         )
 
     # ------------------------------------------------------------------
@@ -154,6 +156,54 @@ class EnexTagMapper:
             adressat_hint=adressat_hint,
             source="prefix",
         )
+
+    # ------------------------------------------------------------------
+    # Routing via Filename-Regeln (Fallback wenn kein nn_-Präfix)
+    # ------------------------------------------------------------------
+
+    def route_by_filename(
+        self,
+        stem: str,
+        note_tags: List[str],
+    ) -> Optional[RoutingResult]:
+        """
+        Routing über filename_rules in enex-tags.yaml.
+        Prüft den ENEX-Dateinamen-Stem (case-insensitive Substring) gegen
+        die patterns jeder Regel. Erster Match gewinnt.
+
+        Args:
+            stem: ENEX-Dateiname ohne Suffix, z.B. "888ByDesign - Belege".
+            note_tags: Evernote-Tags der Note (werden gefiltert).
+
+        Returns:
+            RoutingResult oder None wenn keine Regel matched.
+        """
+        stem_lower = stem.lower()
+
+        for rule in self.filename_rules:
+            patterns = rule.get("patterns", [])
+            for pat in patterns:
+                if pat.lower() in stem_lower:
+                    tag_output: List[str] = rule.get("tag_output", [])
+                    normalized = self.filter_tags(note_tags) + tag_output
+                    adressat_hint = rule.get("adressat_hint") or self._extract_adressat(note_tags)
+                    vault_folder = self._kategorie_to_folder(rule.get("kategorie"))
+
+                    logger.info(
+                        "Filename-Match: %r → %s (pattern=%r, source=filename_rule)",
+                        stem, vault_folder, pat
+                    )
+
+                    return RoutingResult(
+                        vault_folder=vault_folder,
+                        kategorie=rule.get("kategorie"),
+                        typ=rule.get("typ"),
+                        normalized_tags=normalized,
+                        adressat_hint=adressat_hint,
+                        source="filename_rule",
+                    )
+
+        return None
 
     # ------------------------------------------------------------------
     # Routing via Tag-Regeln

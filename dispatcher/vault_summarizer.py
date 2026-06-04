@@ -110,6 +110,14 @@ def ensure_original_in_frontmatter(fm: str, body: str) -> str:
         return fm
 
     # original: vor dem schließenden --- einfügen
+    # Stelle sicher, dass der Pfad mit "Anlagen/" beginnt (vereinheitlichtes Format)
+    if "/" not in pdf_name and "\\" not in pdf_name:
+        pdf_name = f"Anlagen/{pdf_name}"
+    elif not pdf_name.startswith("Anlagen/") and not pdf_name.startswith("Anlagen\\"):
+        # Wikilink-Pfad könnte "Anlagen/..." sein — passt schon
+        # Andere Pfade (z.B. Kategorie-Ordner) → nur den Dateinamen nehmen
+        pdf_name = f"Anlagen/{Path(pdf_name).name}"
+
     lines = fm.split("\n")
     # Finde die letzte Zeile vor dem schließenden ---
     insert_at = len(lines) - 1  # vor dem letzten ---
@@ -366,10 +374,32 @@ def process_file(
     if not backup_path.exists():
         backup_path.write_text(content, encoding="utf-8")
 
+    # PDF-Wikilink aus Body oder Frontmatter ableiten (direkt nach Frontmatter)
+    pdf_wikilink = ""
+    wl_m = re.search(r'\[\[([^\]]+\.pdf)\]\]', body)
+    if wl_m:
+        pdf_wikilink = f"📄 {wl_m.group(0)}\n\n"
+    else:
+        # Kein Wikilink im Body → aus Frontmatter original: extrahieren
+        orig_m = re.search(r'^original:\s*(.+)$', frontmatter, re.MULTILINE)
+        if orig_m:
+            raw = orig_m.group(1).strip().strip('"').strip("'")
+            # Format kann sein: "[[Anlagen/x.pdf]]", "Anlagen/x.pdf", oder "x.pdf"
+            wl = re.match(r'\[\[([^\]]+\.pdf)\]\]', raw)
+            if wl:
+                pdf_name = wl.group(1).strip()
+            else:
+                pdf_name = raw.strip()
+            # Nur den Dateinamen extrahieren (ohne Pfad)
+            pdf_name = Path(pdf_name).name
+            if pdf_name.endswith('.pdf'):
+                pdf_wikilink = f"📄 [[Anlagen/{pdf_name}]]\n\n"
+
     # Datei überschreiben
     new_content = (
         (frontmatter + "\n" if frontmatter else "")
         + f"<!-- summarized by vault_summarizer {ts} lang={lang} ratio={ratio:.2f} -->\n\n"
+        + pdf_wikilink
         + summary
     )
     md_path.write_text(new_content, encoding="utf-8")

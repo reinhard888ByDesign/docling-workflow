@@ -243,6 +243,22 @@ tag_filter:
     - "^\\s*$"                 # Leere Tags
 
 # ---------------------------------------------------------------------------
+# FILENAME-RULES
+# Greift wenn kein Präfix (nn_) im ENEX-Dateinamen erkannt wurde.
+# Der Dateiname-Stem wird case-insensitive gegen die patterns geprüft (Substring).
+# Erster Match gewinnt.
+# ---------------------------------------------------------------------------
+filename_rules:
+  - patterns:
+      - "888bydesign"
+      - "888 by design"
+      - "888-by-design"
+    kategorie: business
+    typ: sonstiges
+    tag_output: ["Business", "888ByDesign"]
+    description: "888 By Design GmbH — Geschäftsdokumente"
+
+# ---------------------------------------------------------------------------
 # FALLBACK
 # Wird verwendet wenn kein Präfix und keine tag_rule greift.
 # ---------------------------------------------------------------------------

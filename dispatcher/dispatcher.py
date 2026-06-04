@@ -3083,6 +3083,27 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
 .footer{text-align:center;padding:12px;font-size:12px;color:var(--muted);background:var(--surface);border-top:1px solid var(--border);margin-top:8px}
 #countdown{color:var(--accent);font-weight:700}
 </style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+  }
+})();
+</script>
 </head>
 <body>
 
@@ -4006,6 +4027,27 @@ nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
 .help-btn{font-size:12px;padding:4px 12px;border:1px solid var(--border);border-radius:7px;color:var(--text);background:var(--surface);cursor:pointer;font-weight:600;white-space:nowrap;transition:all .15s;margin-left:auto}
 .help-btn:hover{border-color:var(--accent);color:var(--accent)}
 </style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+  }
+})();
+</script>
 </head>
 <body>
 
@@ -4574,6 +4616,27 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
   .dtag.niedrig{ background: #fee2e2; color: var(--err); }
   .dtag.grey   { background: #f1f2f6; color: var(--muted); }
 </style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+  }
+})();
+</script>
 </head>
 <body>
 
@@ -5413,6 +5476,27 @@ _VAULT_HTML = r"""<!DOCTYPE html>
   .ts{margin-left:auto;font-size:11px;color:var(--muted)}
   #err{color:var(--err);padding:20px;display:none}
 </style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+  }
+})();
+</script>
 </head>
 <body>
 <header>
@@ -5613,6 +5697,27 @@ if False: r"""<!DOCTYPE html>
   #err{color:var(--err);padding:20px;display:none}
   .section-head{padding:12px 20px 6px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
 </style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+  }
+})();
+</script>
 </head>
 <body>
 <header>
@@ -5844,6 +5949,27 @@ button.primary:disabled{opacity:.4;cursor:not-allowed}
 .rule-row .rinfo small{color:var(--muted);font-size:11px}
 .rule-row .rdel{cursor:pointer;color:var(--red);font-size:16px;padding:0 4px}
 </style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+  }
+})();
+</script>
 </head>
 <body>
 <header>
@@ -6327,6 +6453,27 @@ _WILSON_HTML = r"""<!DOCTYPE html>
   .pv-kpi.ok .pv-val { color: var(--ok); }
   .pv-kpi.accent .pv-val { color: var(--accent); }
 </style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+  }
+})();
+</script>
 </head>
 <body>
 <header>
@@ -6923,6 +7070,27 @@ tr:hover td{background:#f8f9ff}
 .cat-badge{font-size:10px;padding:1px 6px;border-radius:4px;background:#f1f2f6;color:var(--muted)}
 .empty{text-align:center;padding:40px;color:var(--muted)}
 </style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+  }
+})();
+</script>
 </head>
 <body>
 <header>
@@ -7049,6 +7217,27 @@ nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
 .langs{display:flex;gap:6px;flex-wrap:wrap}
 .lang-tag{font-size:11px;padding:2px 8px;border-radius:4px;background:#eef2ff;color:var(--accent);font-weight:700}
 </style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+  }
+})();
+</script>
 </head>
 <body>
 <header>
@@ -7399,6 +7588,27 @@ table.items tr.item-error td.err-cell{color:var(--err)}
 .filter-row .chip.active{border-color:var(--accent);background:#eef2ff;color:var(--accent)}
 .filter-row .count{font-size:11px;color:var(--muted);margin-left:auto}
 </style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+  }
+})();
+</script>
 </head>
 <body>
 <header>
@@ -7783,6 +7993,27 @@ button:disabled{opacity:.4;cursor:not-allowed}
 .empty-msg{padding:40px;text-align:center;color:var(--muted);font-size:14px}
 .scan-progress{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:16px;display:none}
 </style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+  }
+})();
+</script>
 </head>
 <body>
 <header>
@@ -8158,6 +8389,27 @@ pre{background:#0f1117;border:1px solid var(--border);border-radius:6px;padding:
 .progress-fill{height:12px;background:var(--green);border-radius:6px;transition:width .5s}
 #batch-status{font-size:12px;color:var(--muted);margin-top:6px}
 </style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+  }
+})();
+</script>
 </head>
 <body>
 <header>
@@ -8409,6 +8661,27 @@ table.docs tr:hover td{background:#fafbfc}
 .empty{color:var(--muted);font-size:12px;text-align:center;padding:28px}
 .hint{font-size:11px;color:var(--muted);padding:10px 18px}
 </style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+  }
+})();
+</script>
 </head>
 <body>
 <header>
@@ -8733,6 +9006,27 @@ _ENEX_HTML = r"""<!DOCTYPE html>
   .help-close:hover{color:#e8eaf0}
   .help-badge{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600;margin-right:4px;vertical-align:middle}
 </style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+  }
+})();
+</script>
 </head>
 <body>
 <nav>
@@ -9153,6 +9447,27 @@ _BACKUP_HTML = r"""<!DOCTYPE html>
   .badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:700}
   .badge-ok{background:#d1fae5;color:#065f46} .badge-warn{background:#fef3c7;color:#92400e} .badge-err{background:#fee2e2;color:#991b1b}
 </style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+  }
+})();
+</script>
 </head>
 <body>
 <header>
@@ -9434,7 +9749,27 @@ class _ApiHandler(BaseHTTPRequestHandler):
   h1{{font-size:15px;font-weight:700;color:#a5b4fc;margin-bottom:4px;word-break:break-all}}
   .meta{{font-size:11px;color:#64748b;margin-bottom:14px}}
   pre{{white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.7;color:#cbd5e1;font-family:'SF Mono',ui-monospace,monospace}}
-</style></head><body>
+</style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+(function(){{
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/') {{
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {{
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    }};
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {{
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    }};
+    window.EventSource.prototype = _ES.prototype;
+  }}
+}})();
+</script>
+</head><body>
 <h1>{title_html}</h1>
 <div class="meta">{row["vault_pfad"] or "—"} &nbsp;·&nbsp; {row["kategorie"] or "—"} &nbsp;·&nbsp; OCR: {row["ocr_status"] or "—"}</div>
 {not_found_note}{pdf_btn}
@@ -10169,12 +10504,34 @@ class _ApiHandler(BaseHTTPRequestHandler):
             except ValueError:
                 self._json_response({"error": "Path traversal blockiert"}, 400); return
             content = md_full.read_text(encoding="utf-8", errors="replace")
-            # original: "[[Anlagen/DATEI.pdf]]"  oder  original: [[Anlagen/DATEI.pdf]]
             import re as _re
-            m = _re.search(r'\[\[([^\]]+\.pdf)\]\]', content)
-            if not m:
-                self._json_response({"error": "Kein PDF-Link (original:) im MD gefunden"}, 404); return
-            pdf_rel = m.group(1)
+            pdf_rel = None
+
+            # 1) YAML-Frontmatter parsen: original: Feld auslesen
+            #    Formate: "original: Anlagen/x.pdf", 'original: "[[Anlagen/x.pdf]]"', "original: x.pdf"
+            fm_match = _re.match(r'^---\s*\n(.*?)\n---', content, _re.DOTALL)
+            if fm_match:
+                orig_m = _re.search(r'^original:\s*(.+)$', fm_match.group(1), _re.MULTILINE)
+                if orig_m:
+                    raw = orig_m.group(1).strip()
+                    # Wikilink-Format "[[Anlagen/x.pdf]]" → extrahieren
+                    wl = _re.match(r'"?\[\[([^\]]+\.pdf)\]\]"?', raw)
+                    if wl:
+                        pdf_rel = wl.group(1).strip()
+                    else:
+                        # "Anlagen/x.pdf" oder "x.pdf" (mit/ohne Quotes)
+                        pdf_rel = raw.strip().strip('"').strip("'")
+            # 2) Fallback: Regex-Suche nach [[...pdf]] im gesamten Inhalt
+            if not pdf_rel:
+                m = _re.search(r'\[\[([^\]]+\.pdf)\]\]', content)
+                if not m:
+                    self._json_response({"error": "Kein PDF-Link (original:) im MD gefunden"}, 404); return
+                pdf_rel = m.group(1)
+            # Pfad normalisieren: "Anlagen/x.pdf" oder "x.pdf"
+            if pdf_rel.startswith("Anlagen/") or pdf_rel.startswith("Anlagen\\"):
+                pass  # bereits relativ zu VAULT_ROOT
+            elif "/" not in pdf_rel and "\\" not in pdf_rel:
+                pdf_rel = f"Anlagen/{pdf_rel}"
             if ".." in pdf_rel or pdf_rel.startswith("/"):
                 self._json_response({"error": "Ungültiger PDF-Pfad im MD"}, 400); return
             pdf_full = VAULT_ROOT / pdf_rel
@@ -12301,8 +12658,8 @@ def _build_frontmatter(result: dict, pdf_filename: str, category_id: str, type_i
         lines.append(f"faellig: {_q(faellig)}")
     if lang and lang != "de":
         lines.append(f"sprache: {lang}")
-    # original: Dateiname des PDFs in Anlagen/ (kein Wikilink — der kommt in den Body)
-    lines.append(f"original: {pdf_filename}")
+    # original: Relativer Pfad zum PDF in Anlagen/ (kein Wikilink — der kommt in den Body)
+    lines.append(f"original: Anlagen/{pdf_filename}")
     lines.append(f"erstellt: {erstellt}")
     lines.append("---")
     lines.append("")

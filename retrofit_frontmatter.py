@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 from urllib.parse import unquote
 
-VAULT_ROOT  = Path("/home/reinhard/docker/docling-workflow/syncthing/data/reinhards-vault")
+VAULT_ROOT  = Path("/home/reinhard/docker/RYZEN - docling-workflow/syncthing/data/reinhards-vault")
 ANLAGEN_DIR = VAULT_ROOT / "Anlagen"
 PDF_ARCHIV  = Path("/home/reinhard/pdf-archiv")
 
@@ -114,7 +114,7 @@ def split_frontmatter(text: str) -> tuple[dict[str, str], str]:
 
 def rebuild_frontmatter_with_original(fm_raw: str, pdf_name: str, inserting: bool) -> str:
     """Setzt/ersetzt original: in einem bestehenden Frontmatter-Block (als String)."""
-    new_line = f'original: "[[Anlagen/{pdf_name}]]"'
+    new_line = f"original: Anlagen/{pdf_name}"
 
     if inserting:
         # Einfach am Ende vor dem letzten --- einfügen
@@ -155,7 +155,7 @@ def process_md(md_path: Path, dry_run: bool, stats: dict) -> None:
         pdf_name = extract_pdf_name(original_line)
         if pdf_name:
             # Prüfen ob bereits korrekt
-            if f"[[Anlagen/{pdf_name}]]" in original_line:
+            if f"Anlagen/{pdf_name}" in original_line or f"[[Anlagen/{pdf_name}]]" in original_line:
                 # Schon korrekt — PDF ggf. trotzdem kopieren
                 if ensure_pdf_in_anlagen(pdf_name, dry_run):
                     stats["already_ok"] += 1
@@ -193,7 +193,7 @@ def process_md(md_path: Path, dry_run: bool, stats: dict) -> None:
         return
 
     # ── Datei schreiben ────────────────────────────────────────────────────────
-    new_original_line = f'original: "[[Anlagen/{pdf_name}]]"'
+    new_original_line = f"original: Anlagen/{pdf_name}"
 
     if not has_fm:
         # Minimalen Frontmatter-Block anlegen

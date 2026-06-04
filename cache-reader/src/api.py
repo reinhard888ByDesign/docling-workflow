@@ -4,8 +4,8 @@ import sqlite3
 import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 
 import config
 import indexer
@@ -54,6 +54,113 @@ def _fts5_escape(query: str) -> str:
         return ""
     quoted = [f'"{t.replace(chr(34), "")}"' for t in terms]
     return " OR ".join(quoted)
+
+
+@app.get("/", response_class=HTMLResponse)
+def landing_page(request: Request) -> HTMLResponse:
+    """Einfache Landing-Page mit Suche und Stats-Übersicht."""
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cache Reader</title>
+<style>
+:root{{--bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--muted:#6e6e73;--accent:#0071e3;--border:rgba(0,0,0,0.07);--radius:12px}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue',Arial,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:40px 20px}}
+.card{{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:28px 32px;max-width:640px;width:100%;box-shadow:0 1px 4px rgba(0,0,0,0.04)}}
+h1{{font-size:1.4rem;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:8px}}
+h1 span{{font-size:.8rem;color:var(--muted);font-weight:400}}
+.subtitle{{font-size:.85rem;color:var(--muted);margin-bottom:20px}}
+form{{display:flex;gap:8px;margin-bottom:20px}}
+input[type=search]{{flex:1;padding:8px 14px;border:1px solid var(--border);border-radius:8px;font-size:.9rem;outline:none}}
+input[type=search]:focus{{border-color:var(--accent)}}
+button{{padding:8px 18px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:.9rem}}
+button:hover{{opacity:.9}}
+#results{{margin-top:12px;font-size:.85rem}}
+.result-item{{padding:10px 0;border-bottom:1px solid var(--border)}}
+.result-path{{font-weight:600;color:var(--accent)}}
+.result-excerpt{{color:var(--text);margin-top:3px}}
+.result-meta{{font-size:.78rem;color:var(--muted);margin-top:2px}}
+.stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:20px}}
+.stat{{background:#f8f9fb;border-radius:8px;padding:12px 14px;text-align:center}}
+.stat-value{{font-size:1.3rem;font-weight:700}}
+.stat-label{{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-top:2px}}
+.loading{{color:var(--muted);font-style:italic;padding:20px;text-align:center}}
+.empty{{color:var(--muted);padding:20px;text-align:center}}
+.links{{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}}
+.links a{{font-size:.8rem;padding:5px 12px;border:1px solid var(--border);border-radius:6px;text-decoration:none;color:var(--accent)}}
+.links a:hover{{background:rgba(0,113,227,0.06)}}
+.error{{color:#dc2626;font-size:.82rem;padding:10px;background:#fef2f2;border-radius:6px;margin-top:8px;display:none}}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>🗄️ Cache Reader <span>(Docling Workflow)</span></h1>
+<p class="subtitle">Volltextsuche über alle verarbeiteten Dokumente</p>
+
+<div class="stats" id="stats">
+  <div class="stat"><div class="stat-value" id="stat-total">…</div><div class="stat-label">Dokumente</div></div>
+  <div class="stat"><div class="stat-value" id="stat-usable">…</div><div class="stat-label">Durchsuchbar</div></div>
+</div>
+
+<form onsubmit="doSearch(event)">
+  <input type="search" name="q" id="q" placeholder="Suchbegriff…" autofocus>
+  <button type="submit">Suchen</button>
+</form>
+
+<div id="results"><div class="empty">Gib einen Suchbegriff ein.</div></div>
+<div id="error" class="error"></div>
+
+<div class="links">
+  <a href="/docs">📖 API Docs</a>
+  <a href="/openapi.json">📋 OpenAPI</a>
+  <a href="/health">💚 Health</a>
+  <a href="/stats">📊 Stats (JSON)</a>
+</div>
+</div>
+<script>
+async function loadStats() {{
+  try {{
+    const r = await fetch('/stats');
+    const d = await r.json();
+    document.getElementById('stat-total').textContent = d.total_documents || 0;
+    document.getElementById('stat-usable').textContent = d.usable_documents || 0;
+  }} catch(e) {{ console.error(e); }}
+}}
+async function doSearch(e) {{
+  e.preventDefault();
+  const q = document.getElementById('q').value.trim();
+  const results = document.getElementById('results');
+  const error = document.getElementById('error');
+  error.style.display = 'none';
+  if (!q) {{ results.innerHTML = '<div class="empty">Gib einen Suchbegriff ein.</div>'; return; }}
+  results.innerHTML = '<div class="loading">Suche…</div>';
+  try {{
+    const r = await fetch('/search?q=' + encodeURIComponent(q) + '&limit=20');
+    if (!r.ok) throw new Error(r.status + ' ' + (await r.text()));
+    const d = await r.json();
+    if (d.count === 0) {{
+      results.innerHTML = '<div class="empty">Keine Treffer für »' + q + '«</div>';
+    }} else {{
+      results.innerHTML = '<p style="margin-bottom:8px;color:var(--muted)">' + d.count + ' Treffer:</p>' +
+        d.results.map(r => '<div class="result-item">' +
+          '<div class="result-path">' + r.path + '</div>' +
+          '<div class="result-excerpt">' + (r.excerpt || '…') + '</div>' +
+          '<div class="result-meta">Score: ' + r.score + ' · ' + (r.langs || '?') + '</div>' +
+        '</div>').join('');
+    }}
+  }} catch(e) {{
+    error.textContent = 'Fehler: ' + e.message;
+    error.style.display = 'block';
+    results.innerHTML = '';
+  }}
+}}
+loadStats();
+</script>
+</body>
+</html>""")
 
 
 @app.get("/search")

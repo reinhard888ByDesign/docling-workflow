@@ -79,6 +79,11 @@ categories:
     vault_folder: "80 Business"
     description: "Geschäftliches, Firma, Arbeit, Arbeitgeber, Gehalt"
 
+  business_888bydesign:
+    label: "888 by Design GmbH"
+    vault_folder: "80 Business"
+    description: "888 by Design GmbH — Firmendokumente: Gründung, HRB, Steuern, Bank, Investoren, HYRE, Thalox, Qonto, comdirect Geschäftskonto, Geschäftsberichte"
+
   digitales:
     label: "Digitales"
     vault_folder: "82 Digitales"
@@ -292,3 +297,123 @@ keyword_rules:
                "Versicherungskammer Bayern Haftpflicht"]
     category_id: finanzen_versicherung_sach
     beschreibung: "Sachversicherung: Haftpflicht, Rechtsschutz, Unfall, D&O"
+
+  # 888 by Design GmbH — Firmendokumente
+  - keywords: ["888 by Design", "888bydesign", "888-by-design",
+               "888 by design GmbH", "888 by Design GmbH"]
+    category_id: business_888bydesign
+    beschreibung: "888 by Design GmbH (Firmenname direkt)"
+
+  - keywords: ["HYRE Solutions", "HYRE Wandeldarlehen", "HYRE Kapitalerhöhung",
+               "HYRE UVZ", "HYRE Stammeinlage",
+               "Thalox Wandeldarlehen", "Thalox Solutions",
+               "Thalox Stammeinlage", "Thalox Kapitalerhöhung"]
+    category_id: business_888bydesign
+    beschreibung: "888 by Design: HYRE / Thalox Investments"
+
+  - keywords: ["Qonto", "QONTO"]
+    category_id: business_888bydesign
+    beschreibung: "888 by Design: Qonto Geschäftskonto"
+
+  - keywords: ["Wagniskapital", "BAFA.*Zuschuss", "Bundesamt.*Wirtschaft.*Ausfuhr",
+               "Förderantrag.*BAFA", "Verwendungsnachweis.*BAFA",
+               "Bundesministerium.*Wirtschaft.*Klimaschutz.*Förder"]
+    category_id: business_888bydesign
+    beschreibung: "888 by Design: BAFA / Förderung / Zuschüsse"
+
+  - keywords: ["comdirect.*GmbH", "comdirect business", "Geschäftskonto.*comdirect",
+               "comdirect Geschäftskonto"]
+    category_id: business_888bydesign
+    beschreibung: "888 by Design: comdirect Geschäftskonto"
+
+  - keywords: ["HRB.*Traunstein", "Handelsregister.*Traunstein",
+               "Amtsgericht.*Traunstein.*HRB", "Landesjustizkasse.*Eintragung",
+               "Gesellschafterliste", "Gesellschafterversammlung",
+               "GmbH-Gesellschafter", "GmbH Gesellschafter"]
+    category_id: business_888bydesign
+    beschreibung: "888 by Design: Handelsregister / HRB / GmbH"
+
+  - keywords: ["Körperschaftssteuer.*Bescheid", "Körperschaftsteuer",
+               "Umsatzsteuer.*Voranmeldung.*GmbH", "Umsatzsteuererklärung.*GmbH",
+               "Gewerbesteuer.*Bescheid", "Gewerbesteuermessbetrag"]
+    category_id: business_888bydesign
+    beschreibung: "888 by Design: GmbH-Steuern (KSt, USt, GewSt)"
+
+  - keywords: ["Finanzamt.*UID.*GmbH", "Finanzamt.*Steuernummer.*GmbH",
+               "Finanzamt.*Körperschaft"]
+    category_id: business_888bydesign
+    beschreibung: "888 by Design: GmbH-Steuer-ID / UID"
+
+  # ── Erweiterte Keyword-Regeln (2026-06-04) aus Inbox-Analyse ──────────────────
+  # ACHTUNG: Keywords sind Substring-Match (kein Regex!). "alle_keywords: true" = AND-Logik.
+
+  - keywords: ["Miro", "Rechnung"]
+    alle_keywords: true
+    category_id: business
+    beschreibung: "Miro SaaS-Rechnung"
+
+  - keywords: ["Zoom", "Rechnung"]
+    alle_keywords: true
+    category_id: business
+    beschreibung: "Zoom SaaS-Rechnung"
+
+  - keywords: ["Stripe", "Rechnung"]
+    alle_keywords: true
+    category_id: business
+    beschreibung: "Stripe Zahlungsdienstleister"
+
+  - keywords: ["WIX", "Rechnung"]
+    alle_keywords: true
+    category_id: business
+    beschreibung: "WIX SaaS-Rechnung"
+
+  - keywords: ["LinkedIn Sales", "LinkedIn Premium", "LinkedIn Corp"]
+    category_id: business
+    beschreibung: "LinkedIn Business-Rechnung"
+
+  - keywords: ["Bewirtung", "Bewirtungsbeleg", "Geschäftsessen", "Arbeitsessen"]
+    category_id: business
+    beschreibung: "Bewirtung / Geschäftsessen"
+
+  - keywords: ["Deutsche Post", "DHL", "Nachsendung", "Nachsendeauftrag"]
+    category_id: business
+    beschreibung: "Deutsche Post / DHL Business"
+
+  - keywords: ["GEZ", "Rundfunkgebühren", "Rundfunkbeitrag",
+               "ARD ZDF Deutschlandradio", "Beitragsservice"]
+    category_id: finanzen
+    beschreibung: "GEZ / Rundfunkbeitrag"
+
+  - keywords: ["Parkticket", "Parkgebühr", "Parkbeleg", "Parkhaus",
+               "Parcheggio", "Parkautomaten", "Parcometro"]
+    category_id: business
+    beschreibung: "Parkgebühren / Parkticket (Reisekosten)"
+
+  - keywords: ["Kreditkartenabrechnung", "Kreditkartenumsätze",
+               "MasterCard", "Visa.*Abrechnung", "American Express"]
+    category_id: finanzen
+    beschreibung: "Kreditkartenabrechnung"
+
+  - keywords: ["Steuerberatung", "Steuerberater", "Steuerkanzlei",
+               "Steuerberatungskosten", "Steuerberaterhonorar"]
+    category_id: finanzen
+    beschreibung: "Steuerberatung / Steuerberater"
+
+  - keywords: ["Reisekostenabrechnung", "Reisekosten", "Auslagenersatz",
+               "Spesenabrechnung", "Travel Expense"]
+    category_id: business
+    beschreibung: "Reisekostenabrechnung"
+
+  - keywords: ["Zinssatzänderung", "Zinsanpassung", "Zinsänderung"]
+    category_id: finanzen
+    beschreibung: "Zinssatzänderung / Zinsanpassung"
+
+  - keywords: ["iPhone", "iPad", "MacBook", "Apple Store", "iTunes Store"]
+    alle_keywords: false
+    category_id: business
+    beschreibung: "Apple Hardware/Software-Rechnung"
+
+  - keywords: ["Notar", "Kostenrechnung"]
+    alle_keywords: true
+    category_id: immobilien
+    beschreibung: "Notarkosten / Notar-Rechnung"

@@ -66,7 +66,7 @@ VAULT_PATH        = Path(os.getenv("VAULT_PATH", "/data/vault"))
 ENEX_TAGS_CONFIG  = Path(os.getenv("ENEX_TAGS_CONFIG", "/config/enex-tags.yaml"))
 TIMEZONE          = ZoneInfo(os.getenv("ENEX_DEFAULT_TIMEZONE", "Europe/Berlin"))
 IMPORT_IMAGES     = os.getenv("ENEX_IMPORT_IMAGES", "false").lower() == "true"
-LLM_FALLBACK      = os.getenv("ENEX_LLM_FALLBACK", "false").lower() == "true"
+LLM_FALLBACK      = os.getenv("ENEX_LLM_FALLBACK", "true").lower() == "true"
 BATCH_TELEGRAM    = os.getenv("ENEX_BATCH_TELEGRAM", "true").lower() == "true"
 DB_PATH           = Path(os.getenv("DB_PATH", "/config/dispatcher.db"))
 OLLAMA_URL        = os.getenv("OLLAMA_URL", "http://ollama:11434")
@@ -414,7 +414,7 @@ def build_frontmatter(
     if routing.adressat_hint:
         lines.append(f"adressat: {routing.adressat_hint}")
     if pdf_filename:
-        lines.append(f'original: "[[Anlagen/{pdf_filename}]]"')
+        lines.append(f"original: Anlagen/{pdf_filename}")
     lines.append("import_quelle: enex")
     ocr_status = "pending" if pdf_filename else "not_required"
     lines.append(f"ocr_status: {ocr_status}")
@@ -501,9 +501,13 @@ def process_note(
     conn: sqlite3.Connection,
     enex_prefix: Optional[str],
     enex_typ_override: Optional[str],
+    enex_filename_stem: str = "",
 ) -> Tuple[str, str]:
     """
     Verarbeitet eine einzelne Note.
+
+    Args:
+        enex_filename_stem: ENEX-Dateiname ohne Suffix, für filename_rules-Matching.
 
     Returns:
         (status, vault_md_path) — status: "imported" | "duplicate" | "error"
@@ -518,6 +522,9 @@ def process_note(
 
     if enex_prefix:
         routing = mapper.route_by_prefix(enex_prefix, note.tags, enex_typ_override)
+
+    if routing is None and enex_filename_stem:
+        routing = mapper.route_by_filename(enex_filename_stem, note.tags)
 
     if routing is None:
         routing = mapper.route_by_tags(note.tags)
@@ -633,7 +640,12 @@ def process_note(
     ocr_block = make_ocr_placeholder() if pdf_filename else ""
 
     # 11. Markdown-Datei schreiben
-    md_content = frontmatter + "\n" + body_md + ocr_block
+    # PDF-Wikilink direkt nach Frontmatter, vor dem Body-Inhalt (für Obsidian klickbar)
+    if pdf_filename:
+        pdf_link = f"📄 [[Anlagen/{pdf_filename}]]\n\n"
+    else:
+        pdf_link = ""
+    md_content = frontmatter + "\n" + pdf_link + body_md + ocr_block
     md_dest.write_text(md_content, encoding="utf-8")
     logger.info("MD gespeichert: %s", md_dest.relative_to(VAULT_PATH))
 
@@ -706,9 +718,12 @@ def process_enex_file(enex_path: str | Path) -> dict:
     mapper = EnexTagMapper(ENEX_TAGS_CONFIG)
     conn = get_db_connection()
     enex_prefix, enex_typ = _parse_enex_prefix(enex_path)
+    enex_stem = enex_path.stem  # für filename_rules (z.B. "888ByDesign - Belege")
 
     if enex_prefix:
         logger.info("Kategorie-Präfix erkannt: %s (typ: %s)", enex_prefix, enex_typ)
+    else:
+        logger.info("Kein Präfix — filename_rules werden geprüft (stem=%r)", enex_stem)
 
     # Notes parsen
     try:
@@ -722,7 +737,7 @@ def process_enex_file(enex_path: str | Path) -> dict:
 
     for note in notes:
         try:
-            status, md_path = process_note(note, mapper, conn, enex_prefix, enex_typ)
+            status, md_path = process_note(note, mapper, conn, enex_prefix, enex_typ, enex_stem)
             stats[status] = stats.get(status, 0) + 1
             if status == "imported" and note.pdf_resources:
                 stats["pdf_pending"] += 1

@@ -240,7 +240,7 @@ def process_one(pdf_path, progress):
     dst_pdf = dst_dir / pdf_path.name
     if dst_pdf.exists():
         dst_pdf = dst_dir / (stem + "_2.pdf")
-    shutil.move(str(pdf_path), str(dst_pdf))
+    shutil.copy2(str(pdf_path), str(dst_pdf))
 
     # Alten Stub löschen
     old_stub = pdf_path.with_suffix(".md")
@@ -254,8 +254,8 @@ def process_one(pdf_path, progress):
     vault_pfad = str(new_stub.relative_to(VAULT))
     new_stub.write_text(
         f"---\nDatum_original: {iso}\ntags:\n  - {tag}\n"
-        f"original: {dst_pdf.name}\n---\n"
-        f"📎 [[Anlagen/{dst_pdf.name}]]\n\n{preview}\n",
+        f"original: Anlagen/{dst_pdf.name}\n---\n"
+        f"📄 [[Anlagen/{dst_pdf.name}]]\n\n{preview}\n",
         encoding="utf-8",
     )
 
