@@ -249,9 +249,25 @@ def normalize_filename(text: str) -> str:
     text = re.sub(r"[\s_]+", "-", text.strip())
     return text[:50]
 
+def _is_valid_date8(s: str) -> bool:
+    """Prüft ob 8-stelliger String ein plausibles YYYYMMDD ist."""
+    if len(s) != 8 or not s.isdigit():
+        return False
+    try:
+        y, m, d = int(s[:4]), int(s[4:6]), int(s[6:])
+        return 1950 <= y <= 2035 and 1 <= m <= 12 and 1 <= d <= 31
+    except ValueError:
+        return False
+
+
 def build_filename(sidecar: dict) -> str:
     datum = sidecar.get("datum", "")
-    datum_clean = datum.replace("-", "")[:8] if datum else "00000000"
+    if datum:
+        datum_clean = datum.replace("-", "")[:8]
+        if not _is_valid_date8(datum_clean):
+            datum_clean = "_NODATE_"
+    else:
+        datum_clean = "_NODATE_"
     absender = normalize_filename(sidecar.get("absender", "Unbekannt"))
     kurz = normalize_filename(sidecar.get("kurzbezeichnung", ""))
     parts = [p for p in [datum_clean, absender, kurz] if p]
