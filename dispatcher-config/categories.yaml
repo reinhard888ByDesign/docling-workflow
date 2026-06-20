@@ -84,6 +84,11 @@ categories:
     vault_folder: "80 Business"
     description: "888 by Design GmbH — Firmendokumente: Gründung, HRB, Steuern, Bank, Investoren, HYRE, Thalox, Qonto, comdirect Geschäftskonto, Geschäftsberichte"
 
+  business_leadmanagement:
+    label: "Lead Management"
+    vault_folder: "80 Business"
+    description: "Lead-Management, CRM, Kundenakquise, Vertriebspipeline, Wonderz, DemandGen, BizGen"
+
   digitales:
     label: "Digitales"
     vault_folder: "82 Digitales"
@@ -253,6 +258,20 @@ keyword_rules:
                "Bezügeabrechnung"]
     category_id: finanzen
     beschreibung: "Nürnberger Versicherung / Rentenversicherung"
+
+  # ── Rezept / Verschreibung / Apotheke (KV-Subtyp-Erkennung) ──────────
+  # "Rp." ist der härteste Indikator für ein Rezept — diese Abkürzung
+  # kommt ausschließlich auf Verschreibungen vor. Die Regel läuft NACH
+  # dem LLM und korrigiert Fehlklassifikationen deterministisch.
+  - keywords: ["Rp.", "Rp ", "Rezept", "Verschreibung", "Privatrezept",
+               "Kassenrezept", "Wiederholungsrezept", "Betaeubungsmittelrezept"]
+    category_id: krankenversicherung
+    beschreibung: "Rezept / Verschreibung"
+
+  - keywords: ["Apotheke", "Apothekenrechnung", "Arzneimittelrechnung",
+               "Apothekenabrechnung"]
+    category_id: krankenversicherung
+    beschreibung: "Apotheke / Arzneimittel"
 
   - keywords: ["Tierarzt", "Tierklinik", "Veterinär", "Veterinaria",
                "Clinica Veterinaria", "Tierheilpraktiker"]

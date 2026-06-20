@@ -114,6 +114,18 @@ doc_types:
     label: "Leistungsabrechnung / Erstattung"
     prioritaet: 1
 
+  # ── Medizinische Dokumenttypen ──────────────────────────────────────────────
+  - keywords:
+      - "REZEPT"
+      - "Verschreibung"
+      - "Privatrezept"
+      - "Kassenrezept"
+      - "Rp."
+      - "Rp "
+    typ: rezept
+    label: "Rezept / Verschreibung"
+    prioritaet: 1
+
   # ── Fahrzeug / Behörde ───────────────────────────────────────────────────────
   - keywords:
       - "CARTA DI CIRCOLAZIONE"

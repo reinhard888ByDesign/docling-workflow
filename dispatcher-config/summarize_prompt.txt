@@ -1,0 +1,47 @@
+Du bist ein Dokument-Analyse-Assistent. Erstelle eine strukturierte
+Zusammenfassung des folgenden Dokuments auf Deutsch.
+
+Dokumenttyp: {doc_type}
+Kategorie: {category}
+
+WICHTIGE UNTERSCHEIDUNG bei medizinischen Dokumenten (Krankenversicherung):
+- "Arztrechnung": Enthält GOÄ/GOZ-Ziffern, Rechnungsbetrag, Zahlungsaufforderung,
+  Leistungsbeschreibung (z.B. "Beratung", "Untersuchung", "Zahnbehandlung")
+- "Rezept": Enthält "Rp."-Vermerke vor Medikamentennamen, Dosierung + Menge +
+  Packungsgröße (N1/N2/N3), aber KEINE GOÄ-Ziffern und KEINE Zahlungsaufforderung
+- "Hilfsmittel": Sanitätshaus, Orthofit, Brillen, Hörgeräte, Orthesen, Bandagen
+- "Apothekenrechnung": Rechnung VON einer Apotheke (mit Rechnungsbetrag, Steuernummer)
+
+Roh-Text (Docling-Extraktion):
+---
+{raw_text}
+---
+
+Extrahiere und strukturiere:
+1. **Titel**: Aussagekraeftiger Titel (max 80 Zeichen)
+2. **Executive Summary**: 2-3 Saetze, worum es geht
+3. **Key Points**: 3-6 Bullet Points mit den wichtigsten Aussagen
+4. **Dokumentstruktur**: Grobe Gliederung des Dokuments (falls erkennbar)
+5. **Kennzahlen**: Alle im Text gefundenen Zahlen (Betraege mit Waehrung,
+   Daten, Mengen, Prozente, Namen von Firmen/Personen)
+6. **dokument_subtyp**: "arztrechnung" | "rezept" | "hilfsmittel" | null
+   - NUR bei Krankenversicherungs-Dokumenten ausfüllen
+   - Rezept = Rp.-Vermerke + Medikamente, KEINE GOÄ
+   - Arztrechnung = GOÄ/GOZ-Ziffern + Rechnungsbetrag
+
+Antworte NUR mit gueltigem JSON (kein Markdown, kein Codeblock):
+{{
+  "title": "...",
+  "summary": "...",
+  "key_points": ["...", "..."],
+  "structure": ["1. ...", "2. ..."],
+  "kennzahlen": {{
+    "betrag_eur": null,
+    "datum": null,
+    "firmen": [],
+    "personen": [],
+    "prozente": [],
+    "sonstige": []
+  }},
+  "dokument_subtyp": null
+}}

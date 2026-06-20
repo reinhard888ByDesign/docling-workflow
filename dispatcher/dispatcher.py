@@ -67,6 +67,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT_ID",    "")
 API_PORT       = int(os.environ.get("API_PORT", "8765"))
 SIDECAR_GRACE_SEC = int(os.environ.get("SIDECAR_GRACE_SEC", "30"))
+REVIEW_MODE       = os.environ.get("REVIEW_MODE", "on") == "on"  # default: Review-Queue aktiv
 KK_DB_PATH = os.environ.get("KK_DB_PATH", "")
 KK_EXTRACT_MODEL = os.environ.get("KK_EXTRACT_MODEL", "qwen3:4b-instruct")
 IMMO_DB_PATH = os.environ.get("IMMO_DB_PATH", "")
@@ -94,6 +95,15 @@ VERSICHERUNG_TYPES: set[str] = {
     "kostenuebernahme", "versicherungsbedingungen", "versicherungskorrespondenz",
 }
 BRANCHEN_REGELN: list[dict] = []  # wird aus categories.yaml geladen
+
+# Wilson→Ryzen Kategorie-ID-Mapping (Wilson verwendet z.T. andere IDs als Ryzen).
+# Wird von _normalize_category_id() verwendet, um Sidecar-Daten zu normalisieren.
+_WILSON_TO_RYZEN_CATEGORY: dict[str, str] = {
+    "altersvorsorge":                 "finanzen_versicherung_altersvorsorge",
+    "versicherung":                   "finanzen_versicherung_sach",
+    "immobilien_eigen":               "immobilien",
+    "immobilien_vermietet":           "immobilien",
+}
 
 # Wird beim Start aus categories.yaml geladen.
 CATEGORY_TO_VAULT_FOLDER: dict[str, str] = {}
@@ -313,6 +323,12 @@ def init_db():
         if "konfidenz_source" not in cols_dok:
             con.execute("ALTER TABLE dokumente ADD COLUMN konfidenz_source TEXT")
             log.info("Migration: Spalte konfidenz_source in dokumente hinzugefügt")
+        if "beschreibung" not in cols_dok:
+            con.execute("ALTER TABLE dokumente ADD COLUMN beschreibung TEXT")
+            log.info("Migration: Spalte beschreibung in dokumente hinzugefügt")
+        if "summary_de" not in cols_dok:
+            con.execute("ALTER TABLE dokumente ADD COLUMN summary_de TEXT")
+            log.info("Migration: Spalte summary_de in dokumente hinzugefügt")
         # lernregeln-Tabelle
         con.execute("""
             CREATE TABLE IF NOT EXISTS lernregeln (
@@ -415,6 +431,27 @@ def init_db():
                 ist_original INTEGER DEFAULT 0,
                 verschoben   INTEGER DEFAULT 0,
                 created_at   TEXT DEFAULT (datetime('now','localtime'))
+            )
+        """)
+        # Review-Queue: Dokumente warten hier auf manuelle Kategorie-Bestätigung
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS review_queue (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                pdf_path            TEXT NOT NULL,
+                sidecar_path        TEXT,
+                suggested_category  TEXT,
+                suggested_adressat  TEXT,
+                suggested_absender  TEXT,
+                rechnungsdatum      TEXT,
+                beschreibung        TEXT,
+                confidence          TEXT DEFAULT 'mittel',
+                source              TEXT DEFAULT 'wilson',
+                tg_msg_id           INTEGER,
+                status              TEXT DEFAULT 'pending',
+                final_category      TEXT,
+                final_adressat      TEXT,
+                created_at          TEXT DEFAULT (datetime('now','localtime')),
+                reviewed_at         TEXT
             )
         """)
     log.info(f"Datenbank initialisiert: {DB_FILE}")
@@ -530,8 +567,8 @@ def save_to_db(file_path: Path, result: dict) -> list[dict]:
         # 1. Dokument speichern
         cur = con.execute(
             """INSERT INTO dokumente
-               (dateiname, pdf_hash, rechnungsdatum, kategorie, typ, absender, adressat, konfidenz, konfidenz_source)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (dateiname, pdf_hash, rechnungsdatum, kategorie, typ, absender, adressat, konfidenz, konfidenz_source, beschreibung, summary_de)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 file_path.name,
                 pdf_hash,
@@ -542,6 +579,8 @@ def save_to_db(file_path: Path, result: dict) -> list[dict]:
                 result.get("adressat"),
                 result.get("konfidenz"),
                 result.get("konfidenz_source"),
+                result.get("beschreibung"),
+                result.get("summary_de"),
             )
         )
         dok_id = cur.lastrowid
@@ -1009,6 +1048,310 @@ def _sv_is_sachversicherungsdokument(result: dict) -> bool:
     return cat in ("versicherung", "finanzen_versicherung_sach")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Review-Queue — manuelle Kategorie-Bestätigung vor Vault-Ablage
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Kurz-Labels für Telegram-Buttons (max 1-2 Zeichen Emoji + Text)
+_REVIEW_CATEGORIES = [
+    ("🚗 KFZ",        "fahrzeuge"),
+    ("🏠 Immo",       "immobilien"),
+    ("🛡️ Sach",       "finanzen_versicherung_sach"),
+    ("📈 AV",         "finanzen_versicherung_altersvorsorge"),
+    ("💊 KV",         "krankenversicherung"),
+    ("💰 Finanzen",   "finanzen"),
+    ("🌍 Reisen",     "reisen"),
+    ("💼 Business",   "business"),
+    ("👨‍👩‍👧 Familie",    "familie"),
+    ("📦 Archiv",     "archiv"),
+]
+
+_REVIEW_ADRESSATEN = [
+    ("👤 Reinhard", "Reinhard"),
+    ("👩 Marion",   "Marion"),
+]
+
+
+def _insert_review_queue(pdf_path: Path, sidecar_path: Path | None,
+                         result: dict, source: str = "wilson") -> int | None:
+    """Fügt ein Dokument in die Review-Queue ein. Gibt die review_id zurück."""
+    try:
+        with get_db() as con:
+            cur = con.execute("""
+                INSERT INTO review_queue
+                    (pdf_path, sidecar_path, suggested_category, suggested_adressat,
+                     suggested_absender, rechnungsdatum, beschreibung, confidence, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                str(pdf_path),
+                str(sidecar_path) if sidecar_path else None,
+                result.get("category_id", ""),
+                result.get("adressat", ""),
+                result.get("absender", ""),
+                result.get("rechnungsdatum", ""),
+                result.get("beschreibung", ""),
+                result.get("konfidenz_category", result.get("konfidenz", "mittel")),
+                source,
+            ))
+            review_id = cur.lastrowid
+            log.info(f"Review-Queue: #{review_id} — {pdf_path.name} "
+                     f"(Kategorie: {result.get('category_id', '?')})")
+            return review_id
+    except Exception as e:
+        log.error(f"Review-Queue insert fehlgeschlagen: {e}")
+        return None
+
+
+def _build_review_keyboard(review_id: int) -> dict:
+    """Baut das Telegram-Inline-Keyboard für die Kategorie-Review."""
+    # Reihe 1: 3 Kategorie-Buttons
+    row1 = []
+    for label, cat_id in _REVIEW_CATEGORIES[:3]:
+        row1.append({"text": label, "callback_data": f"rvcat:{review_id}:{cat_id}"})
+    # Reihe 2: 3 Kategorie-Buttons
+    row2 = []
+    for label, cat_id in _REVIEW_CATEGORIES[3:6]:
+        row2.append({"text": label, "callback_data": f"rvcat:{review_id}:{cat_id}"})
+    # Reihe 3: 2 Kategorie-Buttons + Adressat
+    row3 = []
+    for label, cat_id in _REVIEW_CATEGORIES[6:8]:
+        row3.append({"text": label, "callback_data": f"rvcat:{review_id}:{cat_id}"})
+    for label, adr in _REVIEW_ADRESSATEN:
+        row3.append({"text": label, "callback_data": f"rvadr:{review_id}:{adr}"})
+    # Reihe 4: Restliche Kategorien
+    row4 = []
+    for label, cat_id in _REVIEW_CATEGORIES[8:]:
+        row4.append({"text": label, "callback_data": f"rvcat:{review_id}:{cat_id}"})
+    # Reihe 5: Aktionen
+    row5 = [
+        {"text": "✅ Bestätigen", "callback_data": f"rvok:{review_id}"},
+        {"text": "⏭️ Überspringen", "callback_data": f"rvskip:{review_id}"},
+    ]
+    return {"inline_keyboard": [row1, row2, row3, row4, row5]}
+
+
+def _build_edit_review_keyboard(review_id: int, current_cat: str, current_adr: str) -> dict:
+    """Baut das Edit-Keyboard NACH einer Kategorie-Änderung (zeigt neue Auswahl)."""
+    kb = _build_review_keyboard(review_id)
+    # Markiere aktuelle Kategorie mit ✓
+    for row in kb["inline_keyboard"]:
+        for btn in row:
+            data = btn.get("callback_data", "")
+            if data.startswith("rvcat:") and data.endswith(f":{current_cat}"):
+                btn["text"] = "✓ " + btn["text"]
+            if data.startswith("rvadr:") and data.endswith(f":{current_adr}"):
+                btn["text"] = "✓ " + btn["text"]
+    return kb
+
+
+def _send_review_telegram(pdf_path: Path, result: dict, review_id: int) -> int | None:
+    """Sendet Telegram-Review-Nachricht mit Inline-Keyboard."""
+    absender = result.get("absender", "?")
+    datum = result.get("rechnungsdatum", "?")
+    kat_id = result.get("category_id", "archiv")
+    adressat = result.get("adressat", "Reinhard")
+    beschr = result.get("beschreibung", "")
+    konfidenz = result.get("konfidenz_category", result.get("konfidenz", "mittel"))
+
+    # Normalisieren für Anzeige
+    kat_id_norm = _normalize_category_id(kat_id)
+    categories = load_categories()
+    kat_label = categories.get(kat_id_norm, {}).get("label", kat_id_norm) if categories else kat_id_norm
+
+    # Emoji für Kategorie
+    _cat_emoji = {c[1]: c[0].split()[0] for c in _REVIEW_CATEGORIES}
+    emoji = _cat_emoji.get(kat_id_norm, "📄")
+
+    lines = [
+        f"📋 <b>Neues Dokument — Review</b>",
+        f"",
+        f"📄 <b>Datei:</b> <code>{pdf_path.name}</code>",
+        f"🏢 <b>Absender:</b> {absender}",
+        f"👤 <b>Adressat:</b> {adressat}",
+        f"📅 <b>Datum:</b> {datum}",
+        f"🗂 <b>Kategorie-Vorschlag:</b> {emoji} {kat_label}",
+        f"🎯 <b>Konfidenz:</b> {konfidenz}",
+    ]
+    if beschr:
+        lines += ["", f"📝 {beschr[:300]}"]
+
+    kb = _build_review_keyboard(review_id)
+    msg_id = tg_send("\n".join(lines), reply_markup=kb)
+
+    if msg_id:
+        try:
+            with get_db() as con:
+                con.execute("UPDATE review_queue SET tg_msg_id = ? WHERE id = ?",
+                           (msg_id, review_id))
+        except Exception:
+            pass
+
+    return msg_id
+
+
+def _confirm_review(review_id: int, final_category: str, final_adressat: str) -> bool:
+    """Bestätigt eine Review: verschiebt Dokument in Vault, startet Skill-Extraktion."""
+    try:
+        with get_db() as con:
+            row = con.execute(
+                "SELECT * FROM review_queue WHERE id = ? AND status = 'pending'",
+                (review_id,)
+            ).fetchone()
+            if not row:
+                log.warning(f"Review #{review_id}: nicht gefunden oder nicht pending")
+                return False
+
+            # Update status
+            con.execute("""
+                UPDATE review_queue
+                SET status = 'confirmed', final_category = ?, final_adressat = ?,
+                    reviewed_at = datetime('now','localtime')
+                WHERE id = ?
+            """, (final_category, final_adressat, review_id))
+    except Exception as e:
+        log.error(f"Review #{review_id} confirm fehlgeschlagen: {e}")
+        return False
+
+    # Jetzt move_to_vault + Skills
+    pdf_path = Path(row["pdf_path"])
+    sidecar_path = Path(row["sidecar_path"]) if row["sidecar_path"] else None
+    absender = row["suggested_absender"] or ""
+    beschreibung = row["beschreibung"] or ""
+    rechnungsdatum = row["rechnungsdatum"] or ""
+
+    if not pdf_path.exists():
+        log.error(f"Review #{review_id}: PDF nicht gefunden: {pdf_path}")
+        return False
+
+    # Temp-MD erstellen
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stem_safe = re.sub(r"[^\w\-]", "_", pdf_path.stem)
+    temp_md = TEMP_DIR / f"{timestamp}_{stem_safe}.md"
+    temp_md.write_text(
+        f"*Review bestätigt am {datetime.now().strftime('%Y-%m-%d %H:%M')}*\n\n"
+        f"Kategorie: {final_category}\nAdressat: {final_adressat}\n\n{beschreibung}",
+        encoding="utf-8",
+    )
+
+    result = {
+        "absender":           absender,
+        "adressat":           final_adressat,
+        "rechnungsdatum":     rechnungsdatum,
+        "category_id":        final_category,
+        "category_label":     load_categories().get(final_category, {}).get("label", final_category),
+        "type_id":            None,
+        "type_label":         None,
+        "beschreibung":       beschreibung,
+        "konfidenz":          "hoch",
+        "konfidenz_category": "hoch",
+        "konfidenz_absender": "hoch",
+        "konfidenz_adressat": "hoch",
+        "konfidenz_datum":    "hoch" if rechnungsdatum else "niedrig",
+        "_wilson_bypass":     row["source"] == "wilson",
+        "_force_stem":        pdf_path.stem,
+    }
+
+    # DB speichern
+    match_infos = save_to_db(pdf_path, result)
+    save_klassifikation_historie(result.get("_dok_id"), result)
+
+    # In Vault verschieben
+    move_to_vault(pdf_path, temp_md, final_category, "", result)
+    log.info(f"Review #{review_id}: Dokument in Vault verschoben → {final_category}")
+
+    # Skill-Extraktion im Hintergrund
+    _trigger_skill_extraction(pdf_path, result)
+
+    # Sidecar löschen (falls von Wilson)
+    if sidecar_path and sidecar_path.exists():
+        try:
+            sidecar_path.unlink()
+            log.info(f"Review #{review_id}: Sidecar gelöscht: {sidecar_path.name}")
+        except Exception as e:
+            log.warning(f"Review #{review_id}: Sidecar löschen fehlgeschlagen: {e}")
+
+    # Wilson-Status-Rückkanal
+    _orig_name = f"{pdf_path.stem}.pdf"
+    _notify_wilson_completed(_orig_name)
+
+    return True
+
+
+def _skip_review(review_id: int) -> bool:
+    """Überspringt ein Review (Dokument wird nicht archiviert)."""
+    try:
+        with get_db() as con:
+            con.execute("""
+                UPDATE review_queue
+                SET status = 'skipped', reviewed_at = datetime('now','localtime')
+                WHERE id = ? AND status = 'pending'
+            """, (review_id,))
+        log.info(f"Review #{review_id}: übersprungen")
+        return True
+    except Exception as e:
+        log.error(f"Review #{review_id} skip fehlgeschlagen: {e}")
+        return False
+
+
+def _trigger_skill_extraction(pdf_path: Path, result: dict):
+    """Startet Skill-Extraktion im Hintergrund basierend auf der Kategorie."""
+    # KV-Leistungsabrechnung
+    if _kv_la_is_leistungsabrechnung(result):
+        threading.Thread(
+            target=_kv_extract_and_store,
+            args=(pdf_path, dict(result)),
+            daemon=True,
+            name=f"kv-extract-{pdf_path.stem}",
+        ).start()
+        log.info(f"Skill-Trigger: KV-Extraktion gestartet für {pdf_path.name}")
+
+    # Immobilien
+    if _immo_is_immobiliendokument(result):
+        threading.Thread(
+            target=_immo_extract_and_store,
+            args=(pdf_path, dict(result)),
+            daemon=True,
+            name=f"immo-extract-{pdf_path.stem}",
+        ).start()
+        log.info(f"Skill-Trigger: Immo-Extraktion gestartet für {pdf_path.name}")
+
+    # KFZ
+    if _kfz_is_fahrzeugdokument(result):
+        beschr = result.get("beschreibung", "")
+        threading.Thread(
+            target=_call_skill_analyze,
+            args=("kfz", pdf_path, beschr),
+            daemon=True,
+            name=f"kfz-extract-{pdf_path.stem}",
+        ).start()
+        log.info(f"Skill-Trigger: KFZ-Skill gestartet für {pdf_path.name}")
+
+    # Altersvorsorge
+    if _av_is_altersvorsorgedokument(result):
+        beschr = result.get("beschreibung", "")
+        threading.Thread(
+            target=_call_skill_analyze,
+            args=("altersvorsorge", pdf_path, beschr),
+            daemon=True,
+            name=f"av-extract-{pdf_path.stem}",
+        ).start()
+        log.info(f"Skill-Trigger: AV-Skill gestartet für {pdf_path.name}")
+
+    # Sachversicherungen
+    if _sv_is_sachversicherungsdokument(result):
+        beschr = result.get("beschreibung", "")
+        threading.Thread(
+            target=_call_skill_analyze,
+            args=("sachversicherungen", pdf_path, beschr),
+            daemon=True,
+            name=f"sv-extract-{pdf_path.stem}",
+        ).start()
+        log.info(f"Skill-Trigger: SV-Skill gestartet für {pdf_path.name}")
+
+
+# ── Ende Review-Queue ──────────────────────────────────────────────────────────
+
+
 def _update_dispatcher_after_skill(file_path: Path, skill_name: str,
                                     updates: dict) -> None:
     """Schreibt verbesserte Metadaten aus Skill-Extraktion in dispatcher.db zurück."""
@@ -1365,6 +1708,18 @@ def save_klassifikation_historie(dok_id: int | None, result: dict, korrektur: bo
 
 
 # ── Kategorien laden ───────────────────────────────────────────────────────────
+
+def _normalize_category_id(category_id: str) -> str:
+    """Normalisiert Wilson-Kategorie-IDs auf Ryzen-Standard.
+
+    Wilson verwendet z.T. andere IDs (altersvorsorge, versicherung, immobilien_eigen/vermietet).
+    Diese Funktion mapped sie transparent auf die Ryzen-IDs, die von den Skills erwartet werden.
+    Bereits korrekte Ryzen-IDs werden unverändert durchgereicht.
+    """
+    if not category_id:
+        return ""
+    return _WILSON_TO_RYZEN_CATEGORY.get(category_id, category_id)
+
 
 def load_categories() -> dict:
     global LEISTUNGSABRECHNUNG_TYPES, VERSICHERUNG_TYPES, BRANCHEN_REGELN
@@ -1728,6 +2083,39 @@ def build_type_keyboard(doc_id: int, cat_id: str) -> dict:
     return {"inline_keyboard": buttons}
 
 
+def _build_date_prefix(rechnungsdatum: str, fallback: str = "") -> str:
+    """Baut YYYYMMDD-Präfix aus DD.MM.YYYY oder YYYY-MM-DD. Fallback: erste 8 Zeichen des Stems."""
+    if rechnungsdatum and len(rechnungsdatum) >= 10:
+        if "." in rechnungsdatum:
+            parts = rechnungsdatum.split(".")
+            if len(parts) == 3:
+                return f"{parts[2]}{parts[1]}{parts[0]}"
+        elif "-" in rechnungsdatum:
+            return rechnungsdatum.replace("-", "")
+    if fallback and len(fallback) >= 8 and fallback[:8].isdigit():
+        return fallback[:8]
+    return ""
+
+
+def _strip_date_prefix(stem: str) -> str:
+    """Entfernt führendes Datums-Präfix (YYYYMMDD_ oder DDMMYYYY) vom Dateinamen-Stem.
+    Bereinigt auch .pdf-Reste im Stem (von alter vault_pfad-Logik)."""
+    # .pdf.md-Doppelendung bereinigen
+    if stem.endswith(".pdf"):
+        stem = stem[:-4]
+    # YYYYMMDD_-Präfix
+    if len(stem) >= 9 and stem[:8].isdigit() and stem[8] == '_':
+        return stem[9:]
+    # Reine Datumszahl (8stellig) ohne Absender
+    if len(stem) == 8 and stem.isdigit():
+        return ""
+    # DDMMYYYY-Format (ohne Trennzeichen, beginnt mit Tag 01-31)
+    if len(stem) >= 8 and stem[:2].isdigit() and stem[2:4].isdigit() and stem[4:8].isdigit():
+        rest = stem[8:] if len(stem) > 8 else ""
+        return rest.lstrip("_")
+    return stem
+
+
 def handle_correction(doc_id: int, new_cat: str, new_type: str) -> str:
     """Korrigiert Kategorie/Typ: DB updaten + MD im Vault verschieben."""
     cats = load_categories()
@@ -1985,6 +2373,112 @@ def tg_poll():
                             tg_edit_message(cb_chat, cb_msg_id,
                                             cb_msg.get("text", "") + "\n\n❌ Abgebrochen",
                                             reply_markup={"inline_keyboard": []})
+
+                        # ── Review-Queue Callbacks ──
+                        elif cb_data.startswith("rvcat:"):
+                            # Kategorie für Review gewählt
+                            parts = cb_data.split(":")
+                            review_id = int(parts[1])
+                            new_cat = parts[2]
+                            # Update suggested_category in DB
+                            try:
+                                with get_db() as con:
+                                    row = con.execute(
+                                        "SELECT * FROM review_queue WHERE id = ? AND status = 'pending'",
+                                        (review_id,)
+                                    ).fetchone()
+                                    if row:
+                                        current_adr = row["final_adressat"] or row["suggested_adressat"] or "Reinhard"
+                                        con.execute(
+                                            "UPDATE review_queue SET final_category = ?, final_adressat = ? WHERE id = ?",
+                                            (new_cat, current_adr, review_id)
+                                        )
+                                        cats = load_categories()
+                                        kat_label = cats.get(new_cat, {}).get("label", new_cat) if cats else new_cat
+                                        tg_answer_callback(cb_id, f"➡️ {kat_label}")
+                                        # Edit message mit aktualisiertem Keyboard
+                                        new_text = cb_msg.get("text", "")
+                                        # Alte Kategorie-Zeile ersetzen
+                                        import re as _re
+                                        new_text = _re.sub(
+                                            r'🗂 <b>Kategorie-Vorschlag:.*</b>',
+                                            f'🗂 <b>Kategorie:</b> ✏️ {kat_label}',
+                                            new_text
+                                        )
+                                        if '🗂 <b>Kategorie:</b>' not in new_text:
+                                            new_text += f'\n🗂 <b>Kategorie:</b> ✏️ {kat_label}'
+                                        tg_edit_message(
+                                            cb_chat, cb_msg_id, new_text,
+                                            reply_markup=_build_edit_review_keyboard(
+                                                review_id, new_cat, current_adr
+                                            )
+                                        )
+                            except Exception as e:
+                                log.error(f"Review rvcat Fehler: {e}")
+                                tg_answer_callback(cb_id, f"❌ {e}")
+
+                        elif cb_data.startswith("rvadr:"):
+                            # Adressat für Review gewählt
+                            parts = cb_data.split(":")
+                            review_id = int(parts[1])
+                            new_adr = parts[2]
+                            try:
+                                with get_db() as con:
+                                    row = con.execute(
+                                        "SELECT * FROM review_queue WHERE id = ? AND status = 'pending'",
+                                        (review_id,)
+                                    ).fetchone()
+                                    if row:
+                                        current_cat = row["final_category"] or row["suggested_category"] or "archiv"
+                                        con.execute(
+                                            "UPDATE review_queue SET final_adressat = ?, final_category = ? WHERE id = ?",
+                                            (new_adr, current_cat, review_id)
+                                        )
+                                        tg_answer_callback(cb_id, f"👤 {new_adr}")
+                            except Exception as e:
+                                log.error(f"Review rvadr Fehler: {e}")
+                                tg_answer_callback(cb_id, f"❌ {e}")
+
+                        elif cb_data.startswith("rvok:"):
+                            # Review bestätigen
+                            review_id = int(cb_data.split(":")[1])
+                            try:
+                                with get_db() as con:
+                                    row = con.execute(
+                                        "SELECT * FROM review_queue WHERE id = ? AND status = 'pending'",
+                                        (review_id,)
+                                    ).fetchone()
+                                if row:
+                                    final_cat = row["final_category"] or row["suggested_category"] or "archiv"
+                                    final_adr = row["final_adressat"] or row["suggested_adressat"] or "Reinhard"
+                                    tg_answer_callback(cb_id, "⏳ Verarbeite...")
+                                    success = _confirm_review(review_id, final_cat, final_adr)
+                                    if success:
+                                        tg_edit_message(
+                                            cb_chat, cb_msg_id,
+                                            cb_msg.get("text", "") + "\n\n✅ Bestätigt — in Vault verschoben",
+                                            reply_markup={"inline_keyboard": []}
+                                        )
+                                    else:
+                                        tg_edit_message(
+                                            cb_chat, cb_msg_id,
+                                            cb_msg.get("text", "") + "\n\n❌ Fehler bei Verarbeitung",
+                                            reply_markup={"inline_keyboard": []}
+                                        )
+                            except Exception as e:
+                                log.error(f"Review rvok Fehler: {e}")
+                                tg_answer_callback(cb_id, f"❌ {e}")
+
+                        elif cb_data.startswith("rvskip:"):
+                            # Review überspringen
+                            review_id = int(cb_data.split(":")[1])
+                            tg_answer_callback(cb_id, "⏭️ Übersprungen")
+                            _skip_review(review_id)
+                            tg_edit_message(
+                                cb_chat, cb_msg_id,
+                                cb_msg.get("text", "") + "\n\n⏭️ Übersprungen — nicht archiviert",
+                                reply_markup={"inline_keyboard": []}
+                            )
 
                         elif cb_data.startswith(("gkat:", "gadr:", "gabs:", "gabsneu:", "gfin:", "gedit:", "reject:", "confirm:", "correct:", "back:", "field:", "setcat:", "setadr:")):
                             # Wilson-Callbacks — an Wilson-Relay weiterleiten
@@ -2531,7 +3025,7 @@ def _collect_health() -> dict:
         services["syncthing"] = {"label": "Syncthing", "status": "error", "error": str(e)}
 
     # 4b — Syncthing Mac
-    _MAC_DEVICE_ID = "GBO2KI7-XYW4XSL-X7YH7RR-42NXUG6-3G366HT-6SWV2WG-76BD7DA-YCUO7AP"
+    _MAC_DEVICE_ID = "TUAPUPP-XYIOSLQ-KYD67EG-2QH3HZD-7XJDZPL-BF7EQPH-I2BARJZ-KYG56AU"
     try:
         hdrs = {"X-API-Key": SYNCTHING_API_KEY}
         rc = requests.get("http://syncthing:8384/rest/system/connections", headers=hdrs, timeout=4)
@@ -3090,7 +3584,7 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
 // (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
 (function(){
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -3118,6 +3612,7 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
     <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
     <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
+    <a href="/office" target="_blank" rel="noopener">📊 Office</a>
     <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
@@ -4034,7 +4529,7 @@ nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
 // (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
 (function(){
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -4623,7 +5118,7 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
 // (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
 (function(){
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -5483,7 +5978,7 @@ _VAULT_HTML = r"""<!DOCTYPE html>
 // (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
 (function(){
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -5704,7 +6199,7 @@ if False: r"""<!DOCTYPE html>
 // (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
 (function(){
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -5956,7 +6451,7 @@ button.primary:disabled{opacity:.4;cursor:not-allowed}
 // (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
 (function(){
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -6460,7 +6955,7 @@ _WILSON_HTML = r"""<!DOCTYPE html>
 // (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
 (function(){
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -7077,7 +7572,7 @@ tr:hover td{background:#f8f9ff}
 // (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
 (function(){
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -7224,7 +7719,7 @@ nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
 // (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
 (function(){
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -7250,6 +7745,7 @@ nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
     <a href="/cache" class="hl">🔍 Cache</a>
     <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
+    <a href="/office" target="_blank" rel="noopener">📊 Office</a>
     <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
@@ -7599,7 +8095,7 @@ table.items tr.item-error td.err-cell{color:var(--err)}
 // (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
 (function(){
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -7625,6 +8121,7 @@ table.items tr.item-error td.err-cell{color:var(--err)}
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
     <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
     <a href="/batch" class="hl">🧰 Batch</a>
+    <a href="/office" target="_blank" rel="noopener">📊 Office</a>
     <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
@@ -7936,6 +8433,206 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElement
 </html>
 """
 
+_OFFICE_HTML = r"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docling Workflow · Office-Konvertierung</title>
+<style>
+:root{--bg:#f4f5f7;--surface:#fff;--border:#dde1ea;--text:#1a1d2e;--muted:#6b7280;--ok:#059669;--warn:#d97706;--err:#dc2626;--accent:#4f46e5}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;min-height:100vh}
+header{border-bottom:1px solid var(--border);padding:13px 24px;display:flex;align-items:center;gap:10px;background:var(--surface);flex-wrap:wrap}
+header h1{font-size:16px;font-weight:700;color:var(--accent);white-space:nowrap;margin-right:4px}
+nav a{font-size:12px;padding:4px 12px;border:1px solid var(--border);border-radius:7px;color:var(--text);text-decoration:none;font-weight:600;white-space:nowrap;transition:all .15s;margin-right:5px}
+nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
+.ts{font-size:11px;color:var(--muted);margin-left:auto}
+.intro{max-width:1100px;margin:24px auto 0;padding:20px 24px;background:var(--surface);border:1px solid var(--border);border-radius:10px}
+.intro h2{font-size:16px;margin-bottom:8px;color:var(--accent)}
+.intro p,.intro ul{margin-bottom:10px;line-height:1.6;max-width:48rem}
+main{max-width:1100px;margin:20px auto;padding:0 24px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 22px;margin-bottom:18px}
+.card h3{font-size:14px;margin-bottom:10px;color:var(--accent)}
+.btn{padding:8px 20px;border:1px solid var(--accent);border-radius:7px;background:var(--accent);color:#fff;font-weight:600;font-size:13px;cursor:pointer;transition:all .15s}
+.btn:hover{opacity:.85}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-outline{padding:8px 20px;border:1px solid var(--border);border-radius:7px;background:transparent;color:var(--text);font-weight:600;font-size:13px;cursor:pointer;margin-left:8px}
+table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}
+th,td{padding:7px 12px;text-align:left;border-bottom:1px solid var(--border)}
+th{font-weight:600;color:var(--muted);font-size:11px;text-transform:uppercase}
+.badge{font-size:11px;padding:2px 8px;border-radius:4px;font-weight:600}
+.badge-ok{background:#dcfce7;color:var(--ok)}
+.badge-warn{background:#fef3c7;color:var(--warn)}
+.badge-err{background:#fee2e2;color:var(--err)}
+.badge-info{background:#e0e7ff;color:var(--accent)}
+.progress-bar{width:100%;height:8px;background:var(--border);border-radius:4px;margin-top:8px;overflow:hidden}
+.progress-fill{height:100%;background:var(--accent);border-radius:4px;transition:width 0.5s}
+.stats{display:flex;gap:18px;flex-wrap:wrap}
+.stat{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 18px;flex:1;min-width:100px;text-align:center}
+.stat .num{font-size:24px;font-weight:700;color:var(--accent)}
+.stat .label{font-size:11px;color:var(--muted);margin-top:4px}
+</style>
+</head>
+<body>
+<header>
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>
+  <h1>Docling Workflow</h1>
+  <nav>
+    <a href="/pipeline" target="_blank" rel="noopener">⚡ Pipeline</a>
+    <a href="/review" target="_blank" rel="noopener">📋 Review</a>
+    <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
+    <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
+    <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
+    <a href="/office" class="hl">📊 Office</a>
+    <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
+    <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
+    <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
+    <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
+    <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
+    <a href="/db" target="_blank" rel="noopener">🗄️ DB</a>
+  </nav>
+  <span class="ts" id="ts">Laden…</span>
+</header>
+
+<div class="intro">
+  <h2>📊 MS Office → PDF Konvertierung</h2>
+  <p>Konvertiert <b>.pptx</b>, <b>.docx</b> und <b>.xlsx</b> Dateien via <b>LibreOffice</b> nach PDF.
+     Die PDFs werden anschliessend durch den <b>Docling-Dispatcher</b> verarbeitet:
+     OCR → Klassifikation → Zusammenfassung → Vault-Ablage.</p>
+  <ul>
+    <li><b>PDF-Skip:</b> Dateien mit gleichnamigem PDF werden uebersprungen</li>
+    <li><b>Batch:</b> Alle Dateien im Input-Ordner auf einmal verarbeiten</li>
+    <li><b>Einzeln:</b> Einzelne Datei via Upload konvertieren</li>
+  </ul>
+</div>
+
+<main>
+  <!-- Stats -->
+  <div class="stats" id="stats-row">
+    <div class="stat"><div class="num" id="stat-total">–</div><div class="label">Gefunden</div></div>
+    <div class="stat"><div class="num" id="stat-converted">–</div><div class="label">Konvertiert</div></div>
+    <div class="stat"><div class="num" id="stat-skipped">–</div><div class="label">Übersprungen</div></div>
+    <div class="stat"><div class="num" id="stat-errors">–</div><div class="label">Fehler</div></div>
+  </div>
+
+  <!-- Aktionen -->
+  <div class="card">
+    <h3>🔍 Scan & Konvertierung</h3>
+    <button class="btn" id="btn-scan" onclick="doScan()">📋 Office-Dateien scannen</button>
+    <button class="btn-outline" id="btn-start" onclick="doStart()" disabled>▶ Batch starten</button>
+    <label style="margin-left:12px;font-size:13px;color:var(--muted)">
+      <input type="checkbox" id="chk-skip" checked> PDFs überspringen
+    </label>
+    <div id="scan-info" style="margin-top:12px;font-size:13px;color:var(--muted)"></div>
+    <div class="progress-bar" id="progress-bar" style="display:none"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+  </div>
+
+  <!-- Ergebnis-Tabelle -->
+  <div class="card" id="results-card" style="display:none">
+    <h3>📋 Ergebnisse</h3>
+    <div style="overflow-x:auto">
+    <table id="results-table">
+      <thead><tr><th>Datei</th><th>Typ</th><th>Größe</th><th>Status</th><th>PDF</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    </div>
+  </div>
+</main>
+
+<script>
+const OFFICE_API = '/api/office';
+let scanData = null, pollTimer = null;
+
+function ts() {
+  document.getElementById('ts').textContent = new Date().toLocaleTimeString('de-DE');
+}
+setInterval(ts, 10000); ts();
+
+async function api(method, path, body) {
+  try {
+    let opts = {method};
+    if (body) { opts.headers = {'Content-Type':'application/json'}; opts.body = JSON.stringify(body); }
+    let r = await fetch(path, opts);
+    return await r.json();
+  } catch(e) { return {error: e.message}; }
+}
+
+async function doScan() {
+  document.getElementById('btn-scan').disabled = true;
+  document.getElementById('btn-scan').textContent = '⏳ Scanne…';
+  let result = await api('GET', OFFICE_API + '/scan');
+  scanData = result;
+  document.getElementById('btn-scan').disabled = false;
+  document.getElementById('btn-scan').textContent = '📋 Office-Dateien scannen';
+  document.getElementById('btn-start').disabled = (result.total === 0);
+  updateStats(result);
+  renderFiles(result.files || []);
+  document.getElementById('scan-info').textContent =
+    `${result.total} Dateien, ${result.mit_pdf} mit PDF, ${result.ohne_pdf} zu konvertieren`;
+}
+
+function updateStats(d) {
+  document.getElementById('stat-total').textContent = d.total || 0;
+  document.getElementById('stat-converted').textContent = d.converted || 0;
+  document.getElementById('stat-skipped').textContent = d.skipped || 0;
+  document.getElementById('stat-errors').textContent = d.errors || 0;
+}
+
+function renderFiles(files) {
+  let card = document.getElementById('results-card');
+  let tbody = document.getElementById('results-table').querySelector('tbody');
+  if (!files.length) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  tbody.innerHTML = files.map(f => {
+    let statusHtml, badgeClass;
+    if (f.status === 'converted') { statusHtml = '✅ Konvertiert'; badgeClass = 'badge-ok'; }
+    else if (f.status === 'skipped') { statusHtml = '⏭️ Übersprungen'; badgeClass = 'badge-warn'; }
+    else if (f.status === 'error') { statusHtml = '❌ Fehler'; badgeClass = 'badge-err'; }
+    else { statusHtml = '⏳ Ausstehend'; badgeClass = 'badge-info'; }
+    let pdfLink = f.pdf ? `<a href="/api/vault-file?path=${encodeURIComponent(f.pdf_path||'')}" target="_blank">📄 ${f.pdf}</a>` : '–';
+    return `<tr>
+      <td>${f.file}</td><td>${f.typ}</td><td>${(f.groesse/1024).toFixed(1)} KB</td>
+      <td><span class="badge ${badgeClass}">${statusHtml}</span></td>
+      <td>${pdfLink}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function doStart() {
+  document.getElementById('btn-start').disabled = true;
+  document.getElementById('btn-start').textContent = '⏳ Läuft…';
+  document.getElementById('progress-bar').style.display = '';
+  let skip = document.getElementById('chk-skip').checked;
+  await api('POST', OFFICE_API + '/start', {skip_existing: skip});
+  startPolling();
+}
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    let s = await api('GET', OFFICE_API + '/status');
+    updateStats(s);
+    let total = s.results ? s.results.length : (s.total || 1);
+    let done = (s.converted||0) + (s.skipped||0) + (s.errors||0);
+    let pct = total > 0 ? Math.round(done/total*100) : 0;
+    document.getElementById('progress-fill').style.width = pct + '%';
+    if (s.status === 'running' && s.results) renderFiles(s.results);
+    if (s.status === 'completed' || s.status === 'error') {
+      if (s.results) renderFiles(s.results);
+      clearInterval(pollTimer); pollTimer = null;
+      document.getElementById('btn-start').disabled = false;
+      document.getElementById('btn-start').textContent = '▶ Batch starten';
+      document.getElementById('scan-info').textContent =
+        `Fertig: ${s.converted||0} konvertiert, ${s.skipped||0} uebersprungen, ${s.errors||0} Fehler`;
+    }
+  }, 2000);
+}
+</script>
+</body>
+</html>
+"""
+
 _DUPLIKATE_HTML = r"""<!DOCTYPE html>
 <html lang="de">
 <head>
@@ -8004,7 +8701,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
 // (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
 (function(){
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -8030,6 +8727,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
     <a href="/vault">📁 Vault</a>
     <a href="/cache">🔍 Cache</a>
     <a href="/batch">🧰 Batch</a>
+    <a href="/office">📊 Office</a>
     <a href="/enex">🐘 ENEX</a>
     <a href="/wilson">🥧 Wilson</a>
     <a href="/adressbuch">📇 Adressbuch</a>
@@ -8400,7 +9098,7 @@ pre{background:#0f1117;border:1px solid var(--border);border-radius:6px;padding:
 // (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
 (function(){
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -8426,6 +9124,7 @@ pre{background:#0f1117;border:1px solid var(--border);border-radius:6px;padding:
     <a href="/vault">📁 Vault</a>
     <a href="/cache">🔍 Cache</a>
     <a href="/batch">🧰 Batch</a>
+    <a href="/office">📊 Office</a>
     <a href="/enex">🐘 ENEX</a>
     <a href="/wilson">🥧 Wilson</a>
     <a href="/adressbuch">📇 Adressbuch</a>
@@ -8665,6 +9364,19 @@ table.docs tr:hover td{background:#fafbfc}
 .pdf-link:hover{text-decoration:underline}
 .empty{color:var(--muted);font-size:12px;text-align:center;padding:28px}
 .hint{font-size:11px;color:var(--muted);padding:10px 18px}
+
+/* Inline-Edit Controls */
+.editable-cat, .editable-date { cursor:pointer; border-radius:3px; padding:2px 4px; transition:background .15s; }
+.editable-cat:hover, .editable-date:hover { background:#eef2ff; outline:1px dashed var(--accent); }
+.cat-select { font-size:12px; padding:4px 6px; border:2px solid var(--accent); border-radius:5px; background:#fff; color:var(--text); max-width:180px; }
+.date-input { font-size:12px; padding:4px 6px; border:2px solid var(--accent); border-radius:5px; width:130px; }
+.btn-inline-save { font-size:12px; padding:4px 10px; margin-left:4px; background:var(--ok); color:#fff; border:none; border-radius:5px; cursor:pointer; font-weight:700; }
+.btn-inline-save:hover { opacity:.85; }
+.btn-inline-cancel { font-size:12px; padding:4px 8px; margin-left:2px; background:#fff; color:var(--muted); border:1px solid var(--border); border-radius:5px; cursor:pointer; }
+.btn-inline-cancel:hover { color:var(--err); border-color:var(--err); }
+.btn-detail { font-size:11px; padding:2px 8px; background:var(--bg); color:var(--muted); border:1px solid var(--border); border-radius:4px; cursor:pointer; }
+.btn-detail:hover { background:var(--accent); color:#fff; border-color:var(--accent); }
+.detail-pre { font-size:11px; background:#f8f9fb; padding:8px; border-radius:6px; max-height:200px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
 </style>
 <script>
 // ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
@@ -8672,7 +9384,7 @@ table.docs tr:hover td{background:#fafbfc}
 // (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
 (function(){
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -8699,6 +9411,7 @@ table.docs tr:hover td{background:#fafbfc}
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
     <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
     <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
+    <a href="/office" target="_blank" rel="noopener">📊 Office</a>
     <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
@@ -8837,19 +9550,26 @@ async function loadDocs(){
       const date = (d.rechnungsdatum||'–').slice(0,10);
       const ts   = (d.erstellt_am||'–').slice(0,16).replace('T',' ');
       const fname = esc((d.pdf_name||d.dateiname||'–').slice(0,55));
-      const kat_s = d.kategorie ? `<span class="cat-tag" onclick="filterKat('${esc(d.kategorie)}')">${esc(d.kategorie)}</span>` : '<span style="color:var(--muted)">–</span>';
+      const kat_id = d.kategorie || '';
+      const kat_s = kat_id
+        ? `<span class="cat-tag editable-cat" onclick="editCategory(event,${d.id},'${esc(kat_id)}')" title="Klick: Kategorie ändern">${esc(kat_id)}</span>`
+        : `<span class="editable-cat" onclick="editCategory(event,${d.id},'')" title="Klick: Kategorie setzen" style="color:var(--muted);cursor:pointer">–</span>`;
+      const dateCell = d.rechnungsdatum
+        ? `<span class="editable-date" onclick="editDate(event,${d.id},'${esc(d.rechnungsdatum||'')}')" title="Klick: Datum ändern">${date}</span>`
+        : '<span style="color:var(--muted);cursor:pointer" onclick="editDate(event,'+d.id+',\'\')" title="Datum setzen">–</span>';
       const pdfLink = d.vault_pfad
-        ? `<a class="pdf-link" href="/api/vault-pdf?md=${encodeURIComponent(d.vault_pfad)}" target="_blank" rel="noopener">PDF</a>`
+        ? `<a class="pdf-link" href="/api/vault-pdf?md=${encodeURIComponent(d.vault_pfad)}" target="_blank" rel="noopener">📄</a>`
         : '–';
+      const detailBtn = `<button class="btn-detail" onclick='showDetail(${JSON.stringify(d).replace(/'/g,"&#39;")})' title="Details als JSON">🔍</button>`;
       return `<tr>
-        <td style="white-space:nowrap;color:var(--muted);font-size:12px">${date}</td>
+        <td style="white-space:nowrap;color:var(--muted);font-size:12px">${dateCell}</td>
         <td class="truncate" title="${esc(d.dateiname||'')}">${fname}</td>
         <td>${kat_s}</td>
-        <td class="truncate">${esc((d.absender||'–').slice(0,40))}</td>
+        <td class="truncate"><span class="editable-cat" onclick="editAbsender(event,${d.id},'${esc(d.absender||'')}')" title="Klick: Absender ändern" style="cursor:pointer">${esc((d.absender||'–').slice(0,40))}</span></td>
         <td style="font-size:12px">${esc(d.adressat||'–')}</td>
         <td>${kb}</td>
         <td style="font-size:11px;color:var(--muted);white-space:nowrap">${ts}</td>
-        <td>${pdfLink}</td>
+        <td style="white-space:nowrap">${pdfLink} ${detailBtn}</td>
       </tr>`;
     }).join('') || `<tr><td colspan="8" class="empty">Keine Dokumente gefunden.</td></tr>`;
   }catch(e){
@@ -8863,8 +9583,147 @@ function resetFilter(){
   loadDocs();
 }
 
+// ── Inline-Edit: Kategorie & Datum ──
+let _catOptions = null;
+async function editCategory(ev, docId, currentKat) {
+  ev.stopPropagation();
+  const cell = ev.target.closest('td');
+  if (!cell) return;
+  if (!_catOptions) {
+    try {
+      const r = await fetch('/api/categories');
+      _catOptions = await r.json();
+    } catch(e) { return; }
+  }
+  const sel = document.createElement('select');
+  sel.style.cssText = 'font-size:12px;padding:3px 5px;border:2px solid var(--accent);border-radius:5px;background:#fff;max-width:160px';
+  Object.entries(_catOptions).sort((a,b)=>a[1].label.localeCompare(b[1].label,'de')).forEach(([id,c])=>{
+    const o = document.createElement('option');
+    o.value = id; o.textContent = c.label;
+    if (id === currentKat) o.selected = true;
+    sel.appendChild(o);
+  });
+  const save = document.createElement('button');
+  save.style.cssText = 'font-size:11px;padding:3px 8px;margin-left:4px;background:var(--ok);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:700';
+  save.textContent = '✓';
+  const cancel = document.createElement('button');
+  cancel.style.cssText = 'font-size:11px;padding:3px 6px;margin-left:2px;background:#fff;color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer';
+  cancel.textContent = '✕';
+  cancel.onclick = () => loadDocs();
+  save.onclick = async () => {
+    const newKat = sel.value;
+    try {
+      const r = await fetch('/api/pipeline/update', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({doc_id: docId, kategorie: newKat})
+      });
+      if (r.ok) loadDocs(); else alert('Fehler');
+    } catch(e) { alert('Fehler: '+e); }
+  };
+  cell.textContent = '';
+  cell.appendChild(sel);
+  cell.appendChild(save);
+  cell.appendChild(cancel);
+}
+
+async function editAbsender(ev, docId, currentVal) {
+  ev.stopPropagation();
+  const cell = ev.target.closest('td');
+  if (!cell) return;
+  const inp = document.createElement('input');
+  inp.type = 'text'; inp.value = currentVal;
+  inp.style.cssText = 'font-size:12px;padding:3px 5px;border:2px solid var(--accent);border-radius:5px;width:180px';
+  inp.setAttribute('list', 'sender-list-' + docId);
+  const datalist = document.createElement('datalist');
+  datalist.id = 'sender-list-' + docId;
+  inp.addEventListener('input', async () => {
+    const q = inp.value.trim();
+    if (q.length < 1) return;
+    try {
+      const r = await fetch('/api/senders?q=' + encodeURIComponent(q));
+      const d = await r.json();
+      datalist.innerHTML = (d.senders||[]).map(s => '<option value="'+esc(s)+'">').join('');
+    } catch(e) {}
+  });
+  // Initial load
+  try {
+    const r = await fetch('/api/senders');
+    const d = await r.json();
+    datalist.innerHTML = (d.senders||[]).slice(0,100).map(s => '<option value="'+esc(s)+'">').join('');
+  } catch(e) {}
+  const save = document.createElement('button');
+  save.style.cssText = 'font-size:11px;padding:3px 8px;margin-left:4px;background:var(--ok);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:700';
+  save.textContent = '✓';
+  const cancel = document.createElement('button');
+  cancel.style.cssText = 'font-size:11px;padding:3px 6px;margin-left:2px;background:#fff;color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer';
+  cancel.textContent = '✕';
+  cancel.onclick = () => loadDocs();
+  save.onclick = async () => {
+    const val = inp.value.trim();
+    try {
+      const r = await fetch('/api/pipeline/update', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({doc_id: docId, absender: val})
+      });
+      if (r.ok) loadDocs(); else alert('Fehler');
+    } catch(e) { alert('Fehler: '+e); }
+  };
+  cell.textContent = '';
+  cell.appendChild(inp);
+  cell.appendChild(datalist);
+  cell.appendChild(save);
+  cell.appendChild(cancel);
+  inp.focus();
+}
+
+async function editDate(ev, docId, currentDate) {
+  ev.stopPropagation();
+  const cell = ev.target.closest('td');
+  if (!cell) return;
+  const inp = document.createElement('input');
+  inp.type = 'date';
+  inp.style.cssText = 'font-size:12px;padding:3px 5px;border:2px solid var(--accent);border-radius:5px;width:130px';
+  if (currentDate && currentDate.length >= 10 && currentDate.includes('.')) {
+    const parts = currentDate.split('.');
+    if (parts.length === 3) inp.value = parts[2]+'-'+parts[1]+'-'+parts[0];
+  }
+  const save = document.createElement('button');
+  save.className = 'btn-inline-save'; save.textContent = '✓';
+  const cancel = document.createElement('button');
+  cancel.className = 'btn-inline-cancel'; cancel.textContent = '✕';
+  cancel.onclick = () => loadDocs();
+  save.onclick = async () => {
+    const d = inp.value; // YYYY-MM-DD
+    const dd = d ? d.split('-')[2]+'.'+d.split('-')[1]+'.'+d.split('-')[0] : '';
+    try {
+      const r = await fetch('/api/pipeline/update', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({doc_id: docId, rechnungsdatum: dd})
+      });
+      if (r.ok) loadDocs(); else alert('Fehler');
+    } catch(e) { alert('Fehler: '+e); }
+  };
+  cell.textContent = '';
+  cell.appendChild(inp);
+  cell.appendChild(save);
+  cell.appendChild(cancel);
+  cell.classList.remove('editable-date');
+}
+
 function openHelp(){document.getElementById('help-overlay').classList.add('open')}
 function closeHelp(){document.getElementById('help-overlay').classList.remove('open')}
+
+// ── Detail-Modal für JSON-Infos ──
+function showDetail(doc) {
+  const overlay = document.getElementById('detail-overlay');
+  const pre = document.getElementById('detail-json');
+  pre.textContent = JSON.stringify(doc, null, 2);
+  overlay.classList.add('open');
+}
+function closeDetail(e) {
+  if (e && e.target !== document.getElementById('detail-overlay')) return;
+  document.getElementById('detail-overlay').classList.remove('open');
+}
 
 loadStats();
 loadCategories();
@@ -8887,6 +9746,17 @@ loadDocs();
 document.getElementById('help-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeHelp()})
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('help-overlay').classList.contains('open'))closeHelp()})
 </script>
+
+<div id="detail-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;align-items:center;justify-content:center" onclick="closeDetail(event)">
+  <div style="background:var(--surface);border-radius:10px;padding:20px;max-width:620px;width:90%;max-height:80vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+  document.getElementById('detail-overlay').addEventListener('click',closeDetail)
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail()})
+    <h3 style="margin:0 0 10px 0;font-size:14px">📋 Dokument-Details</h3>
+    <pre id="detail-json" class="detail-pre"></pre>
+    <button onclick="closeDetail()" style="margin-top:10px;padding:6px 16px;border:1px solid var(--border);border-radius:6px;background:var(--bg);cursor:pointer;font-size:12px">Schließen</button>
+  </div>
+</div>
+<style>#detail-overlay.open{display:flex!important}</style>
 </body>
 </html>
 """
@@ -9017,7 +9887,7 @@ _ENEX_HTML = r"""<!DOCTYPE html>
 // (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
 (function(){
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -9458,7 +10328,7 @@ _BACKUP_HTML = r"""<!DOCTYPE html>
 // (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
 (function(){
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -9566,6 +10436,250 @@ setInterval(load, 30000);
 </html>
 """
 
+_REVIEW_HTML = r"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Review-Queue — Dispatcher</title>
+<style>
+:root { --bg:#0f1117; --card:#1a1d27; --accent:#6c9bf5; --muted:#6b7280;
+  --err:#f87171; --ok:#4ade80; --warn:#fbbf24; --border:#2d3140; --text:#e5e7eb; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font:14px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--text);
+  padding:20px; max-width:1400px; margin:0 auto; }
+h1 { font-size:1.5rem; margin-bottom:4px; }
+.sub { color:var(--muted); font-size:12px; margin-bottom:20px; }
+.filters { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+.filters button, .filters select { padding:6px 14px; border:1px solid var(--border);
+  border-radius:6px; background:var(--card); color:var(--text); cursor:pointer;
+  font-size:13px; }
+.filters button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+table { width:100%; border-collapse:collapse; }
+th { text-align:left; padding:8px 10px; font-size:11px; text-transform:uppercase;
+  color:var(--muted); border-bottom:1px solid var(--border); position:sticky; top:0;
+  background:var(--bg); }
+td { padding:8px 10px; border-bottom:1px solid var(--border); font-size:13px;
+  vertical-align:top; }
+tr:hover td { background:rgba(108,155,245,0.04); }
+.cat-tag { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px;
+  font-weight:600; }
+.cat-kfz { background:rgba(74,222,128,0.15); color:#4ade80; }
+.cat-immo { background:rgba(251,191,36,0.15); color:#fbbf24; }
+.cat-sv { background:rgba(167,139,250,0.15); color:#a78bfa; }
+.cat-av { background:rgba(56,189,248,0.15); color:#38bdf8; }
+.cat-kv { background:rgba(244,114,182,0.15); color:#f472b6; }
+.cat-fin { background:rgba(251,146,60,0.15); color:#fb923c; }
+.cat-other { background:rgba(107,114,128,0.15); color:#9ca3af; }
+.btn { padding:4px 10px; border:1px solid var(--border); border-radius:4px;
+  background:var(--card); color:var(--text); cursor:pointer; font-size:12px; }
+.btn:hover { background:var(--accent); color:#fff; border-color:var(--accent); }
+.btn-confirm { border-color:var(--ok); color:var(--ok); }
+.btn-confirm:hover { background:var(--ok); color:#000; }
+.btn-skip { border-color:var(--err); color:var(--err); }
+.btn-skip:hover { background:var(--err); color:#000; }
+.modal { display:none; position:fixed; top:0;left:0;right:0;bottom:0;
+  background:rgba(0,0,0,0.7); z-index:100; align-items:center;justify-content:center; }
+.modal.open { display:flex; }
+.modal-box { background:var(--card); border-radius:8px; padding:24px; max-width:500px;
+  width:90%; max-height:80vh; overflow-y:auto; }
+.modal-box h2 { font-size:1.1rem; margin-bottom:12px; }
+.cat-grid { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
+.cat-grid button { padding:8px 14px; border:1px solid var(--border); border-radius:6px;
+  background:var(--bg); color:var(--text); cursor:pointer; font-size:13px; }
+.cat-grid button:hover, .cat-grid button.sel { background:var(--accent);color:#fff;
+  border-color:var(--accent); }
+.empty { text-align:center; padding:60px 20px; color:var(--muted); }
+</style>
+</head>
+<body>
+<h1>📋 Review-Queue</h1>
+<div class="sub">Dokumente warten auf manuelle Kategorie-Bestätigung</div>
+
+<div class="filters">
+  <button class="active" onclick="setFilter('pending')">⏳ Ausstehend</button>
+  <button onclick="setFilter('confirmed')">✅ Bestätigt</button>
+  <button onclick="setFilter('skipped')">⏭️ Übersprungen</button>
+  <button onclick="setFilter('all')">📋 Alle</button>
+  <span style="flex:1"></span>
+  <button onclick="load()">🔄 Aktualisieren</button>
+</div>
+
+<div id="content">
+  <div class="empty">Lade…</div>
+</div>
+
+<!-- Detail-Modal -->
+<div class="modal" id="modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal-box" id="modal-body"></div>
+</div>
+
+<script>
+let currentFilter = 'pending';
+let reviews = [];
+
+async function load() {
+  document.getElementById('content').innerHTML = '<div class="empty">Lade…</div>';
+  try {
+    const r = await fetch('/api/review/list?status=' + currentFilter + '&limit=200');
+    const d = await r.json();
+    reviews = d.reviews || [];
+    render();
+  } catch(e) {
+    document.getElementById('content').innerHTML =
+      '<div class="empty" style="color:var(--err)">Fehler: ' + e + '</div>';
+  }
+}
+
+function setFilter(f) {
+  currentFilter = f;
+  document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
+  document.querySelector('.filters button:nth-child(' +
+    (f==='pending'?1:f==='confirmed'?2:f==='skipped'?3:4) + ')').classList.add('active');
+  load();
+}
+
+function catClass(catId) {
+  if (!catId) return 'cat-other';
+  if (catId.includes('fahrzeug')) return 'cat-kfz';
+  if (catId.includes('immobil')) return 'cat-immo';
+  if (catId.includes('sach') || catId === 'versicherung') return 'cat-sv';
+  if (catId.includes('alter')) return 'cat-av';
+  if (catId.includes('kranken')) return 'cat-kv';
+  if (catId === 'finanzen') return 'cat-fin';
+  return 'cat-other';
+}
+
+function render() {
+  if (!reviews.length) {
+    document.getElementById('content').innerHTML =
+      '<div class="empty">✨ Keine Einträge für „' + currentFilter + '".</div>';
+    return;
+  }
+  let html = '<table><thead><tr>' +
+    '<th>ID</th><th>PDF</th><th>Absender</th><th>Vorschlag</th>' +
+    '<th>Datum</th><th>Quelle</th><th>Konfidenz</th>' +
+    (currentFilter !== 'pending' ? '<th>Final</th><th>Review am</th>' : '') +
+    '<th>Aktion</th></tr></thead><tbody>';
+  reviews.forEach(r => {
+    const catId = r.final_category || r.suggested_category || '';
+    html += '<tr>' +
+      '<td>' + r.id + '</td>' +
+      '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+        '<a href="/api/review-pdf/' + r.id + '" target="_blank" title="' + esc(r.pdf_name) + '" ' +
+        'style="color:var(--accent);text-decoration:none;font-weight:500">' +
+        esc(r.pdf_name) + '</a></td>' +
+      '<td>' + esc(r.suggested_absender || '—') + '</td>' +
+      '<td><span class="cat-tag ' + catClass(catId) + '">' +
+        esc(r.category_label || catId || '—') + '</span></td>' +
+      '<td style="white-space:nowrap">' + esc(r.rechnungsdatum || '—') + '</td>' +
+      '<td>' + esc(r.source || '—') + '</td>' +
+      '<td>' + esc(r.confidence || '—') + '</td>';
+    if (currentFilter !== 'pending') {
+      html += '<td>' + esc(r.final_category || '—') + '</td>' +
+        '<td style="font-size:11px;color:var(--muted)">' + esc(r.reviewed_at || '—') + '</td>';
+    }
+    html += '<td style="white-space:nowrap">';
+    if (r.status === 'pending') {
+      html += '<button class="btn btn-confirm" onclick="confirmReview(' + r.id + ')">✅</button> ' +
+        '<button class="btn" onclick="openChangeCat(' + r.id + ')">✏️</button> ' +
+        '<button class="btn btn-skip" onclick="skipReview(' + r.id + ')">⏭️</button>';
+    } else {
+      html += '<span style="font-size:11px;color:var(--muted)">' +
+        (r.status === 'confirmed' ? '✅ bestätigt' : '⏭️ skipped') + '</span>';
+    }
+    html += '</td></tr>';
+  });
+  html += '</tbody></table>';
+  document.getElementById('content').innerHTML = html;
+}
+
+async function confirmReview(id) {
+  try {
+    const r = await fetch('/api/review/confirm', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({review_id: id})
+    });
+    const d = await r.json();
+    if (r.ok) load(); else alert('Fehler: ' + (d.error || ''));
+  } catch(e) { alert('Fehler: ' + e); }
+}
+
+async function skipReview(id) {
+  if (!confirm('Review #' + id + ' wirklich überspringen?')) return;
+  try {
+    const r = await fetch('/api/review/skip', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({review_id: id})
+    });
+    if (r.ok) load(); else alert('Fehler');
+  } catch(e) { alert('Fehler: ' + e); }
+}
+
+const ALL_CATS = [
+  ['🚗 KFZ', 'fahrzeuge'], ['🏠 Immobilien', 'immobilien'],
+  ['🛡️ Sachvers.', 'finanzen_versicherung_sach'],
+  ['📈 Altersvors.', 'finanzen_versicherung_altersvorsorge'],
+  ['💊 Krankenvers.', 'krankenversicherung'], ['💰 Finanzen', 'finanzen'],
+  ['🌍 Reisen', 'reisen'], ['💼 Business', 'business'],
+  ['👨‍👩‍👧 Familie', 'familie'], ['📦 Archiv', 'archiv']
+];
+
+function openChangeCat(id) {
+  const rev = reviews.find(r => r.id === id);
+  if (!rev) return;
+  const curCat = rev.final_category || rev.suggested_category || '';
+  let html = '<h2>Kategorie ändern — Review #' + id + '</h2>';
+  html += '<p style="color:var(--muted);margin-bottom:12px">' +
+    esc(rev.pdf_name) + '</p>';
+  html += '<div class="cat-grid">';
+  ALL_CATS.forEach(([label, catId]) => {
+    html += '<button class="' + (catId===curCat?'sel':'') +
+      '" onclick="changeCat(' + id + ',\'' + catId + '\')">' + label + '</button>';
+  });
+  html += '</div>';
+  html += '<p style="margin-top:8px"><button class="btn btn-confirm" ' +
+    'onclick="confirmWithCat(' + id + ')">✅ Mit gewählter Kategorie bestätigen</button></p>';
+  html += '<p><button class="btn" onclick="closeModal()">Abbrechen</button></p>';
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('modal').classList.add('open');
+}
+
+let _pendingCat = null;
+function changeCat(id, catId) {
+  _pendingCat = catId;
+  document.querySelectorAll('.cat-grid button').forEach(b => b.classList.remove('sel'));
+  document.querySelector('.cat-grid button[onclick*="' + catId + '"]')?.classList.add('sel');
+}
+
+async function confirmWithCat(id) {
+  if (!_pendingCat) { alert('Bitte Kategorie wählen'); return; }
+  try {
+    const r = await fetch('/api/review/confirm', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({review_id: id, final_category: _pendingCat})
+    });
+    const d = await r.json();
+    if (r.ok) { closeModal(); load(); }
+    else alert('Fehler: ' + (d.error || ''));
+  } catch(e) { alert('Fehler: ' + e); }
+}
+
+function closeModal() { document.getElementById('modal').classList.remove('open'); _pendingCat = null; }
+
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>
+"""
+
 class _ApiHandler(BaseHTTPRequestHandler):
 
     def _json_response(self, data, status=200):
@@ -9590,6 +10704,19 @@ class _ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    @staticmethod
+    def _proxy_to_office_converter(method: str, path: str, data: dict | None = None) -> dict:
+        """Proxy-Helfer: Leitet API-Calls an den office-converter weiter."""
+        url = os.environ.get("OFFICE_CONVERTER_URL", "http://office-converter:8502") + path
+        try:
+            if method == "GET":
+                r = requests.get(url, timeout=10)
+            else:
+                r = requests.post(url, json=data or {}, timeout=10)
+            r.raise_for_status()
+            return r.json() if r.text else {}
+        except Exception as e:
+            return {"error": str(e)}
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -9759,7 +10886,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
 // ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
 (function(){{
   const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/') {{
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {{
     const _fetch = window.fetch;
     window.fetch = function(url, opts) {{
       if (typeof url === 'string' && url.startsWith('/')) url = p + url;
@@ -10235,6 +11362,26 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 }
             self._json_response(result)
 
+        # GET /api/senders — alle Absender (für Autovervollständigung)
+        elif path == "/api/senders":
+            q = params.get("q", [""])[0].strip().lower()
+            try:
+                with get_db() as con:
+                    if q:
+                        rows = con.execute(
+                            "SELECT DISTINCT absender FROM dokumente WHERE absender IS NOT NULL AND absender != '' AND LOWER(absender) LIKE ? ORDER BY absender LIMIT 50",
+                            (f"{q}%",)
+                        ).fetchall()
+                    else:
+                        rows = con.execute(
+                            "SELECT DISTINCT absender FROM dokumente WHERE absender IS NOT NULL AND absender != '' ORDER BY absender LIMIT 200"
+                        ).fetchall()
+                senders = [r["absender"] for r in rows]
+                self._json_response({"senders": senders, "count": len(senders)})
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+
         # GET /api/recent — letzte Dokumente (mit optionalen Filtern)
         elif path == "/api/recent":
             limit  = int(params.get("limit",  [50])[0])
@@ -10264,7 +11411,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 where.append("rechnungsdatum <= ?"); args.append(bis)
 
             sql = ("SELECT id, dateiname, rechnungsdatum, kategorie, typ, "
-                   "absender, adressat, konfidenz, vault_pfad, anlagen_dateiname, erstellt_am "
+                   "absender, adressat, konfidenz, vault_pfad, anlagen_dateiname, erstellt_am, "
+                   "beschreibung, summary_de "
                    "FROM dokumente")
             if where:
                 sql += " WHERE " + " AND ".join(where)
@@ -10321,6 +11469,83 @@ class _ApiHandler(BaseHTTPRequestHandler):
                     (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", limit)
                 ).fetchall()
             self._json_response([dict(r) for r in rows])
+
+        # GET /api/pipeline/docs — Dokumentliste mit Status für Pipeline-Dashboard
+        elif path == "/api/pipeline/docs":
+            q = params.get("q", [""])[0].strip()
+            kat = params.get("kategorie", [""])[0].strip()
+            adr = params.get("adressat", [""])[0].strip()
+            von = params.get("von", [""])[0].strip()
+            bis = params.get("bis", [""])[0].strip()
+            limit = min(int(params.get("limit", ["50"])[0]), 200)
+            offset = int(params.get("offset", ["0"])[0])
+            where = []
+            args = []
+            if q:
+                where.append("(d.dateiname LIKE ? OR d.absender LIKE ? OR d.kategorie LIKE ?)")
+                args += [f"%{q}%", f"%{q}%", f"%{q}%"]
+            if kat:
+                where.append("d.kategorie = ?"); args.append(kat)
+            if adr:
+                where.append("d.adressat = ?"); args.append(adr)
+            if von:
+                where.append("d.rechnungsdatum >= ?"); args.append(von)
+            if bis:
+                where.append("d.rechnungsdatum <= ?"); args.append(bis)
+            w = ("WHERE " + " AND ".join(where)) if where else ""
+            try:
+                with get_db() as con:
+                    total = con.execute(f"SELECT COUNT(*) FROM dokumente d {w}", args).fetchone()[0]
+                    rows = con.execute(f"""
+                        SELECT d.id, d.dateiname, d.rechnungsdatum, d.kategorie, d.typ,
+                               d.absender, d.adressat, d.konfidenz, d.erstellt_am,
+                               d.vault_pfad, d.anlagen_dateiname, d.beschreibung, d.summary_de,
+                               (SELECT MAX(ts) FROM pipeline_steps WHERE dateiname=d.dateiname) as last_step_ts,
+                               (SELECT GROUP_CONCAT(step_id||':'||status, ',') FROM (
+                                   SELECT step_id, status FROM pipeline_steps
+                                   WHERE dateiname=d.dateiname ORDER BY id
+                               )) as step_summary
+                        FROM dokumente d {w}
+                        ORDER BY d.erstellt_am DESC LIMIT ? OFFSET ?
+                    """, args + [limit, offset]).fetchall()
+                cats = load_categories()
+                result = []
+                for r in rows:
+                    cat_id = r["kategorie"] or ""
+                    cat_norm = _normalize_category_id(cat_id)
+                    cat_label = cats.get(cat_norm, {}).get("label", cat_norm) if cats else cat_norm
+                    # Parse step summary
+                    steps_done = []
+                    last_status = "pending"
+                    if r["step_summary"]:
+                        for entry in r["step_summary"].split(","):
+                            if ":" in entry:
+                                sid, st = entry.split(":", 1)
+                                steps_done.append({"step": sid, "status": st})
+                                last_status = st
+                    result.append({
+                        "id": r["id"],
+                        "dateiname": r["dateiname"],
+                        "rechnungsdatum": r["rechnungsdatum"],
+                        "kategorie": cat_id,
+                        "category_label": cat_label,
+                        "typ": r["typ"],
+                        "absender": r["absender"],
+                        "adressat": r["adressat"],
+                        "konfidenz": r["konfidenz"],
+                        "erstellt_am": r["erstellt_am"],
+                        "vault_pfad": r["vault_pfad"],
+                        "anlagen_dateiname": r["anlagen_dateiname"],
+                        "beschreibung": r["beschreibung"],
+                        "summary_de": r["summary_de"],
+                        "last_step_ts": r["last_step_ts"],
+                        "last_status": last_status,
+                        "steps": steps_done,
+                    })
+                self._json_response({"docs": result, "total": total, "limit": limit, "offset": offset})
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
 
         # GET /api/pipeline/current — letzter Dokument-Stand + Rescan-Status + Input-Ordner
         elif path == "/api/pipeline/current":
@@ -10554,7 +11779,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf")
             self.send_header("Content-Length", len(data))
-            self.send_header("Content-Disposition", f'attachment; filename="{pdf_full.name}"')
+            self.send_header("Content-Disposition", f'inline; filename="{pdf_full.name}"')
             self.end_headers()
             self.wfile.write(data)
             return
@@ -10672,6 +11897,85 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Disposition", f'inline; filename="{filename}"')
             self.end_headers()
             self.wfile.write(data)
+
+        # GET /api/review-pdf/{id} — PDF aus Review-Queue anzeigen
+        elif path.startswith("/api/review-pdf/"):
+            try:
+                review_id = int(path.rsplit("/", 1)[-1])
+                with get_db() as con:
+                    row = con.execute(
+                        "SELECT pdf_path FROM review_queue WHERE id = ?", (review_id,)
+                    ).fetchone()
+                if not row:
+                    self._json_response({"error": "Nicht gefunden"}, 404); return
+                pdf_path = Path(row["pdf_path"])
+                if not pdf_path.exists():
+                    self._json_response({"error": "PDF nicht gefunden"}, 404); return
+                data = pdf_path.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/pdf")
+                self.send_header("Content-Length", len(data))
+                self.send_header(
+                    "Content-Disposition",
+                    f'inline; filename="{pdf_path.name}"'
+                )
+                self.end_headers()
+                self.wfile.write(data)
+            except (ValueError, IndexError):
+                self._json_response({"error": "Ungültige ID"}, 400)
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+
+        # GET /review — Review-Dashboard
+        elif path == "/review":
+            self._html_response(_REVIEW_HTML)
+            return
+
+        # GET /api/review/list — Review-Queue Einträge
+        elif path == "/api/review/list":
+            status_filter = params.get("status", ["pending"])[0]
+            limit = int(params.get("limit", ["100"])[0])
+            try:
+                with get_db() as con:
+                    if status_filter == "all":
+                        rows = con.execute(
+                            "SELECT * FROM review_queue ORDER BY created_at DESC LIMIT ?",
+                            (limit,)
+                        ).fetchall()
+                    else:
+                        rows = con.execute(
+                            "SELECT * FROM review_queue WHERE status = ? "
+                            "ORDER BY created_at DESC LIMIT ?",
+                            (status_filter, limit)
+                        ).fetchall()
+                result = []
+                categories = load_categories()
+                for r in rows:
+                    cat_id = r["final_category"] or r["suggested_category"] or ""
+                    cat_norm = _normalize_category_id(cat_id)
+                    cat_label = categories.get(cat_norm, {}).get("label", cat_norm) if categories else cat_norm
+                    result.append({
+                        "id": r["id"],
+                        "pdf_name": Path(r["pdf_path"]).name if r["pdf_path"] else "",
+                        "suggested_category": r["suggested_category"],
+                        "suggested_adressat": r["suggested_adressat"],
+                        "suggested_absender": r["suggested_absender"],
+                        "rechnungsdatum": r["rechnungsdatum"],
+                        "beschreibung": (r["beschreibung"] or "")[:200],
+                        "confidence": r["confidence"],
+                        "source": r["source"],
+                        "status": r["status"],
+                        "final_category": r["final_category"],
+                        "final_adressat": r["final_adressat"],
+                        "category_label": cat_label,
+                        "created_at": r["created_at"],
+                        "reviewed_at": r["reviewed_at"],
+                    })
+                self._json_response({"reviews": result, "count": len(result)})
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
 
         # GET /duplikate — Duplikat-Dashboard
         elif path == "/duplikate":
@@ -10926,6 +12230,21 @@ class _ApiHandler(BaseHTTPRequestHandler):
             })
             return
 
+        # GET /office — Office-Konvertierungs-Dashboard
+        elif path == "/office":
+            self._html_response(_OFFICE_HTML)
+            return
+
+        # GET /api/office/scan — Office-Dateien scannen (Proxy zu office-converter)
+        elif path == "/api/office/scan":
+            self._json_response(self._proxy_to_office_converter("GET", "/batch/scan"))
+            return
+
+        # GET /api/office/status — Batch-Status abfragen (Proxy zu office-converter)
+        elif path == "/api/office/status":
+            self._json_response(self._proxy_to_office_converter("GET", "/batch/status"))
+            return
+
         else:
             self._json_response({"error": "Unbekannter Endpunkt"}, 404)
 
@@ -10945,6 +12264,144 @@ class _ApiHandler(BaseHTTPRequestHandler):
                     self._json_response({"error": r.stderr.strip() or "Fehler beim Starten"}, 500)
             except Exception as e:
                 self._json_response({"error": str(e)}, 500)
+            return
+
+        # POST /api/review/confirm — Review bestätigen (Dashboard)
+        if path == "/api/review/confirm":
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json_response({"error": "Ungültiger Body"}, 400); return
+            review_id = data.get("review_id")
+            if not review_id:
+                self._json_response({"error": "review_id ist Pflicht"}, 400); return
+            try:
+                with get_db() as con:
+                    row = con.execute(
+                        "SELECT * FROM review_queue WHERE id = ? AND status = 'pending'",
+                        (review_id,)
+                    ).fetchone()
+                if not row:
+                    self._json_response({"error": "Review nicht gefunden oder nicht pending"}, 404); return
+                final_cat = data.get("final_category") or row["final_category"] or row["suggested_category"] or "archiv"
+                final_adr = data.get("final_adressat") or row["final_adressat"] or row["suggested_adressat"] or "Reinhard"
+                success = _confirm_review(review_id, final_cat, final_adr)
+                if success:
+                    self._json_response({"msg": f"Review #{review_id} bestätigt → {final_cat}"})
+                else:
+                    self._json_response({"error": "Verarbeitung fehlgeschlagen"}, 500)
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+
+        # POST /api/pipeline/update — Dokument-Metadaten aktualisieren (Pipeline-Dashboard)
+        if path == "/api/pipeline/update":
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json_response({"error": "Ungültiger Body"}, 400); return
+            doc_id = data.get("doc_id")
+            if not doc_id:
+                self._json_response({"error": "doc_id ist Pflicht"}, 400); return
+            try:
+                with get_db() as con:
+                    row = con.execute(
+                        "SELECT * FROM dokumente WHERE id = ?", (doc_id,)
+                    ).fetchone()
+                    if not row:
+                        self._json_response({"error": "Dokument nicht gefunden"}, 404); return
+
+                    updates = {}
+                    params_sql = []
+                    rename_needed = False
+                    new_date = None
+                    if "kategorie" in data:
+                        new_cat = data["kategorie"]
+                        # Korrektur via handle_correction (verschiebt MD + aktualisiert Frontmatter)
+                        result_msg = handle_correction(int(doc_id), new_cat, data.get("typ", row["typ"] or "allgemein"))
+                    if "rechnungsdatum" in data:
+                        new_date = data["rechnungsdatum"]
+                        updates["rechnungsdatum"] = new_date
+                        params_sql.append(new_date)
+                        if new_date != (row["rechnungsdatum"] or ""):
+                            rename_needed = True
+                    if "absender" in data:
+                        updates["absender"] = data["absender"]
+                        params_sql.append(data["absender"])
+                        if data["absender"] != (row["absender"] or ""):
+                            rename_needed = True
+                    if updates:
+                        set_clause = ", ".join(f"{k}=?" for k in updates)
+                        con.execute(
+                            f"UPDATE dokumente SET {set_clause} WHERE id=?",
+                            params_sql + [doc_id]
+                        )
+                # Datum- oder Absender-Änderung: MD + PDF umbenennen
+                if rename_needed and VAULT_ROOT and VAULT_PDF_ARCHIV:
+                    old_vp = row["vault_pfad"]
+                    old_ad = row["anlagen_dateiname"]
+                    if old_vp:
+                        old_stem = Path(old_vp).stem
+                        # Neuen Dateinamen bauen: YYYYMMDD_Absender[_Kurzbez]
+                        eff_date = new_date or row["rechnungsdatum"] or ""
+                        eff_abs = data.get("absender") or row["absender"] or ""
+                        date_prefix = _build_date_prefix(eff_date, old_stem)
+                        if date_prefix:
+                            sender_slug = _sanitize_name_part(eff_abs)[:40] if eff_abs.strip() else ""
+                            new_stem = f"{date_prefix}_{sender_slug}" if sender_slug else f"{date_prefix}_{_strip_date_prefix(old_stem)}"
+                            # MD umbenennen (falls vorhanden) oder nur DB-Pfad aktualisieren
+                            old_md = VAULT_ROOT / old_vp
+                            new_vp = str(Path(old_vp).parent / f"{new_stem}.md")
+                            new_md = VAULT_ROOT / new_vp
+                            if old_md.exists() and old_md != new_md:
+                                new_md.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.move(str(old_md), str(new_md))
+                                log.info(f"MD umbenannt: {old_vp} → {new_vp}")
+                                # Frontmatter aktualisieren
+                                try:
+                                    content = new_md.read_text(encoding="utf-8")
+                                    content = re.sub(r"(?m)^absender:.*$", f"absender: \"{eff_abs}\"", content)
+                                    content = re.sub(r"(?m)^datum:.*$", f"datum: \"{eff_date}\"", content)
+                                    new_md.write_text(content, encoding="utf-8")
+                                except Exception:
+                                    pass
+                            else:
+                                # MD existiert nicht (z.B. nur DB-Eintrag) → nur Pfad in DB updaten
+                                log.info(f"MD nicht auf Disk, nur DB-Pfad aktualisiert: {old_vp} → {new_vp}")
+                            # PDF umbenennen (falls vorhanden) — Name immer aktualisieren
+                            new_pdf_name = f"{new_stem}.pdf"
+                            if old_ad:
+                                old_pdf = VAULT_PDF_ARCHIV / old_ad
+                                new_pdf = VAULT_PDF_ARCHIV / new_pdf_name
+                                if old_pdf.exists() and old_pdf != new_pdf:
+                                    shutil.move(str(old_pdf), str(new_pdf))
+                                    log.info(f"PDF umbenannt: {old_ad} → {new_pdf_name}")
+                            old_ad = new_pdf_name
+                            # DB updaten
+                            with get_db() as con:
+                                con.execute(
+                                    "UPDATE dokumente SET vault_pfad=?, anlagen_dateiname=? WHERE id=?",
+                                    (new_vp, old_ad, doc_id)
+                                )
+                self._json_response({"msg": f"Dokument #{doc_id} aktualisiert", "updates": updates})
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+
+        # POST /api/review/skip — Review überspringen (Dashboard)
+        if path == "/api/review/skip":
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json_response({"error": "Ungültiger Body"}, 400); return
+            review_id = data.get("review_id")
+            if not review_id:
+                self._json_response({"error": "review_id ist Pflicht"}, 400); return
+            success = _skip_review(review_id)
+            if success:
+                self._json_response({"msg": f"Review #{review_id} übersprungen"})
+            else:
+                self._json_response({"error": "Nicht gefunden"}, 404)
             return
 
         # POST /api/batch/start — neuen Batch-Lauf im Hintergrund starten
@@ -11134,6 +12591,73 @@ class _ApiHandler(BaseHTTPRequestHandler):
                     tg_edit_message(cb_chat, cb_msg_id,
                                     cb_msg_text + "\n\n❌ Abgebrochen",
                                     reply_markup={"inline_keyboard": []})
+
+                # ── Review-Queue Callbacks (auch via Wilson-Relay) ──
+                elif cb_data.startswith("rvcat:"):
+                    parts = cb_data.split(":")
+                    review_id = int(parts[1]); new_cat = parts[2]
+                    with get_db() as con:
+                        row = con.execute(
+                            "SELECT * FROM review_queue WHERE id = ? AND status = 'pending'",
+                            (review_id,)).fetchone()
+                        if row:
+                            cur_adr = row["final_adressat"] or row["suggested_adressat"] or "Reinhard"
+                            con.execute(
+                                "UPDATE review_queue SET final_category=?, final_adressat=? WHERE id=?",
+                                (new_cat, cur_adr, review_id))
+                            cats = load_categories()
+                            kl = cats.get(new_cat, {}).get("label", new_cat) if cats else new_cat
+                            tg_answer_callback(cb_id, f"➡️ {kl}")
+                            nt = cb_msg_text
+                            import re as _re
+                            nt = _re.sub(r'🗂 <b>Kategorie-Vorschlag:.*</b>',
+                                        f'🗂 <b>Kategorie:</b> ✏️ {kl}', nt)
+                            if '🗂 <b>Kategorie:</b>' not in nt:
+                                nt += f'\n🗂 <b>Kategorie:</b> ✏️ {kl}'
+                            tg_edit_message(cb_chat, cb_msg_id, nt,
+                                reply_markup=_build_edit_review_keyboard(review_id, new_cat, cur_adr))
+
+                elif cb_data.startswith("rvadr:"):
+                    parts = cb_data.split(":")
+                    review_id = int(parts[1]); new_adr = parts[2]
+                    with get_db() as con:
+                        row = con.execute(
+                            "SELECT * FROM review_queue WHERE id = ? AND status = 'pending'",
+                            (review_id,)).fetchone()
+                        if row:
+                            cur_cat = row["final_category"] or row["suggested_category"] or "archiv"
+                            con.execute(
+                                "UPDATE review_queue SET final_adressat=?, final_category=? WHERE id=?",
+                                (new_adr, cur_cat, review_id))
+                            tg_answer_callback(cb_id, f"👤 {new_adr}")
+
+                elif cb_data.startswith("rvok:"):
+                    review_id = int(cb_data.split(":")[1])
+                    with get_db() as con:
+                        row = con.execute(
+                            "SELECT * FROM review_queue WHERE id = ? AND status = 'pending'",
+                            (review_id,)).fetchone()
+                    if row:
+                        fc = row["final_category"] or row["suggested_category"] or "archiv"
+                        fa = row["final_adressat"] or row["suggested_adressat"] or "Reinhard"
+                        tg_answer_callback(cb_id, "⏳ Verarbeite...")
+                        if _confirm_review(review_id, fc, fa):
+                            tg_edit_message(cb_chat, cb_msg_id,
+                                cb_msg_text + "\n\n✅ Bestätigt — in Vault verschoben",
+                                reply_markup={"inline_keyboard": []})
+                        else:
+                            tg_edit_message(cb_chat, cb_msg_id,
+                                cb_msg_text + "\n\n❌ Fehler bei Verarbeitung",
+                                reply_markup={"inline_keyboard": []})
+
+                elif cb_data.startswith("rvskip:"):
+                    review_id = int(cb_data.split(":")[1])
+                    tg_answer_callback(cb_id, "⏭️ Übersprungen")
+                    _skip_review(review_id)
+                    tg_edit_message(cb_chat, cb_msg_id,
+                        cb_msg_text + "\n\n⏭️ Übersprungen — nicht archiviert",
+                        reply_markup={"inline_keyboard": []})
+
                 else:
                     tg_answer_callback(cb_id, "❓ Unbekannter Callback")
                     self._json_response({"error": f"Unbekannter Callback: {cb_data}"}, 400); return
@@ -11629,6 +13153,13 @@ class _ApiHandler(BaseHTTPRequestHandler):
         # POST /api/anlagen/stop — Anlagen-Processor beenden
         elif path == "/api/anlagen/stop":
             _anlagen_stop(); self._json_response({"ok": True, "msg": "Gestoppt"})
+            return
+
+        # POST /api/office/start — Office-Batch-Konvertierung starten
+        elif path == "/api/office/start":
+            data = self._read_body()
+            result = self._proxy_to_office_converter("POST", "/batch/start", data)
+            self._json_response(result)
             return
 
         else:
@@ -12277,6 +13808,166 @@ def _format_identifiers_for_prompt(
     return "\n".join(lines)
 
 
+# ── Summarization (universeller Pipeline-Schritt fuer ALLE neuen Dokumente) ──
+
+SUMMARIZE_MODEL = os.environ.get("SUMMARIZE_MODEL", "qwen3:4b-instruct")
+
+
+def _empty_summary() -> dict:
+    return {
+        "title": "", "summary": "",
+        "key_points": [], "structure": [], "kennzahlen": {},
+    }
+
+
+def _parse_summary_json(text: str) -> dict:
+    """Extrahiert und parsed JSON aus einer LLM-Antwort (mit Fallback-Korrekturen)."""
+    if not text:
+        return _empty_summary()
+    text = text.strip()
+    # Codeblock-Markierungen entfernen
+    for marker in ("```json", "```"):
+        text = text.replace(marker, "")
+    text = text.strip()
+    # Falls Antwort vor JSON-Start Text enthaelt, diesen abschneiden
+    idx_brace = text.find("{")
+    if idx_brace > 0:
+        text = text[idx_brace:]
+    # Falls nach JSON-End Text kommt, abschneiden
+    idx_last = text.rfind("}")
+    if idx_last >= 0 and idx_last < len(text) - 1:
+        text = text[: idx_last + 1]
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            return json.loads(repair_json(text))
+        except Exception:
+            return _empty_summary()
+
+
+def summarize_document(raw_md: str, doc_type: str = "",
+                       category: str = "") -> dict:
+    """Erzeugt eine strukturierte Zusammenfassung via Ollama.
+
+    Wird fuer JEDES neue Dokument aufgerufen — unabhaengig von Quelle
+    (Scan, PDF, Office-Import, Batch).
+
+    Args:
+        raw_md: Rohes Docling-Markdown (max 8000 Zeichen fuer Prompt)
+        doc_type: Vom Klassifikator erkannter Dokumenttyp (z.B. 'pitch_deck')
+        category: Vom Klassifikator erkannte Kategorie-ID
+
+    Returns:
+        dict mit 'title', 'summary', 'key_points', 'structure', 'kennzahlen'
+    """
+    if not raw_md or len(raw_md.strip()) < 300:
+        log.info("Summarization uebersprungen (Text zu kurz)")
+        return _empty_summary()
+
+    # Prompt-Template von Config laden, sonst Default
+    prompt_template = _load_summarize_prompt()
+    prompt = prompt_template.replace("{doc_type}", doc_type or "Unbekannt")
+    prompt = prompt.replace("{category}", category or "Unbekannt")
+    prompt = prompt.replace("{raw_text}", raw_md[:8000])
+
+    try:
+        payload = {
+            "model": SUMMARIZE_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.2, "num_predict": 2048},
+        }
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/generate", json=payload,
+            timeout=OLLAMA_TIMEOUT,
+        )
+        resp.raise_for_status()
+        response_text = resp.json().get("response", "")
+        summary = _parse_summary_json(response_text)
+        if summary.get("title") or summary.get("summary"):
+            log.info(f"Summarization erfolgreich: {summary.get('title', '(ohne Titel)')[:80]}")
+            return summary
+        else:
+            log.warning("Summarization lieferte leeres Ergebnis")
+            return _empty_summary()
+    except Exception as e:
+        log.error(f"Summarization fehlgeschlagen: {e}")
+        return _empty_summary()
+
+
+def _load_summarize_prompt() -> str:
+    """Laedt das Summarization-Prompt aus der Config-Datei."""
+    config_path = os.environ.get("CONFIG_FILE", "/config/categories.yaml")
+    config_dir = os.path.dirname(config_path)
+    prompt_file = os.path.join(config_dir, "summarize_prompt.txt")
+    try:
+        return Path(prompt_file).read_text(encoding="utf-8")
+    except Exception:
+        pass
+    # Fallback: eingebautes Default-Prompt
+    return (
+        "Du bist ein Dokument-Analyse-Assistent. Erstelle eine strukturierte "
+        "Zusammenfassung des folgenden Dokuments auf Deutsch.\n\n"
+        "Dokumenttyp: {doc_type}\n"
+        "Kategorie: {category}\n\n"
+        "Roh-Text (Docling-Extraktion):\n---\n{raw_text}\n---\n\n"
+        "Extrahiere und strukturiere:\n"
+        "1. Titel: Aussagekraeftiger Titel (max 80 Zeichen)\n"
+        "2. Executive Summary: 2-3 Saetze, worum es geht\n"
+        "3. Key Points: 3-6 Bullet Points mit den wichtigsten Aussagen\n"
+        "4. Dokumentstruktur: Grobe Gliederung des Dokuments\n"
+        "5. Kennzahlen: Alle im Text gefundenen Zahlen\n\n"
+        'Antworte NUR mit gueltigem JSON:\n'
+        '{"title":"...","summary":"...","key_points":["..."],"structure":["..."],'
+        '"kennzahlen":{"betrag_eur":null,"datum":null,"firmen":[],"personen":[],'
+        '"prozente":[],"sonstige":[]}}'
+    )
+
+
+def _build_summary_md(result: dict) -> str:
+    """Baut den Summary-Markdown-Block fuer die .md-Datei."""
+    summary = result.get("_summary") or {}
+    title = summary.get("title") or result.get("dateiname", "Dokument")
+    body = summary.get("summary", "")
+    key_points = summary.get("key_points", [])
+    structure = summary.get("structure", [])
+    kennzahlen = summary.get("kennzahlen", {})
+
+    lines = [f"# {title}\n"]
+    if body:
+        lines.append(f"## Zusammenfassung\n{body}\n")
+    if key_points:
+        lines.append("## Key Points")
+        for kp in key_points:
+            lines.append(f"- {kp}")
+        lines.append("")
+    if structure:
+        lines.append("## Dokumentstruktur")
+        for s in structure:
+            lines.append(s)
+        lines.append("")
+    if kennzahlen:
+        lines.append("## Kennzahlen")
+        if kennzahlen.get("betrag_eur"):
+            lines.append(f"- Betrag: {kennzahlen['betrag_eur']}")
+        if kennzahlen.get("datum"):
+            lines.append(f"- Datum: {kennzahlen['datum']}")
+        for f in kennzahlen.get("firmen", []):
+            lines.append(f"- Firma: {f}")
+        for p in kennzahlen.get("personen", []):
+            lines.append(f"- Person: {p}")
+        for p in kennzahlen.get("prozente", []):
+            lines.append(f"- {p}")
+        for s in kennzahlen.get("sonstige", []):
+            lines.append(f"- {s}")
+        lines.append("")
+
+    dt = time.strftime("%Y-%m-%d %H:%M")
+    lines.append(f"---\n*Zusammenfassung generiert am {dt} · Modell: {SUMMARIZE_MODEL}*")
+    return "\n".join(lines)
+
+
 def classify_with_ollama(
     md_content: str,
     categories: dict,
@@ -12312,8 +14003,19 @@ B) Absender ist ein Arzt, Krankenhaus, Labor, MVZ, Abrechnungsdienstleister (z.B
 C) Sanitätshaus, Optiker, Apotheke, Physiotherapie:
    → category_id="krankenversicherung", type_id="sonstige_medizinische_leistung"
 
-D) Arzt mit Medikamentenliste:
+D) REZEPT-ERKENNUNG (wichtig: nicht mit Arztrechnung verwechseln!):
+   Ein Rezept erkennst du an diesen MERKMALEN (mehrere muessen zutreffen):
+   - "Rp." oder "Rp " vor Medikamentennamen (recipe = Verschreibung)
+   - NUR Medikamentenname + Dosierung + Packungsgröße (N1/N2/N3)
+   - KEINE GOÄ-/GOZ-Ziffern (das waere eine Arztrechnung!)
+   - KEIN "Rechnungsbetrag", KEINE Zahlungsaufforderung
+   - Text enthaelt "Verschreibung", "Rezept", "Privatrezept", "Kassenrezept"
    → category_id="krankenversicherung", type_id="rezept"
+
+   Apotheken-RECHNUNG (nicht Rezept!) erkennst du an:
+   - Absender ist eine Apotheke
+   - Enthaelt Rechnungsbetrag, Steuernummer, Zahlungsaufforderung
+   - → category_id="krankenversicherung", type_id="arztrechnung" (wie andere Rechnungen auch)
 
 WICHTIG: Entscheidend ist NICHT die bloße Erwähnung von "Versicherung" im Text, sondern Absender + Dokumenttyp.
 
@@ -12534,6 +14236,15 @@ def _sanitize_name_part(s: str) -> str:
     return s
 
 
+def _valid_ymd(yyyy_s: str, mm_s: str, dd_s: str) -> bool:
+    """Prüft ob YYYY, MM, DD ein plausibles Datum im Bereich 1950–2035 ergibt."""
+    try:
+        y, m, d = int(yyyy_s), int(mm_s), int(dd_s)
+        return 1950 <= y <= 2035 and 1 <= m <= 12 and 1 <= d <= 31
+    except ValueError:
+        return False
+
+
 def _date_from_filename_prefix(stem: str) -> str | None:
     """Extrahiert YYYYMMDD aus Dateinamen-Prefix (YYYYMMDD oder DDMMYYYY).
 
@@ -12544,20 +14255,31 @@ def _date_from_filename_prefix(stem: str) -> str | None:
         return None
     s = m.group(1)
     yyyy, mm, dd = s[:4], s[4:6], s[6:]
-    if 1990 <= int(yyyy) <= 2035 and 1 <= int(mm) <= 12 and 1 <= int(dd) <= 31:
+    if _valid_ymd(yyyy, mm, dd):
         return s  # YYYYMMDD ✓
     # Versuche DDMMYYYY-Interpretation (Scanner-Format)
     dd2, mm2, yyyy2 = s[:2], s[2:4], s[4:]
-    if 1990 <= int(yyyy2) <= 2035 and 1 <= int(mm2) <= 12 and 1 <= int(dd2) <= 31:
+    if _valid_ymd(yyyy2, mm2, dd2):
         return f"{yyyy2}{mm2}{dd2}"  # umdrehen → YYYYMMDD
     return None
+
+
+def _build_no_date_filename(original_stem: str) -> str:
+    """Baut Dateinamen ohne Datum — _NODATE_ Markierung signalisiert Inbox-Routing."""
+    stem_body = re.sub(r'^\d{8}[_\s\-]+', '', original_stem).strip()
+    stem_body = re.sub(r'[_\s]*\d{3}$', '', stem_body)  # Scanner-Suffix _001
+    clean_stem = _sanitize_name_part(stem_body) if stem_body else original_stem
+    if len(clean_stem) > 50:
+        clean_stem = clean_stem[:50].rsplit("_", 1)[0]
+    return f"_NODATE_{clean_stem}" if clean_stem else "_NODATE_"
 
 
 def build_clean_filename(result: dict, original_stem: str) -> str:
     """Build clean filename: YYYYMMDD_Absender_Dokumenttyp.
 
-    Falls Datum oder Absender fehlt, wird der Original-Dateiname als Fallback verwendet.
-    Datums-Priorität: 1. LLM (rechnungsdatum) → 2. Dateiname-Prefix → 3. Heute
+    Falls kein Datum ermittelbar ist, wird der Dateiname mit _NODATE_ präfigiert.
+    Der Aufrufer (move_to_vault / process_file) erkennt dies und routed in die Inbox.
+    Datums-Priorität: 1. LLM (rechnungsdatum) → 2. Dateiname-Prefix → 3. _NODATE_
     """
     datum = result.get("rechnungsdatum")  # "DD.MM.YYYY"
     absender = result.get("absender")
@@ -12573,9 +14295,9 @@ def build_clean_filename(result: dict, original_stem: str) -> str:
     # 2. Dateiname-Prefix (YYYYMMDD oder DDMMYYYY vom Scanner)
     if not date_str:
         date_str = _date_from_filename_prefix(original_stem)
-    # 3. Heutiges Datum als letzter Ausweg
+    # 3. Kein Datum ermittelbar → _NODATE_-Marker (Aufrufer routed in Inbox)
     if not date_str:
-        date_str = datetime.now().strftime("%Y%m%d")
+        return _build_no_date_filename(original_stem)
 
     # Absender kürzen
     if absender:
@@ -12611,6 +14333,17 @@ def build_clean_filename(result: dict, original_stem: str) -> str:
     return "_".join(parts)
 
 
+def _derive_datum_original(pdf_filename: str) -> str:
+    """Leitet Datum_original (YYYY-MM-DD) aus den ersten 8 Zeichen des PDF-Dateinamens ab."""
+    m = re.match(r'^(\d{8})', pdf_filename)
+    if m:
+        s = m.group(1)
+        yyyy, mm, dd = s[:4], s[4:6], s[6:]
+        if _valid_ymd(yyyy, mm, dd):
+            return f"{yyyy}-{mm}-{dd}"
+    return ""
+
+
 def _build_frontmatter(result: dict, pdf_filename: str, category_id: str, type_id: str) -> str:
     """Baut den YAML-Frontmatter-Block für eine Vault-MD auf."""
     r = result or {}
@@ -12627,6 +14360,9 @@ def _build_frontmatter(result: dict, pdf_filename: str, category_id: str, type_i
     zusammen    = r.get("zusammenfassung") or ""
     lang        = r.get("_lang") or "de"
     erstellt    = datetime.now().strftime("%Y-%m-%d")
+
+    # Datum_original aus PDF-Dateiname (laut VAULT_FRONTMATTER_SPEC.md)
+    datum_original = _derive_datum_original(pdf_filename)
 
     # Tags ableiten
     tags: list[str] = []
@@ -12645,6 +14381,8 @@ def _build_frontmatter(result: dict, pdf_filename: str, category_id: str, type_i
         return '"' + val.replace('"', '\\"') + '"'
 
     lines = ["---"]
+    if datum_original:
+        lines.append(f"Datum_original: {datum_original}")
     if datum:
         lines.append(f"datum: {_q(datum)}")
     if absender:
@@ -12695,13 +14433,28 @@ def move_to_vault(file_path: Path, temp_md: Path, category_id: str, type_id: str
     adressat = (result.get("adressat") or "") if result else ""
 
     # Sauberen Dateinamen generieren
-    # _force_stem: von Wilson vorgegebener Dateiname (Bypass-Modus) — nicht neu ableiten.
+    # _force_stem: von Wilson vorgegebener Dateiname (Bypass-Modus).
+    # Nur verwenden wenn der Dateiname mit einem gültigen Datumspräfix beginnt —
+    # sonst neu aus den extrahierten Daten ableiten.
     if result and result.get("_force_stem"):
-        clean_name = _sanitize_name_part(result["_force_stem"])
+        force_stem = result["_force_stem"]
+        if _date_from_filename_prefix(force_stem):
+            clean_name = _sanitize_name_part(force_stem)
+        else:
+            # Wilson hat kein gültiges Datum geliefert → neu ableiten
+            log.info(f"_force_stem ohne gültiges Datum: {force_stem} — leite neu ab")
+            clean_name = build_clean_filename(result, file_path.stem)
     elif result:
         clean_name = build_clean_filename(result, file_path.stem)
     else:
         clean_name = _sanitize_name_part(file_path.stem)
+
+    # _NODATE_-Marker: kein Datum ermittelbar → Inbox-Routing erzwingen
+    if clean_name.startswith("_NODATE_"):
+        log.info(f"Kein Datum ermittelbar für {file_path.name} — routing in Inbox")
+        category_id = ""
+        type_id = ""
+        year = datetime.now().strftime("%Y")
 
     vault_pfad = build_vault_path(category_id, type_id, adressat, year, f"{clean_name}.md")
     dest_md = VAULT_ROOT / vault_pfad
@@ -12740,6 +14493,26 @@ def move_to_vault(file_path: Path, temp_md: Path, category_id: str, type_id: str
 
     _write_vault_md(dest_pdf, dest_md, vault_pfad, temp_md, result, category_id, type_id, file_path.name)
 
+    # Summarizer Auto-Trigger: startet vault_summarizer.py für das neue MD im Hintergrund
+    _trigger_summarizer(dest_md)
+
+
+def _trigger_summarizer(md_path: Path):
+    """Startet den Vault Summarizer für eine einzelne .md-Datei im Hintergrund."""
+    summarizer_script = Path(__file__).parent / "vault_summarizer.py"
+    if not summarizer_script.exists():
+        log.debug(f"Summarizer-Script nicht gefunden: {summarizer_script}")
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, str(summarizer_script), "--test", str(md_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        log.info(f"Summarizer Auto-Trigger: {md_path.name}")
+    except Exception as e:
+        log.warning(f"Summarizer Auto-Trigger fehlgeschlagen: {e}")
+
 
 def _write_vault_md(pdf_dest: Path, dest_md: Path, vault_pfad: str,
                     temp_md: Path, result: dict, category_id: str, type_id: str,
@@ -12753,7 +14526,39 @@ def _write_vault_md(pdf_dest: Path, dest_md: Path, vault_pfad: str,
         ocr_content = temp_md.read_text(encoding="utf-8")
         frontmatter = _build_frontmatter(result or {}, pdf_filename, category_id, type_id)
         pdf_link_line = f"📎 [[Anlagen/{pdf_filename}]]\n\n"
-        temp_md.write_text(frontmatter + pdf_link_line + ocr_content, encoding="utf-8")
+
+        # Wilson-Summary (Deutsch) aus Sidecar v3.0
+        summary_de = (result or {}).get("summary_de", "")
+        summary_block = ""
+        if summary_de:
+            summary_block = (
+                f"> **Wilson-Zusammenfassung (DE):** {summary_de}\n\n"
+                f"---\n\n"
+            )
+
+        # LLM-Zusammenfassung aus der Pipeline (Schritt 8 — universell)
+        pipeline_summary = (result or {}).get("_summary") or {}
+        if pipeline_summary.get("title") or pipeline_summary.get("summary"):
+            summary_md = _build_summary_md({"_summary": pipeline_summary, "dateiname": original_filename})
+            body_content = summary_md
+        else:
+            body_content = ocr_content
+
+        # Summarizer-Placeholder für automatische Nachbearbeitung
+        # (entfaellt, wenn bereits eine Pipeline-Summary vorhanden ist)
+        if pipeline_summary.get("title") or pipeline_summary.get("summary"):
+            summarizer_placeholder = ""
+        else:
+            summarizer_placeholder = "\n<!-- SUMMARIZER_PLACEHOLDER -->\n"
+
+        full_body = (
+            frontmatter
+            + pdf_link_line
+            + summary_block
+            + body_content
+            + summarizer_placeholder
+        )
+        temp_md.write_text(full_body, encoding="utf-8")
     except Exception as e:
         log.warning(f"Frontmatter konnte nicht geschrieben werden: {e}")
 
@@ -13518,8 +15323,13 @@ def process_file(file_path: Path):
     # ── Wilson-Sidecar-Bypass ──────────────────────────────────────────────────
     # Wenn Wilson das Dokument vorverarbeitet hat, liegt eine .meta.json neben dem PDF.
     # In diesem Fall: OCR + LLM auf Ryzen überspringen, Sidecar-Daten direkt verwenden.
+    # Wilson erstellt Sidecars mit dem Muster "datei.pdf.meta.json" (ganzer Name + .meta.json).
+    # Der Dispatcher prüft beide Muster: "datei.meta.json" (stem) und "datei.pdf.meta.json".
     sidecar_path = file_path.parent / (file_path.stem + ".meta.json")
-    _sidecar_available = sidecar_path.exists()
+    sidecar_path_alt = file_path.parent / (file_path.name + ".meta.json")
+    _sidecar_available = sidecar_path.exists() or sidecar_path_alt.exists()
+    if _sidecar_available and sidecar_path_alt.exists() and not sidecar_path.exists():
+        sidecar_path = sidecar_path_alt  # Wilson-Muster bevorzugen
     if not _sidecar_available and not _batch_active():
         # Grace Period: Sidecar kann via Syncthing wenige Sekunden nach der PDF
         # eintreffen (kein atomarer Transfer). Warte kurz und prüfe erneut.
@@ -13577,6 +15387,8 @@ def process_file(file_path: Path):
                 "konfidenz_datum":    "hoch" if rechnungsdatum else "niedrig",
                 "_wilson_bypass":     True,
                 "_force_stem":        force_stem,
+                "summary_de":         dok.get("summary_de", ""),
+                "source_lang":        dok.get("source_lang", ""),
             }
 
             _step_emit(_fn, "ocr",    "OCR / Docling",             "skip")
@@ -13612,106 +15424,146 @@ def process_file(file_path: Path):
                 result_bypass["category_label"] = category_label
                 log.info(f"Bypass Keyword-Override: {old_kat} → {kategorie_id} ({file_path.name})")
 
-            _step_emit(_fn, "db", "Datenbank speichern", "running")
-            match_infos_bp = save_to_db(file_path, result_bypass)
-            save_klassifikation_historie(result_bypass.get("_dok_id"), result_bypass)
-            _step_emit(_fn, "db", "Datenbank speichern", "done",
-                       extracted={"dok_id": result_bypass.get("_dok_id"),
-                                  "category_id": kategorie_id,
-                                  "konfidenz": "hoch"})
+            # Normalisiere Kategorie-ID (Wilson→Ryzen)
+            kategorie_id_norm = _normalize_category_id(kategorie_id)
 
-            # KV-Leistungsabrechnung: Positionen asynchron extrahieren → kk_leistungen.db
-            if _kv_la_is_leistungsabrechnung(result_bypass):
-                threading.Thread(
-                    target=_kv_extract_and_store,
-                    args=(file_path, dict(result_bypass)),
-                    daemon=True,
-                    name=f"kv-extract-{file_path.stem}",
-                ).start()
-                log.info(f"KV-Bypass-Extraktion gestartet (Hintergrund): {file_path.name}")
+            if REVIEW_MODE:
+                # ── Review-Modus: Dokument in Queue statt direkt in Vault ──
+                result_bypass["category_id"] = kategorie_id_norm
+                review_id = _insert_review_queue(
+                    file_path, sidecar_path, result_bypass, source="wilson"
+                )
+                if review_id:
+                    _send_review_telegram(file_path, result_bypass, review_id)
+                    tg_send_document(file_path)
+                    _step_emit(_fn, "review", "Review-Queue", "done",
+                               extracted={"review_id": review_id,
+                                          "suggested_category": kategorie_id_norm})
+                    log.info(f"Wilson-Bypass → Review-Queue #{review_id}: "
+                             f"{file_path.name} (Vorschlag: {kategorie_id_norm})")
+                else:
+                    # Fallback: direkt ablegen wenn Queue-Insert fehlschlägt
+                    log.error(f"Review-Queue Insert fehlgeschlagen — "
+                              f"direkte Ablage für {file_path.name}")
+                    _step_emit(_fn, "db", "Datenbank speichern", "running")
+                    save_to_db(file_path, result_bypass)
+                    save_klassifikation_historie(result_bypass.get("_dok_id"), result_bypass)
+                    _step_emit(_fn, "db", "Datenbank speichern", "done")
+                    tg_send_document(file_path)
+                    tg_send(f"✅ Dokument von Wilson empfangen\n"
+                            f"📄 <code>{force_stem}.pdf</code>\n"
+                            f"⚠️ Review-Queue nicht verfügbar — direkt abgelegt.")
+                    _step_emit(_fn, "vault", "Vault-Move", "running")
+                    move_to_vault(file_path, temp_md_bp, kategorie_id_norm, "", result_bypass)
+                    _step_emit(_fn, "vault", "Vault-Move", "done")
+                    try:
+                        sidecar_path.unlink()
+                    except Exception:
+                        pass
+                return
+            else:
+                # ── Direkt-Modus (REVIEW_MODE=off): bestehendes Verhalten ──
+                result_bypass["category_id"] = kategorie_id_norm
+                _step_emit(_fn, "db", "Datenbank speichern", "running")
+                match_infos_bp = save_to_db(file_path, result_bypass)
+                save_klassifikation_historie(result_bypass.get("_dok_id"), result_bypass)
+                _step_emit(_fn, "db", "Datenbank speichern", "done",
+                           extracted={"dok_id": result_bypass.get("_dok_id"),
+                                      "category_id": kategorie_id_norm,
+                                      "konfidenz": "hoch"})
 
-            # Immobilien-Dokument: asynchron extrahieren → immobilien.db
-            if _immo_is_immobiliendokument(result_bypass):
-                threading.Thread(
-                    target=_immo_extract_and_store,
-                    args=(file_path, dict(result_bypass)),
-                    daemon=True,
-                    name=f"immo-extract-{file_path.stem}",
-                ).start()
-                log.info(f"Immo-Extraktion gestartet (Hintergrund): {file_path.name}")
+                # KV-Leistungsabrechnung: Positionen asynchron extrahieren → kk_leistungen.db
+                if _kv_la_is_leistungsabrechnung(result_bypass):
+                    threading.Thread(
+                        target=_kv_extract_and_store,
+                        args=(file_path, dict(result_bypass)),
+                        daemon=True,
+                        name=f"kv-extract-{file_path.stem}",
+                    ).start()
+                    log.info(f"KV-Bypass-Extraktion gestartet (Hintergrund): {file_path.name}")
 
-            # KFZ-Dokument: Text an analyze.py uebergeben (Hintergrund)
-            if _kfz_is_fahrzeugdokument(result_bypass):
-                beschr = result_bypass.get("beschreibung", "")
-                threading.Thread(
-                    target=_call_skill_analyze,
-                    args=("kfz", file_path, beschr),
-                    daemon=True,
-                    name=f"kfz-extract-{file_path.stem}",
-                ).start()
-                log.info(f"KFZ-Skill gestartet (Hintergrund): {file_path.name}")
+                # Immobilien-Dokument: asynchron extrahieren → immobilien.db
+                if _immo_is_immobiliendokument(result_bypass):
+                    threading.Thread(
+                        target=_immo_extract_and_store,
+                        args=(file_path, dict(result_bypass)),
+                        daemon=True,
+                        name=f"immo-extract-{file_path.stem}",
+                    ).start()
+                    log.info(f"Immo-Extraktion gestartet (Hintergrund): {file_path.name}")
 
-            # Altersvorsorge-Dokument
-            if _av_is_altersvorsorgedokument(result_bypass):
-                beschr = result_bypass.get("beschreibung", "")
-                threading.Thread(
-                    target=_call_skill_analyze,
-                    args=("altersvorsorge", file_path, beschr),
-                    daemon=True,
-                    name=f"av-extract-{file_path.stem}",
-                ).start()
-                log.info(f"AV-Skill gestartet (Hintergrund): {file_path.name}")
+                # KFZ-Dokument: Text an analyze.py uebergeben (Hintergrund)
+                if _kfz_is_fahrzeugdokument(result_bypass):
+                    beschr = result_bypass.get("beschreibung", "")
+                    threading.Thread(
+                        target=_call_skill_analyze,
+                        args=("kfz", file_path, beschr),
+                        daemon=True,
+                        name=f"kfz-extract-{file_path.stem}",
+                    ).start()
+                    log.info(f"KFZ-Skill gestartet (Hintergrund): {file_path.name}")
 
-            # Sachversicherungs-Dokument
-            if _sv_is_sachversicherungsdokument(result_bypass):
-                beschr = result_bypass.get("beschreibung", "")
-                threading.Thread(
-                    target=_call_skill_analyze,
-                    args=("sachversicherungen", file_path, beschr),
-                    daemon=True,
-                    name=f"sv-extract-{file_path.stem}",
-                ).start()
-                log.info(f"SV-Skill gestartet (Hintergrund): {file_path.name}")
+                # Altersvorsorge-Dokument
+                if _av_is_altersvorsorgedokument(result_bypass):
+                    beschr = result_bypass.get("beschreibung", "")
+                    threading.Thread(
+                        target=_call_skill_analyze,
+                        args=("altersvorsorge", file_path, beschr),
+                        daemon=True,
+                        name=f"av-extract-{file_path.stem}",
+                    ).start()
+                    log.info(f"AV-Skill gestartet (Hintergrund): {file_path.name}")
 
-            # Telegram
-            tg_send_document(file_path)
-            tg_lines = [
-                f"✅ <b>Dokument von Wilson empfangen</b>",
-                f"",
-                f"📄 Datei:     <code>{force_stem}.pdf</code>",
-                f"🏢 Absender:  🟢 {absender}",
-                f"👤 Adressat:  🟢 {adressat}",
-            ]
-            if rechnungsdatum:
-                tg_lines.append(f"📅 Datum:     🟢 {rechnungsdatum}")
-            tg_lines += [
-                f"🗂 Kategorie: 🟢 <b>{category_label}</b>",
-                f"",
-                f"📝 {beschreibung[:300]}",
-                f"",
-                f"🤖 Vorverarbeitet von Wilson — kein LLM auf Ryzen",
-            ]
-            _dok_id_bp = result_bypass.get("_dok_id")
-            _tg_kb_bp = build_confirm_keyboard(_dok_id_bp) if _dok_id_bp else None
-            tg_send("\n".join(tg_lines), reply_markup=_tg_kb_bp)
-            log.info(f"Wilson-Bypass abgeschlossen: {file_path.name} → {kategorie_id}")
+                # Sachversicherungs-Dokument
+                if _sv_is_sachversicherungsdokument(result_bypass):
+                    beschr = result_bypass.get("beschreibung", "")
+                    threading.Thread(
+                        target=_call_skill_analyze,
+                        args=("sachversicherungen", file_path, beschr),
+                        daemon=True,
+                        name=f"sv-extract-{file_path.stem}",
+                    ).start()
+                    log.info(f"SV-Skill gestartet (Hintergrund): {file_path.name}")
 
-            _step_emit(_fn, "vault", "Vault-Move", "running")
-            move_to_vault(file_path, temp_md_bp, kategorie_id, "", result_bypass)
-            _step_emit(_fn, "vault", "Vault-Move", "done",
-                       extracted={"vault_pfad": result_bypass.get("vault_pfad", "")})
+                # Telegram
+                tg_send_document(file_path)
+                tg_lines = [
+                    f"✅ <b>Dokument von Wilson empfangen</b>",
+                    f"",
+                    f"📄 Datei:     <code>{force_stem}.pdf</code>",
+                    f"🏢 Absender:  🟢 {absender}",
+                    f"👤 Adressat:  🟢 {adressat}",
+                ]
+                if rechnungsdatum:
+                    tg_lines.append(f"📅 Datum:     🟢 {rechnungsdatum}")
+                tg_lines += [
+                    f"🗂 Kategorie: 🟢 <b>{category_label}</b>",
+                    f"",
+                    f"📝 {beschreibung[:300]}",
+                    f"",
+                    f"🤖 Vorverarbeitet von Wilson — kein LLM auf Ryzen",
+                ]
+                _dok_id_bp = result_bypass.get("_dok_id")
+                _tg_kb_bp = build_confirm_keyboard(_dok_id_bp) if _dok_id_bp else None
+                tg_send("\n".join(tg_lines), reply_markup=_tg_kb_bp)
+                log.info(f"Wilson-Bypass abgeschlossen: {file_path.name} → {kategorie_id_norm}")
 
-            try:
-                sidecar_path.unlink()
-                log.info(f"Sidecar gelöscht: {sidecar_path.name}")
-            except Exception as e:
-                log.warning(f"Sidecar löschen fehlgeschlagen: {e}")
+                _step_emit(_fn, "vault", "Vault-Move", "running")
+                move_to_vault(file_path, temp_md_bp, kategorie_id_norm, "", result_bypass)
+                _step_emit(_fn, "vault", "Vault-Move", "done",
+                           extracted={"vault_pfad": result_bypass.get("vault_pfad", "")})
 
-            # Wilson-Status-Rückkanal: transferred → completed
-            _orig_name = dok.get("orig_name", f"{force_stem}.pdf")
-            _notify_wilson_completed(_orig_name)
+                try:
+                    sidecar_path.unlink()
+                    log.info(f"Sidecar gelöscht: {sidecar_path.name}")
+                except Exception as e:
+                    log.warning(f"Sidecar löschen fehlgeschlagen: {e}")
 
-            return
+                # Wilson-Status-Rückkanal: transferred → completed
+                _orig_name = dok.get("orig_name", f"{force_stem}.pdf")
+                _notify_wilson_completed(_orig_name)
+
+                return
         else:
             log.warning(f"Sidecar ungültig oder falsche Version — falle auf normale Pipeline zurück")
     # ── Ende Wilson-Sidecar-Bypass ─────────────────────────────────────────────
@@ -14058,6 +15910,20 @@ def process_file(file_path: Path):
         log.info(f"Konfidenz Kategorie niedrig → 00 Inbox: {file_path.name}")
         result["category_id"] = None
         result["type_id"] = None
+
+    # 5a. Summarization (universell — fuer JEDES Dokument)
+    _step_emit(_fn, "summarize", "LLM-Zusammenfassung", "running")
+    _t0_sum = time.monotonic()
+    summary = summarize_document(
+        raw_md=md_content,
+        doc_type=result.get("type_id", ""),
+        category=result.get("category_id", ""),
+    )
+    result["_summary"] = summary
+    _step_emit(_fn, "summarize", "LLM-Zusammenfassung",
+               "done" if (summary.get("title") or summary.get("summary")) else "skip",
+               extracted={"title": summary.get("title", "")[:80]},
+               duration_ms=(time.monotonic() - _t0_sum) * 1000)
 
     _step_emit(_fn, "db", "Datenbank speichern", "running")
     _t0 = time.monotonic()
@@ -15353,6 +17219,18 @@ def main():
     threading.Thread(target=start_api_server, daemon=True).start()
     threading.Thread(target=tg_poll, daemon=True).start()
 
+    # Stale .meta.json Sidecars ohne PDF aufräumen (alle 15 Min im Watcher-Loop)
+    def _cleanup_stale_sidecars():
+        for sc in WATCH_DIR.glob("*.meta.json"):
+            pdf1 = sc.with_suffix("")                          # Datei.pdf.meta.json → Datei.pdf
+            pdf2 = WATCH_DIR / (sc.name[:-len(".meta.json")])  # Datei.meta.json → Datei
+            if not pdf1.exists() and not pdf2.exists():
+                try:
+                    sc.unlink()
+                    log.info(f"Stale Sidecar gelöscht: {sc.name}")
+                except Exception:
+                    pass
+
     # Vorhandene PDFs, Email-MDs und ENEX in WATCH_DIR (Root) verarbeiten
     for f in WATCH_DIR.glob("*.pdf"):
         file_queue.put(f)
@@ -15389,9 +17267,14 @@ def main():
     observer.start()
     log.info(f"Dispatcher aktiv — warte auf Dokumente (ENEX-Ordner: {enex_dir})")
 
+    _last_sidecar_cleanup = time.monotonic()
     try:
         while True:
             time.sleep(1)
+            # Alle 15 Minuten stale Sidecars aufräumen
+            if time.monotonic() - _last_sidecar_cleanup > 900:
+                _cleanup_stale_sidecars()
+                _last_sidecar_cleanup = time.monotonic()
     except KeyboardInterrupt:
         observer.stop()
     observer.join()
