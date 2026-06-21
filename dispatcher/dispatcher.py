@@ -67,7 +67,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT_ID",    "")
 API_PORT       = int(os.environ.get("API_PORT", "8765"))
 SIDECAR_GRACE_SEC = int(os.environ.get("SIDECAR_GRACE_SEC", "30"))
-REVIEW_MODE       = os.environ.get("REVIEW_MODE", "on") == "on"  # default: Review-Queue aktiv
+REVIEW_MODE       = os.environ.get("REVIEW_MODE", "off") == "on"  # default: aus — Kategorisierung direkt
 KK_DB_PATH = os.environ.get("KK_DB_PATH", "")
 KK_EXTRACT_MODEL = os.environ.get("KK_EXTRACT_MODEL", "qwen3:4b-instruct")
 IMMO_DB_PATH = os.environ.get("IMMO_DB_PATH", "")
@@ -1853,7 +1853,7 @@ def _summarizer_status() -> dict:
     running = pid is not None
     result: dict = {
         "label": "Vault Summarizer",
-        "status": "ok" if running else "warn",
+        "status": "ok",  # idle = ok, kein Warn-Status
         "running": running,
         "pid": pid,
     }
@@ -1872,8 +1872,10 @@ def _summarizer_status() -> dict:
                 "done": counts.get("done", 0),
                 "errors": counts.get("error", 0),
                 "skipped": counts.get("skipped_short", 0) + counts.get("skipped_lang_uncertain", 0),
-                "pct": round(scanned * 100 / total) if total else 0,
+                "pct": round(result["done"] * 100 / max(total, result["done"])) if max(total, result["done"]) > 0 else 0,
             })
+            if result.get("errors", 0) > 0:
+                result["status"] = "warn"
     except Exception:
         pass
     return result
@@ -3596,6 +3598,17 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
       return new _ES(url, conf);
     };
     window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
   }
 })();
 </script>
@@ -3607,20 +3620,16 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
   <h1>Docling Workflow</h1>
   <nav>
-    <a href="/pipeline" class="hl" id="nav-pipeline">⚡ Pipeline <span id="nav-queue-badge" style="display:none;background:var(--warn);color:#fff;border-radius:999px;padding:1px 7px;font-size:10px;font-weight:700;margin-left:4px">0</span></a>
-    <a href="/review" target="_blank" rel="noopener">📋 Review</a>
-    <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
-    <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
-    <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
-    <a href="/office" target="_blank" rel="noopener">📊 Office</a>
-    <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
-    <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
-    <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
-    <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
-    <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
-    <a href="/db" target="_blank" rel="noopener">🗄️ DB</a>
-    <a href="/backup" target="_blank" rel="noopener">💾 Backup</a>
-    <a href="http://192.168.86.195:8090" target="_blank" rel="noopener">🏥 KV</a>
+    <a href="pipeline" class="hl" id="nav-pipeline">⚡ Pipeline <span id="nav-queue-badge" style="display:none;background:var(--warn);color:#fff;border-radius:999px;padding:1px 7px;font-size:10px;font-weight:700;margin-left:4px">0</span></a>
+    <a href="cache" target="_blank" rel="noopener">🔍 Cache</a>
+    <a href="batch" target="_blank" rel="noopener">🧰 Batch</a>
+    <a href="office" target="_blank" rel="noopener">📊 Office</a>
+    <a href="enex" target="_blank" rel="noopener">🐘 ENEX</a>
+    <a href="wilson" target="_blank" rel="noopener">🥧 Wilson</a>
+    <a href="duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
+    <a href="frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
+    <a href="db" target="_blank" rel="noopener">🗄️ DB</a>
+    <a href="backup" target="_blank" rel="noopener">💾 Backup</a>
   </nav>
   <div class="sse-wrap">
     <span class="sse-dot" id="sse-dot"></span>Live
@@ -3644,7 +3653,7 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
     </span>
     <span class="farr">→</span>
 
-    <a class="fstep" id="fstep-wilson" href="/wilson" title="Wilson klassifiziert Dokumente mit eigenem LLM (DeepSeek/Gemma) und erstellt Sidecar-Metadaten">
+    <a class="fstep" id="fstep-wilson" href="wilson" title="Wilson klassifiziert Dokumente mit eigenem LLM (DeepSeek/Gemma) und erstellt Sidecar-Metadaten">
       <span class="fdot" id="fdot-wilson_pi"></span>
       <span class="fi">🥧</span><span class="fl">Wilson / Pi</span><span class="fs">OpenClaw + LLM</span>
     </a>
@@ -3762,7 +3771,7 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
 <script>
 // Service metadata: icon, link-fn, description
 const SVC = {
-  wilson_pi:    { icon:'🥧', label:'Wilson / Pi',      urlFn: _ => `/wilson`,
+  wilson_pi:    { icon:'🥧', label:'Wilson / Pi',      urlFn: _ => `wilson`,
     desc: 'Raspberry Pi 5 als Vorverarbeitungs-Station. Empfängt Scan-PDFs, führt OCR (via Ryzen-Proxy) und LLM-Klassifikation durch, erstellt Sidecar-Metadaten (.meta.json) und überträgt beides per Syncthing. Der Dispatcher übernimmt das Dokument dann im Bypass-Modus – ohne erneutes OCR oder LLM.' },
   syncthing:    { icon:'🔄', label:'Syncthing',         urlFn: ip => `http://${ip}:8384/`,
     desc: 'Dezentrale P2P-Synchronisation ohne Cloud. Überträgt neue PDFs vom Raspberry Pi auf den Ryzen-Server und hält den Obsidian Vault auf allen Geräten aktuell.' },
@@ -3772,9 +3781,9 @@ const SVC = {
     desc: 'Wandelt PDFs mit KI-basierter Texterkennung (OCR) in durchsuchbaren Markdown um. Versteht Tabellen, Spalten und Bilder. Basis für die anschließende LLM-Klassifikation.' },
   ollama:       { icon:'🤖', label:'Ollama LLM',        urlFn: ip => `http://${ip}:11434/`,
     desc: 'Lokales Large Language Model – läuft vollständig auf dem Ryzen, kein Cloud-Zugriff. Übernimmt Spracherkennung, Übersetzung (DE/IT→DE) und semantische Klassifikation nach Kategorie, Absender und Adressat (Fallback-Pfad ohne Wilson-Sidecar).' },
-  dispatcher:   { icon:'📄', label:'Dispatcher',        urlFn: _ => `/pipeline`,
+  dispatcher:   { icon:'📄', label:'Dispatcher',        urlFn: _ => `pipeline`,
     desc: 'Herzstück der Pipeline. Überwacht den Eingangsordner, koordiniert OCR und Klassifikation, schreibt Ergebnis-MD in den Obsidian Vault und benachrichtigt via Telegram. Verwaltet Dokumenten-Datenbank und Konfidenz-Historie.' },
-  enzyme:       { icon:'🧪', label:'enzyme MCP',        urlFn: ip => `/enzyme`,
+  enzyme:       { icon:'🧪', label:'enzyme MCP',        urlFn: ip => `enzyme`,
     desc: 'Semantische Suchschicht über den Obsidian Vault. Indexiert alle Vault-MD-Dateien als Katalysatoren und Entitäten, stellt Vault-Inhalte als MCP-Tools für Claude Code (CLI) und Open WebUI bereit. Ermöglicht natürlichsprachliche Suche über 1.000+ Dokumente.' },
   open_webui:   { icon:'💬', label:'Open WebUI',        urlFn: ip => `http://${ip}:3000/`,
     desc: 'Browser-Interface für Gespräche mit den lokalen Ollama-Modellen und dem Vault-Assistenten. Ermöglicht natürlichsprachliche Vault-Suche über den enzyme-MCP-Server.' },
@@ -3789,7 +3798,7 @@ const SVC = {
 };
 
 // Card render order = same as flow
-const CARD_ORDER = ['wilson_pi','syncthing','syncthing_mac','docling_serve','ollama','dispatcher','enzyme','open_webui','molly','kv_dashboard','vault_summarizer','anlagen_processor'];
+const CARD_ORDER = ['wilson_pi','syncthing','syncthing_mac','docling_serve','ollama','dispatcher','enzyme','open_webui','molly','vault_summarizer','anlagen_processor'];
 
 let _hostIp = 'localhost';
 
@@ -3989,7 +3998,7 @@ async function loadData() {
     const setHref = (id, url) => { const el=document.getElementById(id); if(el&&url) el.href=url; };
     setHref('fstep-syncthing',  SVC.syncthing.urlFn(_hostIp));
     setHref('fstep-ollama',     SVC.ollama.urlFn(_hostIp));
-    setHref('fstep-enzyme',     '/enzyme');
+    setHref('fstep-enzyme',     'enzyme');
     setHref('fstep-openwebui',  SVC.open_webui.urlFn(_hostIp));
 
     // KPI strip
@@ -4541,6 +4550,17 @@ nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
       return new _ES(url, conf);
     };
     window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
   }
 })();
 </script>
@@ -5130,6 +5150,17 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
       return new _ES(url, conf);
     };
     window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
   }
 })();
 </script>
@@ -5990,6 +6021,17 @@ _VAULT_HTML = r"""<!DOCTYPE html>
       return new _ES(url, conf);
     };
     window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
   }
 })();
 </script>
@@ -6211,6 +6253,17 @@ if False: r"""<!DOCTYPE html>
       return new _ES(url, conf);
     };
     window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
   }
 })();
 </script>
@@ -6463,6 +6516,17 @@ button.primary:disabled{opacity:.4;cursor:not-allowed}
       return new _ES(url, conf);
     };
     window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
   }
 })();
 </script>
@@ -6967,6 +7031,17 @@ _WILSON_HTML = r"""<!DOCTYPE html>
       return new _ES(url, conf);
     };
     window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
   }
 })();
 </script>
@@ -7584,6 +7659,17 @@ tr:hover td{background:#f8f9ff}
       return new _ES(url, conf);
     };
     window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
   }
 })();
 </script>
@@ -7731,6 +7817,17 @@ nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
       return new _ES(url, conf);
     };
     window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
   }
 })();
 </script>
@@ -8107,6 +8204,17 @@ table.items tr.item-error td.err-cell{color:var(--err)}
       return new _ES(url, conf);
     };
     window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
   }
 })();
 </script>
@@ -8713,6 +8821,17 @@ button:disabled{opacity:.4;cursor:not-allowed}
       return new _ES(url, conf);
     };
     window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
   }
 })();
 </script>
@@ -9110,6 +9229,17 @@ pre{background:#0f1117;border:1px solid var(--border);border-radius:6px;padding:
       return new _ES(url, conf);
     };
     window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
   }
 })();
 </script>
@@ -9396,6 +9526,17 @@ table.docs tr:hover td{background:#fafbfc}
       return new _ES(url, conf);
     };
     window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
   }
 })();
 </script>
@@ -9899,6 +10040,17 @@ _ENEX_HTML = r"""<!DOCTYPE html>
       return new _ES(url, conf);
     };
     window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
   }
 })();
 </script>
@@ -10340,6 +10492,17 @@ _BACKUP_HTML = r"""<!DOCTYPE html>
       return new _ES(url, conf);
     };
     window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
   }
 })();
 </script>
@@ -10964,9 +11127,9 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._html_response(_BACKUP_HTML)
             return
 
-        # GET /review — Review Dashboard
+        # GET /review — deaktiviert (Kategorisierung läuft direkt)
         elif path == "/review":
-            self._html_response(_REVIEW_HTML)
+            self._html_response("<html><body><h1>Review deaktiviert</h1><p>Kategorisierung läuft direkt ohne Review-Queue.</p><a href='.'>← Dashboard</a></body></html>")
             return
 
         # GET /api/review/queue — Dokumente für Review (Inbox + niedrige Konfidenz)
@@ -11928,8 +12091,12 @@ class _ApiHandler(BaseHTTPRequestHandler):
             return
 
         # GET /review — Review-Dashboard
+        # GET /review — deaktiviert
         elif path == "/review":
-            self._html_response(_REVIEW_HTML)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"<html><body><h1>Review deaktiviert</h1><p>Kategorisierung lauft direkt.</p><a href='.'>Dashboard</a></body></html>")
             return
 
         # GET /api/review/list — Review-Queue Einträge
