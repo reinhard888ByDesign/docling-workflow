@@ -114,8 +114,11 @@ CATEGORY_TO_VAULT_FOLDER: dict[str, str] = {}
 #   adressat_fallback → Fallback-Person wenn adressat leer ("Sonstiges")
 TYPE_ROUTING: dict[tuple[str, str], dict] = {}
 
-# Schwellwert für OCR-Qualitäts-Gate (Zeichen im Docling-Ergebnis)
-OCR_MIN_CHARS = 300
+# Schwellwert für OCR-Qualitäts-Gate (Zeichen im Docling-Ergebnis).
+# 150 statt 300: Rezepte sind kurze Dokumente (15–25 Zeilen), selbst mit
+# perfekter OCR oft < 300 Zeichen. 150 erkennt echte OCR-Ausfälle (< 50 chars)
+# und lässt kurze valide Dokumente durch.
+OCR_MIN_CHARS = 150
 
 
 def build_vault_path(category_id: str, type_id: str, adressat: str,
@@ -467,12 +470,21 @@ def _md5_file(path: Path) -> str:
 
 
 def _parse_betrag(s: str | None) -> float | None:
-    """Extrahiert float aus Betragsstring wie '33,06 EUR' oder '33.06'."""
+    """Extrahiert float aus Betragsstring wie '33,06 EUR', '-76,85' oder '33.06'."""
     if not s:
         return None
-    cleaned = re.sub(r"[^\d,.]", "", str(s)).replace(",", ".")
+    raw = str(s).strip()
+    # Detect parenthesized negative (accounting notation), e.g. "(153.70)" → -153.70
+    paren_negative = raw.startswith("(") and raw.endswith(")")
+    cleaned = re.sub(r"[^\d,.-]", "", raw).replace(",", ".")
+    # Remove stray hyphens that are not a leading minus sign
+    if cleaned.startswith("-"):
+        cleaned = cleaned[0] + cleaned[1:].replace("-", "")
+    else:
+        cleaned = cleaned.replace("-", "")
     try:
-        return float(cleaned)
+        val = float(cleaned)
+        return -val if paren_negative else val
     except ValueError:
         return None
 
@@ -786,7 +798,7 @@ def _write_kk_leistungen_db(result: dict, pdf_path: Path) -> int:
 _KV_EXTRACTION_PROMPT = """Du bist ein Spezialist für die Extraktion strukturierter Daten aus \
 Leistungsabrechnungen deutscher privater Krankenversicherungen.
 
-Extrahiere aus dem folgenden Dokumententext ALLE Einzelpositionen als JSON-Array.
+Extrahiere NUR die echten Behandlungspositionen aus dem Dokumententext als JSON-Array.
 Jede Position soll diese Felder enthalten:
 
 {
@@ -796,42 +808,61 @@ Jede Position soll diese Felder enthalten:
   "datum_leistungsabrechnung": "Datum des Abrechnungsschreibens als JJJJ-MM-TT",
   "leistungserbringer": "Name des Arztes/der Apotheke/des Heilpraktikers",
   "zeitraum": "Behandlungszeitraum (z.B. '19.03.2026' oder '18.05.-14.08.2015')",
-  "art_der_behandlung": "Art (z.B. 'Zahnbehandlung', 'Arzneimittel', 'Heilpraktiker', 'ärztliche Leistung', 'Hilfsmittel', 'ambulante Leistung')",
+  "art_der_behandlung": "Art der Behandlung",
   "rechnungsbetrag": 123.45,
   "erstattung": 100.00,
   "erstattungssatz": 100,
-  "hinweise": "Hinweis-Text oder Nummer (z.B. '1', 'Nahrungsergänzungsmittel') oder null",
+  "hinweise": "Hinweis-Nummer aus der Tabelle (z.B. '1') oder null",
   "sb_kumuliert": null
 }
 
-WICHTIGE REGELN:
-- Jede Zeile/Position der Tabelle wird ein EIGENER Array-Eintrag
-- Datum NORMALISIEREN auf JJJJ-MM-TT. Bei zweistelligen Jahren: 00-30 → 20xx, 31-99 → 19xx
-- Beträge als ZAHLEN (nicht String), mit Punkt als Dezimaltrenner
-- Wenn kein Hinweis → null
-- Nur das JSON-Array zurückgeben, keinen anderen Text
-- Gothaer-Briefkopf: Vers.nr. 1517 88 09 → Reinhard
-- HUK-Briefkopf: Vers.nr. 300/575064-W → Marion
+ZULÄSSIGE art_der_behandlung (NUR diese Werte verwenden):
+  "ärztliche Leistung", "Arzneimittel", "Heilpraktiker", "Hilfsmittel",
+  "Zahnbehandlung", "Zahnprophylaxe", "Kieferorthopädie",
+  "Psychotherapie", "Naturheilverfahren", "ambulante Leistung",
+  "Krankentagegeld", "Krankenhaustagegeld", "Auslandsbeleg",
+  "Selbstbehalt"
 
-SELBSTBEHALT (SB) — KRITISCH KORREKT EXTRAHIEREN:
-HUK-Coburg: Selbstbehalt erscheint als eigene Zeile(n) in der Abrechnungstabelle.
-  In der Tabelle steht KEIN Rechnungsbetrag für die SB-Zeile, nur ein negativer Erstattungsbetrag.
-  Einen EINZIGEN Eintrag erstellen (Summe aller SB-Zeilen falls mehrere):
-  "art_der_behandlung" = "Selbstbehalt"
-  "rechnungsbetrag" = ABS(SB-Betrag) als POSITIVE Zahl (z.B. 76.85, NICHT -76.85)
-  "erstattung" = NEGATIVER SB-Betrag (z.B. -76.85)
-  "erstattungssatz" = 0
-  "hinweise" = Selbstbehalt-Hinweistext aus dem Dokument
-  ACHTUNG: "restlicher Selbstbehalt von X €" im Hinweistext ist KEIN eigener Eintrag — nur als hinweis-Text verwenden.
+STRENGSTE REGELN — Verstöße machen die Extraktion unbrauchbar:
+1. NUR Zeilen aus der Haupt-Tabelle extrahieren, die einen RECHNUNGSBETRAG > 0 haben.
+2. Keine Einträge für "Zwischensumme", "Gesamtsumme", "Gesamtübersicht" oder Ähnliches.
+3. "restlicher Selbstbehalt von X €" aus dem Hinweis-Text ist KEIN Eintrag. NIEMALS als Position aufnehmen.
+4. art_der_behandlung WORTWÖRTLICH aus der Tabelle übernehmen, z.B. steht da "Ärztliche Leistung"
+   dann ist es "ärztliche Leistung" — NICHT umbenennen in "Zahnbehandlung" oder anderes.
+5. Jede Position MUSS einen nicht-leeren "leistungserbringer" haben (Arzt/Apotheke aus der Tabellenzeile).
+   Wenn kein Leistungserbringer in der Zeile steht, den aus der Vorgängerzeile oder dem Briefkopf nehmen.
+6. Beträge als ZAHLEN (nicht String), mit Punkt als Dezimaltrenner.
+7. Datum NORMALISIEREN auf JJJJ-MM-TT. Bei zweistelligen Jahren: 00-30 → 20xx, 31-99 → 19xx.
+8. Nur das JSON-Array zurückgeben, keinen anderen Text.
+9. Gothaer-Briefkopf: Vers.nr. 1517 88 09 → Reinhard. HUK-Briefkopf: Vers.nr. 300/575064-W → Marion.
 
-Gothaer: Selbstbehalt steht AUSSERHALB der Tabelle als "Berücksichtigte Selbstbeteiligung (SB)".
-  Einen EINZIGEN zusätzlichen Eintrag erstellen:
-  "art_der_behandlung" = "Selbstbehalt"
-  "leistungserbringer" = "Selbstbehalt"
-  "rechnungsbetrag" = POSITIVER SB-Betrag (z.B. 46.56)
-  "erstattung" = NEGATIVER SB-Betrag (z.B. -46.56)
-  "erstattungssatz" = 0
-  "sb_kumuliert" = Wert "angerechnete SB" aus SB-Jahresübersicht (z.B. 85.63) oder null
+SELBSTBEHALT (SB) — als EINEN einzigen Eintrag am Ende des Arrays:
+- HUK: SB-Zeilen in der Tabelle haben KEINEN Rechnungsbetrag, nur negativen Erstattungsbetrag.
+  Sie stehen in der Spalte "Rechnung/Beleg" mit dem Text "Selbstbehalt".
+  Summiere ALLE SB-Zeilen zu EINEM Eintrag am ENDE des Arrays:
+  "art_der_behandlung": "Selbstbehalt", "leistungserbringer": "Selbstbehalt",
+  "rechnungsbetrag": ABS(Summe aller SB-Erstattungsbeträge),
+  "erstattung": Summe aller SB-Erstattungsbeträge (negative Zahl, z.B. -153.70),
+  "erstattungssatz": 0,
+  "hinweise": Hinweis-Nummer(n) AUSSCHLIESSLICH aus den SB-Zeilen (z.B. "1"),
+  "zeitraum": null
+- WICHTIG: Hinweis-Nummern aus SB-Zeilen NUR in den SB-Eintrag, NICHT in die正常en Positionen.
+- Gothaer: SB steht als "Berücksichtigte Selbstbeteiligung (SB)" außerhalb der Tabelle.
+  EINEN Eintrag mit "leistungserbringer": "Selbstbehalt" und "sb_kumuliert": Wert aus SB-Jahresübersicht.
+
+BEISPIELE FÜR HUK-FORMAT:
+Tabelle:
+  Ärztliche Leistung  18.03.26  76,85       76,85
+  Ärztliche Leistung  18.03.26  76,85  100  76,85
+  Selbstbehalt                          -76,85
+  Selbstbehalt                          -76,85  1
+Zwischensumme: 76,85  0,00
+
+Extraktion (3 Einträge):
+1. Position (erste Zeile): art="ärztliche Leistung", betrag=76.85, erstattung=76.85, satz=100, hinweise=null
+2. Position (zweite Zeile): art="ärztliche Leistung", betrag=76.85, erstattung=76.85, satz=100, hinweise=null
+3. SB (ALLE SB-Zeilen zusammen): art="Selbstbehalt", le="Selbstbehalt", betrag=153.70, erstattung=-153.70, satz=0, hinweise="1"
+(Wenn zwei Positionen identisch sind, reicht EINE — die HUK zeigt sie oft doppelt.)
 
 Dokumententext:
 """
@@ -860,6 +891,112 @@ def _kv_parse_json(response: str) -> list[dict]:
         return []
 
 
+# Whitelist gültiger art_der_behandlung-Werte (LLM-Output wird dagegen validiert)
+_VALID_ART_TYPES = {
+    "ärztliche leistung", "arzneimittel", "heilpraktiker", "hilfsmittel",
+    "zahnbehandlung", "zahnprophylaxe", "kieferorthopädie",
+    "psychotherapie", "naturheilverfahren", "ambulante leistung",
+    "krankentagegeld", "krankenhaustagegeld", "auslandsbeleg",
+    "selbstbehalt",
+}
+
+
+def _kv_validate_positions(positions: list[dict], raw_text: str = "") -> tuple[list[dict], dict | None]:
+    """Validiert und bereinigt LLM-extrahierte Positionen.
+
+    Entfernt:
+    - Einträge mit rechnungsbetrag <= 0 oder None (keine echten Positionen)
+    - Einträge mit leerem leistungserbringer
+    - Einträge mit ungültiger art_der_behandlung
+    - Aus Hinweis-Text hallucinierte Beträge (wie "restlicher Selbstbehalt von 450,42 €")
+
+    Fasst mehrere SB-Einträge zu einem zusammen.
+
+    Returns: (bereinigte_positionen, sb_eintrag | None)
+    """
+    if not positions:
+        return [], None
+
+    clean = []
+    sb_entries = []
+
+    for pos in positions:
+        art = (pos.get("art_der_behandlung") or "").strip().lower()
+        betrag = pos.get("rechnungsbetrag")
+        erstattung = pos.get("erstattung")
+        le = (pos.get("leistungserbringer") or "").strip()
+
+        # Selbstbehalt separat sammeln
+        if art == "selbstbehalt":
+            sb_entries.append(pos)
+            continue
+
+        # Kein Rechnungsbetrag oder <= 0 → keine echte Position
+        if betrag is None or (isinstance(betrag, (int, float)) and betrag <= 0):
+            log.info(f"KV-Validate: überspringe Position ohne Betrag: art={art}, betrag={betrag}")
+            continue
+
+        # Kein Leistungserbringer → unvollständig
+        if not le:
+            log.info(f"KV-Validate: überspringe Position ohne Leistungserbringer: art={art}")
+            continue
+
+        # Art-Validierung (case-insensitive)
+        if art and art not in _VALID_ART_TYPES:
+            # Versuche Fuzzy-Match gegen Whitelist
+            from difflib import get_close_matches
+            matches = get_close_matches(art, _VALID_ART_TYPES, n=1, cutoff=0.6)
+            if matches:
+                log.info(f"KV-Validate: korrigiere art '{art}' → '{matches[0]}'")
+                pos["art_der_behandlung"] = matches[0]
+            else:
+                log.warning(f"KV-Validate: unbekannte art_der_behandlung '{art}' — behalte trotzdem")
+
+        # Prüfe auf typische Hinweis-Halluzinationen:
+        # Beträge die verdächtig rund sind und keinen Leistungserbringer haben
+        if isinstance(betrag, (int, float)) and betrag > 400 and not le:
+            log.warning(f"KV-Validate: verdächtig hoher Betrag ohne LE: {betrag} — überspringe")
+            continue
+
+        clean.append(pos)
+
+    # SB-Einträge zusammenfassen
+    sb_result = None
+    if sb_entries:
+        total_sb_betrag = 0.0
+        total_sb_erstattung = 0.0
+        hinweise = []
+        sb_kumuliert = None
+        for sb in sb_entries:
+            b = sb.get("rechnungsbetrag")
+            if isinstance(b, (int, float)) and b > 0:
+                total_sb_betrag += abs(b)
+            e = sb.get("erstattung")
+            if isinstance(e, (int, float)):
+                total_sb_erstattung += e
+            h = sb.get("hinweise")
+            if h and str(h) not in hinweise:
+                hinweise.append(str(h))
+            sk = sb.get("sb_kumuliert")
+            if sk is not None:
+                sb_kumuliert = sk
+
+        # Nur übernehmen wenn sinnvoll (negativer Erstattungsbetrag)
+        if total_sb_erstattung < 0 or total_sb_betrag > 0:
+            sb_result = {
+                "art_der_behandlung": "Selbstbehalt",
+                "leistungserbringer": "Selbstbehalt",
+                "rechnungsbetrag": abs(total_sb_erstattung) if total_sb_erstattung < 0 else total_sb_betrag,
+                "erstattungsbetrag": total_sb_erstattung if total_sb_erstattung < 0 else -total_sb_betrag,
+                "erstattungsprozent": 0,
+                "hinweise": ", ".join(hinweise) if hinweise else None,
+                "zeitraum": None,
+                "sb_kumuliert": sb_kumuliert,
+            }
+
+    return clean, sb_result
+
+
 def _kv_la_is_leistungsabrechnung(result: dict) -> bool:
     """Erkennt ob ein Bypass-Dokument eine KV-Leistungsabrechnung ist."""
     if not KK_DB_PATH:
@@ -876,13 +1013,27 @@ def _kv_la_is_leistungsabrechnung(result: dict) -> bool:
 
 
 def _kv_pdf_to_text(pdf_path: Path) -> str:
-    """Extrahiert Text aus PDF via pdfminer.six (kein externes Tool nötig)."""
+    """Extrahiert Text aus PDF via pdftotext -layout (bessere Tabellenerhaltung als pdfminer)."""
+    import subprocess
     try:
+        result = subprocess.run(
+            ["pdftotext", "-layout", str(pdf_path), "-"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            return (result.stdout or "").strip()
+        log.warning(f"pdftotext fehlgeschlagen für {pdf_path.name}: {result.stderr[:200]}")
+        # Fallback zu pdfminer
+        from pdfminer.high_level import extract_text as pdfminer_extract
+        text = pdfminer_extract(str(pdf_path))
+        return (text or "").strip()
+    except FileNotFoundError:
+        log.warning("pdftotext nicht gefunden — verwende pdfminer")
         from pdfminer.high_level import extract_text as pdfminer_extract
         text = pdfminer_extract(str(pdf_path))
         return (text or "").strip()
     except Exception as e:
-        log.warning(f"pdfminer Extraktion fehlgeschlagen für {pdf_path.name}: {e}")
+        log.warning(f"PDF-Text Extraktion fehlgeschlagen für {pdf_path.name}: {e}")
         return ""
 
 
@@ -910,6 +1061,20 @@ def _kv_extract_and_store(file_path: Path, result: dict) -> None:
 
         if not positions:
             log.warning(f"KV-Bypass-Extraktion: keine Positionen für {file_path.name}")
+            return
+
+        # Validieren und bereinigen
+        positions, sb = _kv_validate_positions(positions, text)
+        if sb:
+            positions.append(sb)
+            log.info(
+                f"KV-Validate: SB-Eintrag hinzugefügt: "
+                f"betrag={sb.get('rechnungsbetrag')}, "
+                f"erstattung={sb.get('erstattungsbetrag')}"
+            )
+
+        if not positions:
+            log.warning(f"KV-Bypass-Extraktion: keine gültigen Positionen nach Validierung für {file_path.name}")
             return
 
         # Feldnamen auf _write_kk_leistungen_db()-Format mappen
@@ -3665,9 +3830,9 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
     </a>
     <span class="farr">→</span>
 
-    <span class="fstep" title="Docling OCR und Ollama-Klassifikation werden übersprungen wenn Wilson-Sidecar vorhanden (Bypass-Modus)">
+    <span class="fstep" title="Docling OCR: Zwei-Pass (EasyOCR→Tesseract deu/ita/eng). Wird übersprungen wenn Wilson-Sidecar vorhanden (Bypass-Modus)">
       <span class="fdot" id="fdot-docling_serve"></span>
-      <span class="fi">🔍</span><span class="fl">Docling OCR</span><span class="fs">nur ohne Sidecar</span>
+      <span class="fi">🔍</span><span class="fl">Docling OCR</span><span class="fs">deu/ita/eng</span>
     </span>
     <span class="farr">→</span>
 
@@ -5258,7 +5423,7 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
 
         <div class="dtile clickable" id="dcs-doctype" onclick="showContent('translate')" title="Klicken: Übersetzung anzeigen">
           <div class="dtile-label">📋 Typ & Sprache <span style="font-size:8px;opacity:.6">↗</span></div>
-          <div class="dtile-hint">Keyword-Erkennung des Dokumenttyps + Sprachcode (DE/IT). qwen2.5:7b klassifiziert mehrsprachig direkt.</div>
+          <div class="dtile-hint">Keyword-Erkennung des Dokumenttyps + Sprachcode (DE/IT). qwen3:4b-instruct klassifiziert mehrsprachig direkt.</div>
           <div class="drow"><span class="dk">Typ</span><span class="dv" id="dc-doctype">–</span></div>
           <div class="drow"><span class="dk">Sprache</span><span class="dv" id="dc-lang">–</span></div>
           <div class="drow"><span class="dk">Übersetzt</span><span class="dv" id="dc-translate">–</span></div>
@@ -5266,7 +5431,7 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
 
         <div class="dtile" id="dcs-llm">
           <div class="dtile-label">🤖 LLM</div>
-          <div class="dtile-hint">qwen2.5:7b — Kategorie, Typ, Absender, Adressat, Datum und Betrag aus dem Dokumentinhalt</div>
+          <div class="dtile-hint">qwen3:4b-instruct — Kategorie, Typ, Absender, Adressat, Datum und Betrag aus dem Dokumentinhalt</div>
           <div class="drow"><span class="dk">Kategorie</span><span class="dv" id="dc-cat">–</span></div>
           <div class="drow"><span class="dk">Typ</span><span class="dv" id="dc-type">–</span></div>
           <div class="drow"><span class="dk">Absender</span><span class="dv" id="dc-absender">–</span></div>
@@ -5292,14 +5457,14 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
 <script>
 const STEP_DEF = [
   { id: 'started',    label: 'Verarbeitung gestartet',          icon: '📄', desc: 'PDF im Eingangsordner erkannt und in die Warteschlange eingereiht.' },
-  { id: 'ocr',        label: 'OCR / Docling',                   icon: '🔍', desc: 'Docling wandelt das PDF in durchsuchbaren Markdown um — erkennt Text, Tabellen und Spalten (auch bei gescannten Dokumenten).' },
-  { id: 'ocr_quality',label: 'OCR-Qualitäts-Gate',              icon: '📏', desc: 'Prüft ob der OCR-Text ausreichend lesbar ist. Bei zu wenig Text oder reinen Bilddokumenten → direkt in 00 Inbox.' },
+  { id: 'ocr',        label: 'OCR / Docling',                   icon: '🔍', desc: 'Zwei-Pass-Strategie: Erst Text-Extraktion (born-digital), dann Tesseract CLI mit deu+ita+eng. EasyOCR-Artefakt (spaced-out Text) wird automatisch erkannt → force_ocr=True.' },
+  { id: 'ocr_quality',label: 'OCR-Qualitäts-Gate',              icon: '📏', desc: 'Prüft ob OCR-Text ≥ 150 Zeichen (angepasst für kurze Dokumente wie Rezepte). Bei < 150 Zeichen → direkt in 00 Inbox ohne LLM-Klassifikation.' },
   { id: 'header',     label: 'Header-Extraktion',                icon: '🏷️', desc: 'Regex-basierte Extraktion von Absender und Empfänger aus den ersten Zeilen (Name, Firma, Adresse) — ohne LLM.' },
   { id: 'identifiers',label: 'Identifier & Personen-Auflösung', icon: '🪪', desc: 'Sucht nach bekannten IDs: Codice Fiscale, IBAN, Steuernummer, Kfz-Kennzeichen. Ordnet Dokument Reinhard oder Marion zu.' },
   { id: 'doctype',    label: 'Dokumenttyp-Erkennung',            icon: '📋', desc: 'Keyword-basierte Vorklassifikation (z.B. "Rechnung", "Leistungsabrechnung", "Polizza") — liefert Hint für das LLM.' },
-  { id: 'lang',       label: 'Spracherkennung',                  icon: '🌐', desc: 'Erkennt die Dokumentsprache (DE/IT/EN). qwen2.5:7b klassifiziert mehrsprachig direkt — kein Übersetzungsschritt nötig.' },
-  { id: 'translate',  label: 'Übersetzung',                      icon: '🔤', desc: 'Übersetzungsschritt deaktiviert — qwen2.5:7b versteht Deutsch und Italienisch nativ.' },
-  { id: 'llm',        label: 'LLM-Klassifikation (Ollama)',      icon: '🤖', desc: 'qwen2.5:7b analysiert den Dokumentinhalt und bestimmt Kategorie, Typ, Absender, Adressat, Datum und Betrag.' },
+  { id: 'lang',       label: 'Spracherkennung',                  icon: '🌐', desc: 'Erkennt die Dokumentsprache (DE/IT/EN). qwen3:4b-instruct klassifiziert mehrsprachig direkt — kein Übersetzungsschritt nötig.' },
+  { id: 'translate',  label: 'Übersetzung',                      icon: '🔤', desc: 'Übersetzungsschritt deaktiviert — qwen3:4b-instruct versteht Deutsch und Italienisch nativ.' },
+  { id: 'llm',        label: 'LLM-Klassifikation (Ollama)',      icon: '🤖', desc: 'qwen3:4b-instruct analysiert den Dokumentinhalt und bestimmt Kategorie, Typ, Absender, Adressat, Datum und Betrag.' },
   { id: 'overrides',  label: 'Deterministisches Override',       icon: '⚖️', desc: 'Feste Regeln überschreiben LLM-Ergebnis: bekannte Absender (HUK→Marion, Gothaer→Reinhard), Codice Fiscale, Lernregeln.' },
   { id: 'db',         label: 'Datenbank speichern',              icon: '💾', desc: 'Klassifikationsergebnis wird in dispatcher.db gespeichert (Kategorie, Konfidenz, Modell, Dauer). Basis für Review-Dashboard.' },
   { id: 'vault',      label: 'Vault-Move',                       icon: '📁', desc: 'PDF und MD-Datei werden in den richtigen Vault-Ordner verschoben. Bei niedriger Konfidenz oder Fehler → 00 Inbox.' },
@@ -13409,30 +13574,83 @@ def wait_for_docling(max_retries=30, delay=10):
     return False
 
 
+def _docling_convert(file_path: Path, force_ocr: bool) -> str | None:
+    """Einzelner Docling-API-Call. force_ocr=True erzwingt Tesseract
+    statt EasyOCR (nötig für gescannte PDFs ohne Text-Layer)."""
+    data: dict[str, object] = {
+        "to_formats": "md",
+        "image_export_mode": "placeholder",
+        "ocr_lang": ["deu", "ita", "eng"],
+    }
+    if force_ocr:
+        data["force_ocr"] = True
+
+    with open(file_path, "rb") as f:
+        r = requests.post(
+            f"{DOCLING_URL}/v1/convert/file",
+            files={"files": (file_path.name, f, "application/octet-stream")},
+            data=data,
+            timeout=600,
+        )
+    if r.status_code != 200:
+        raise RuntimeError(f"Docling HTTP {r.status_code}: {r.text[:200]}")
+    result = r.json()
+    if result.get("status") != "success":
+        raise RuntimeError(f"Docling status={result.get('status')}")
+    return result.get("document", {}).get("md_content", "")
+
+
+def _has_easyocr_artifact(text: str, threshold: int = 5) -> bool:
+    """Erkennt EasyOCR-Artefakt: spaced-out Einzelbuchstaben („J a n n i n g“).
+    Tritt auf wenn EasyOCR ohne deutsches Modell auf deutsche Texte losgelassen wird."""
+    import re as _re
+    patterns = len(_re.findall(
+        r'\b[A-Za-zÄÖÜäöüß] [A-Za-zÄÖÜäöüß] [A-Za-zÄÖÜäöüß]\b',
+        text[:2000],
+    ))
+    return patterns > threshold
+
+
 def convert_to_markdown(file_path: Path) -> str | None:
+    """Konvertiert PDF via Docling in Markdown.
+
+    Zwei-Pass-Strategie:
+    1. Ohne force_ocr — native Text-Extraktion für born-digital PDFs (schnell, präzise).
+    2. Wenn EasyOCR-Artefakt erkannt (spaced-out Text) → force_ocr=True
+       erzwingt Tesseract CLI, das mit deu.traineddata korrekt arbeitet.
+    """
     log.info(f"Konvertiere mit Docling: {file_path.name}")
-    try:
-        with open(file_path, "rb") as f:
-            r = requests.post(
-                f"{DOCLING_URL}/v1/convert/file",
-                files={"files": (file_path.name, f, "application/octet-stream")},
-                data={"to_formats": "md", "image_export_mode": "placeholder"},
-                timeout=600,
+
+    for pass_num, force_ocr in enumerate((False, True), 1):
+        try:
+            md = _docling_convert(file_path, force_ocr)
+        except requests.exceptions.Timeout:
+            log.error(f"Docling Timeout bei {file_path.name} (Pass {pass_num})")
+            if pass_num == 1:
+                continue
+            return None
+        except Exception as e:
+            log.error(f"Docling Fehler (Pass {pass_num}): {e}")
+            if pass_num == 1:
+                continue
+            return None
+
+        if md is None:
+            if pass_num == 1:
+                continue
+            return None
+
+        # Prüfe auf EasyOCR-Artefakt nur im ersten Pass
+        if pass_num == 1 and _has_easyocr_artifact(md):
+            log.info(
+                f"EasyOCR-Artefakt erkannt in {file_path.name} "
+                f"(spaced-out text), wiederhole mit force_ocr=True"
             )
-        if r.status_code != 200:
-            log.error(f"Docling Fehler {r.status_code}: {r.text[:200]}")
-            return None
-        result = r.json()
-        if result.get("status") != "success":
-            log.error(f"Docling Status nicht success: {result.get('status')}")
-            return None
-        return result.get("document", {}).get("md_content", "")
-    except requests.exceptions.Timeout:
-        log.error(f"Docling Timeout bei {file_path.name}")
-        return None
-    except Exception as e:
-        log.error(f"Docling Fehler: {e}")
-        return None
+            continue
+
+        return md
+
+    return None
 
 # ── Ollama Klassifizierung ─────────────────────────────────────────────────────
 
@@ -14162,15 +14380,7 @@ A) Absender ist eine Versicherung (Gothaer, Barmenia, HUK, HUK-COBURG):
        - AVB, AGB, Versicherungsbedingungen → type_id="versicherungsbedingungen"
        - Angebot, Antrag, Widerspruch, Schreiben → type_id="versicherungskorrespondenz"
 
-B) Absender ist ein Arzt, Krankenhaus, Labor, MVZ, Abrechnungsdienstleister (z.B. unimed, PVS):
-   → category_id="krankenversicherung", type_id="arztrechnung"
-   AUSNAHME: Tierarzt / Tierklinik / Veterinaria / Clinica Veterinaria / Tierheilpraktiker
-     → NICHT krankenversicherung. Verwende: category_id="familie", type_id="tierarztrechnung".
-
-C) Sanitätshaus, Optiker, Apotheke, Physiotherapie:
-   → category_id="krankenversicherung", type_id="sonstige_medizinische_leistung"
-
-D) REZEPT-ERKENNUNG (wichtig: nicht mit Arztrechnung verwechseln!):
+B) REZEPT-ERKENNUNG (VOR Arzt-Absender prüfen — ein Rezept bleibt Rezept, auch wenn ein Arzt draufsteht!):
    Ein Rezept erkennst du an diesen MERKMALEN (mehrere muessen zutreffen):
    - "Rp." oder "Rp " vor Medikamentennamen (recipe = Verschreibung)
    - NUR Medikamentenname + Dosierung + Packungsgröße (N1/N2/N3)
@@ -14178,11 +14388,23 @@ D) REZEPT-ERKENNUNG (wichtig: nicht mit Arztrechnung verwechseln!):
    - KEIN "Rechnungsbetrag", KEINE Zahlungsaufforderung
    - Text enthaelt "Verschreibung", "Rezept", "Privatrezept", "Kassenrezept"
    → category_id="krankenversicherung", type_id="rezept"
+   WICHTIG: Sobald diese Rezept-Merkmale zutreffen → IMMER rezept, AUCH WENN der Absender ein Arzt ist!
+   Ein Rezept hat einen Arzt-Briefkopf (weil der Arzt es ausstellt), ist aber TROTZDEM ein Rezept, keine Arztrechnung.
 
    Apotheken-RECHNUNG (nicht Rezept!) erkennst du an:
    - Absender ist eine Apotheke
    - Enthaelt Rechnungsbetrag, Steuernummer, Zahlungsaufforderung
    - → category_id="krankenversicherung", type_id="arztrechnung" (wie andere Rechnungen auch)
+
+C) Absender ist ein Arzt, Krankenhaus, Labor, MVZ, Abrechnungsdienstleister (z.B. unimed, PVS):
+   → category_id="krankenversicherung", type_id="arztrechnung"
+   AUSNAHME: Tierarzt / Tierklinik / Veterinaria / Clinica Veterinaria / Tierheilpraktiker
+     → NICHT krankenversicherung. Verwende: category_id="familie", type_id="tierarztrechnung".
+   WICHTIG: Vorher Regel B (Rezept) prüfen! Ein Dokument mit Arzt-Briefkopf das Rp.-Vermerke enthält
+   und KEINE GOÄ-Ziffern hat, ist ein REZEPT, keine Arztrechnung.
+
+D) Sanitätshaus, Optiker, Apotheke, Physiotherapie:
+   → category_id="krankenversicherung", type_id="sonstige_medizinische_leistung"
 
 WICHTIG: Entscheidend ist NICHT die bloße Erwähnung von "Versicherung" im Text, sondern Absender + Dokumenttyp.
 
@@ -14199,6 +14421,7 @@ NEGATIVE BEISPIELE — diese Fehler hat das System in der Vergangenheit gemacht,
 - ❌ Arztrechnung von "Dr. Schneider" ohne Patientenname → adressat="Reinhard" → richtig ist null
 - ❌ Versicherungs-Anschreiben mit Erstattungsbetrag, aber OHNE Erstattungsübersicht-Tabelle als Leistungsabrechnung klassifiziert → richtig ist versicherungskorrespondenz
 - ❌ Dokument das "Versicherung" im Fließtext erwähnt, aber von einer Bank/Steuerberater/Vermieter stammt, als Krankenversicherung klassifiziert → Absender entscheidet, nicht der Text
+- ❌ Rezept (mit Rp.-Vermerk, Medikament+Dosierung+N1/N2/N3, KEINE GOÄ-Ziffern) als "arztrechnung" klassifiziert, nur weil ein Arzt-Briefkopf drauf ist → Arzt stellt Rezepte aus, aber das Dokument ist trotzdem ein rezept
 
 Für Krankenversicherung/Versicherung zusätzlich ausfüllen:
 - "rechnungsbetrag": Gesamtbetrag als String (z.B. "33,06 EUR") — bei Leistungsabrechnung: Gesamtrechnungsbetrag, bei Arztrechnung: Endbetrag; sonst null
@@ -15854,7 +16077,7 @@ def process_file(file_path: Path):
     except Exception as e:
         log.warning(f"Dokumenttyp-Artefakt konnte nicht geschrieben werden: {e}")
 
-    # 3. Sprach-Erkennung (qwen2.5:7b klassifiziert DE + IT direkt — kein Übersetzungs-Pass)
+    # 3. Sprach-Erkennung (qwen3:4b-instruct klassifiziert DE + IT + EN direkt — kein Übersetzungs-Pass)
     classify_input = md_content
     _t0 = time.monotonic()
     lang, lang_prob = detect_document_language(md_content)
