@@ -1,438 +1,1311 @@
 categories:
   krankenversicherung:
-    label: "Krankenversicherung"
-    vault_folder: "49 Krankenversicherung"
-    description: "Leistungsabrechnungen, Arztrechnungen, Rezepte, KV-Korrespondenz (HUK, Gothaer, Barmenia, vigo)"
-
+    label: Krankenversicherung
+    vault_folder: 49 Krankenversicherung
+    description: Leistungsabrechnungen, Arztrechnungen, Rezepte, KV-Korrespondenz
+      (HUK, Gothaer, Barmenia, vigo)
   versicherung:
-    label: "Versicherungsdokument"
-    vault_folder: "40 Finanzen"
-    description: "Sachversicherungen, KFZ-Versicherung, Versicherungsscheine, Beitragsanpassungen"
-
+    label: Versicherungsdokument
+    vault_folder: 40 Finanzen
+    description: Sachversicherungen, KFZ-Versicherung, Versicherungsscheine, Beitragsanpassungen
+    types:
+    - id: versicherungsschein
+      label: Versicherungsschein / Police
+      hints:
+      - Versicherungsschein
+      - Police
+      - polizza
+      - Deckungsbestätigung
+      - Versicherungsbestätigung
+    - id: beitragsanpassung
+      label: Beitragsanpassung
+      hints:
+      - Beitragsanpassung
+      - Beitragserhöhung
+      - premio
+      - adeguamento
+    - id: schaden
+      label: Schaden / Leistungsfall
+      hints:
+      - Schadenmeldung
+      - Leistungsfall
+      - sinistro
+      - risarcimento
+      - Schadensregulierung
+    - id: kuendigung
+      label: Kündigung / Wechsel
+      hints:
+      - Kündigung
+      - disdetta
+      - Versicherungswechsel
+      - Sonderkündigungsrecht
+    - id: korrespondenz
+      label: Korrespondenz
+      hints:
+      - Schreiben
+      - Mitteilung
+      - Angebot
+      - Information
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
   persoenlich:
-    label: "Persönliches"
-    vault_folder: "10 Persönlich"
-    description: "Ausweise, Urkunden, Vollmachten, persönliche Korrespondenz"
-
+    label: Persönliches
+    vault_folder: 10 Persönlich
+    description: Ausweise, Urkunden, Vollmachten, persönliche Korrespondenz
+    types:
+    - id: ausweis
+      label: Ausweis / Urkunde
+      hints:
+      - Reisepass
+      - Personalausweis
+      - Geburtsurkunde
+      - Heiratsurkunde
+      - certificato
+      - carta identita
+    - id: vollmacht
+      label: Vollmacht / Testament
+      hints:
+      - Vollmacht
+      - Patientenverfügung
+      - Testament
+      - delega
+      - testamento
+    - id: korrespondenz
+      label: Korrespondenz
+      hints:
+      - Schreiben
+      - Brief
+      - Mitteilung
+      - lettera
+      - Einladung
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
   familie:
-    label: "Familie"
-    vault_folder: "20 Familie"
-    description: "Familiendokumente — Berta Hutterer, Max/Markus Hutterer, Josef Janning, Haustiere, Tierarzt"
-
+    label: Familie
+    vault_folder: 20 Familie
+    description: Familiendokumente — Berta Hutterer, Max/Markus Hutterer, Josef Janning,
+      Haustiere, Tierarzt
+    types:
+    - id: tierarztrechnung
+      label: Tierarzt-Rechnung
+      hints:
+      - Tierarzt
+      - veterinaria
+      - Linoa
+      - Molly
+      - Impfung
+      - vaccinazione
+      - trattamento
+    - id: urkunde
+      label: Urkunde / Ausweis
+      hints:
+      - Geburtsurkunde
+      - Heiratsurkunde
+      - Sterbeurkunde
+      - Ausweis
+      - certificato
+    - id: korrespondenz
+      label: Korrespondenz
+      hints:
+      - Schreiben
+      - Brief
+      - Mitteilung
+      - lettera
+    - id: rechnung
+      label: Rechnung
+      hints:
+      - Rechnung
+      - Zahlung
+      - fattura
+      - Beleg
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
   fengshui:
-    label: "FengShui"
-    vault_folder: "30 FengShui"
-    description: "Beratung, Einrichtung nach FengShui, Audits"
-
+    label: FengShui
+    vault_folder: 30 FengShui
+    description: Beratung, Einrichtung nach FengShui, Audits
+    types:
+    - id: beratung
+      label: Beratung / Analyse
+      hints:
+      - Beratung
+      - Analyse
+      - Audit
+      - Gutachten
+    - id: rechnung
+      label: Rechnung
+      hints:
+      - Rechnung
+      - Honorar
+      - Zahlung
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
   finanzen:
-    label: "Finanzen"
-    vault_folder: "40 Finanzen"
-    description: "Versicherungen (nicht Kranken/KFZ/Gebäude), Banken, Steuern, Rechnungen allgemein"
-
+    label: Finanzen
+    vault_folder: 40 Finanzen
+    description: Versicherungen (nicht Kranken/KFZ/Gebäude), Banken, Steuern, Rechnungen
+      allgemein
+    types:
+    - id: kontoauszug
+      label: Kontoauszug
+      hints:
+      - Kontoauszug
+      - Umsatzübersicht
+      - Saldo
+      - Depotauszug
+      - estratto conto
+    - id: steuerbescheid
+      label: Steuerbescheid
+      hints:
+      - Steuerbescheid
+      - Einkommensteuer
+      - Umsatzsteuer
+      - Festsetzung
+      - Finanzamt
+    - id: rechnung
+      label: Rechnung
+      hints:
+      - Rechnung
+      - fattura
+      - Zahlungsaufforderung
+      - Mahnung
+    - id: versicherung
+      label: Sonstige Versicherung
+      hints:
+      - Versicherungsschein
+      - Beitragsanpassung
+      - Police
+      - Deckung
+    - id: korrespondenz
+      label: Korrespondenz
+      hints:
+      - Schreiben
+      - Mitteilung
+      - Angebot
+      - Information
+    - id: spenden
+      label: Spendenbescheinigung
+      hints:
+      - Spendenbescheinigung
+      - Zuwendungsbestätigung
+      - Spendenquittung
   immobilien:
-    label: "Immobilien"
-    vault_folder: "50 Immobilien"
-    description: "Alle Immobilien-Dokumente: Podere dei venti Seggiano, Via dell'ospedale Seggiano, Lipowskystraße München, Kornstraße Bremen, Kolberger Straße Karlsruhe, Schießhausstraße Neuburg, Blumenstraße Schechen"
-
-  immobilien_eigen:
-    label: "Immobilien eigen (Legacy)"
-    vault_folder: "50 Immobilien"
-    description: "LEGACY — nicht mehr verwenden. Eigene Immobilien: Grassauer Straße 64 Übersee (bis 2022), Podere dei venti Seggiano (ab 2022)"
-
-  immobilien_vermietet:
-    label: "Immobilien vermietet (Legacy)"
-    vault_folder: "50 Immobilien"
-    description: "LEGACY — nicht mehr verwenden. Vermietete Immobilien: Lipowskystraße München, Kornstraße Bremen, Kolberger Straße Karlsruhe, Schießhausstraße Neuburg, Blumenstraße Schechen, Via dell'ospedale Seggiano"
-
-  altersvorsorge:
-    label: "Altersvorsorge"
-    vault_folder: "40 Finanzen"
-    description: "Rentenversicherung, Lebensversicherung, Direktversicherung, Pensionskasse, Standmitteilungen"
-
-  finanzen_versicherung_altersvorsorge:
-    label: "Altersvorsorge"
-    vault_folder: "40 Finanzen"
-    description: "Lebensversicherung, Rentenversicherung, Direktversicherung, Pensionskasse, Standmitteilung"
-
-  finanzen_versicherung_sach:
-    label: "Sachversicherungen"
-    vault_folder: "40 Finanzen"
-    description: "Hausrat, Wohngebäude, Haftpflicht, Unfall, D&O, Rechtsschutz, Schließfach, Tier"
-
-  garten:
-    label: "Garten"
-    vault_folder: "55 Garten"
-    description: "Gartenbau, Landschaftspflege, Pflanzen, Bewässerung, Hochwasserschutz"
-
-  fahrzeuge:
-    label: "Fahrzeuge"
-    vault_folder: "60 Fahrzeuge"
-    description: "Auto, KFZ, Werkstatt, TÜV, Reparatur, KFZ-Versicherung"
-
-  italien:
-    label: "Italien"
-    vault_folder: "70 Italien"
-    description: "Italienische Dokumente die nicht Immobilien betreffen: Behörden, Comune, allgemeine Dokumente"
-
-  business:
-    label: "Business"
-    vault_folder: "80 Business"
-    description: "Geschäftliches, Firma, Arbeit, Arbeitgeber, Gehalt"
-
-  business_888bydesign:
-    label: "888 by Design GmbH"
-    vault_folder: "80 Business"
-    description: "888 by Design GmbH — Firmendokumente: Gründung, HRB, Steuern, Bank, Investoren, HYRE, Thalox, Qonto, comdirect Geschäftskonto, Geschäftsberichte"
-
-  business_leadmanagement:
-    label: "Lead Management"
-    vault_folder: "80 Business"
-    description: "Lead-Management, CRM, Kundenakquise, Vertriebspipeline, Wonderz, DemandGen, BizGen"
-
-  digitales:
-    label: "Digitales"
-    vault_folder: "82 Digitales"
-    description: "Home Assistant, IT-Projekte, Netzwerk, Software, Computer, Drucker, Smart Home"
-
-  wissen:
-    label: "Wissen"
-    vault_folder: "85 Wissen"
-    description: "Bildung, Kurse, Bücher, Fortbildung"
-
-  reisen:
-    label: "Reisen"
-    vault_folder: "90 Reisen"
-    description: "Flüge, Hotels, Buchungen, Urlaub"
-
-  bedienungsanleitung:
-    label: "Bedienungsanleitungen"
-    vault_folder: "95 Bedienungsanleitungen"
-    description: "Geräte-Handbücher, Produktanleitungen"
-
-  archiv:
-    label: "Archiv"
-    vault_folder: "99 Archiv"
-    description: "Nicht zuordenbar, veraltet, unklar — NUR als letzter Ausweg"
-
-# ── Branchen-Regeln ───────────────────────────────────────────────────────────
-branchen_regeln:
-  - beschreibung: >
-      Handwerker, Bausanierung, Abwasser, Kläranlage, Heizung, Elektrik, Sanitär,
-      Dachdecker, Maurer, Gartenbau, Asbest-/Schadstoffsanierung (IT: Ecologia, Bonifica,
-      Fognaria, Servizi Ecologici, Manutenzione edile) — Leistung ist Wartung/Reparatur/
-      Sanierung an einem Gebäude oder Grundstück.
-    absender_keywords:
-      - Handwerker
+    label: Immobilien
+    vault_folder: 50 Immobilien
+    description: 'Alle Immobilien-Dokumente: Podere dei venti Seggiano, Via dell''ospedale
+      Seggiano, Lipowskystraße München, Kornstraße Bremen, Kolberger Straße Karlsruhe,
+      Schießhausstraße Neuburg, Blumenstraße Schechen'
+    types:
+    - id: versicherung
+      label: Gebäude-/Hausrat-Versicherung
+      hints:
+      - Wohngebäudeversicherung
+      - Hausrat
+      - Gebäudeversicherung
+      - AIG
+      - Reale Mutua
+    - id: rechnung_handwerker
+      label: Handwerker-Rechnung
+      hints:
+      - Rechnung
+      - Wartung
+      - Reparatur
+      - Installation
       - Sanitär
       - Heizung
       - Elektrik
-      - Dachdecker
-      - Maurer
-      - Gartenbau
-      - Schadstoffsanierung
-      - Ecologia
-      - Bonifica
-      - Fognaria
-      - Manutenzione edile
-      - Servizi Ecologici
-      - Bausanierung
-      - Abwasser
-    category_id: immobilien
-    hinweis: >
-      Gilt für alle Immobilien-Dokumente (eigen und vermietet).
+      - manutenzione
+    - id: steuer
+      label: Grundsteuer / Abgabe
+      hints:
+      - Grundsteuer
+      - IMU
+      - Imposta
+      - comunale
+      - tributo
+    - id: kaufvertrag
+      label: Kaufvertrag / Notar
+      hints:
+      - Kaufvertrag
+      - Notar
+      - atto di vendita
+      - rogito
+      - compravendita
+    - id: mietvertrag
+      label: Mietvertrag
+      hints:
+      - Mietvertrag
+      - contratto di locazione
+      - Nebenkostenabrechnung
+      - Mieterhöhung
+    - id: korrespondenz
+      label: Korrespondenz
+      hints:
+      - Schreiben
+      - Mitteilung
+      - comunicazione
+      - Anfrage
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
+  immobilien_eigen:
+    label: Immobilien eigen (Legacy)
+    vault_folder: 50 Immobilien
+    description: 'LEGACY — nicht mehr verwenden. Eigene Immobilien: Grassauer Straße
+      64 Übersee (bis 2022), Podere dei venti Seggiano (ab 2022)'
+  immobilien_vermietet:
+    label: Immobilien vermietet (Legacy)
+    vault_folder: 50 Immobilien
+    description: 'LEGACY — nicht mehr verwenden. Vermietete Immobilien: Lipowskystraße
+      München, Kornstraße Bremen, Kolberger Straße Karlsruhe, Schießhausstraße Neuburg,
+      Blumenstraße Schechen, Via dell''ospedale Seggiano'
+  altersvorsorge:
+    label: Altersvorsorge (Legacy)
+    vault_folder: 40 Finanzen
+    description: LEGACY — nicht mehr verwenden. Konsolidiert in finanzen_versicherung_altersvorsorge
+  finanzen_versicherung_altersvorsorge:
+    label: Altersvorsorge
+    vault_folder: 40 Finanzen
+    description: Lebensversicherung, Rentenversicherung, Direktversicherung, Pensionskasse,
+      Standmitteilung
+    types:
+    - id: standmitteilung
+      label: Standmitteilung
+      hints:
+      - Standmitteilung
+      - Wertmitteilung
+      - Jahresinformation
+      - Rückkaufswert
+    - id: beitrag
+      label: Beitrag / Rechnung
+      hints:
+      - Beitrag
+      - Rechnung
+      - Zahlung
+      - prämie
+    - id: vertrag
+      label: Vertrag / Police
+      hints:
+      - Versicherungsschein
+      - Police
+      - Vertrag
+      - contratto
+    - id: korrespondenz
+      label: Korrespondenz
+      hints:
+      - Schreiben
+      - Mitteilung
+      - Information
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
+  finanzen_versicherung_sach:
+    label: Sachversicherungen
+    vault_folder: 40 Finanzen
+    description: Hausrat, Wohngebäude, Haftpflicht, Unfall, D&O, Rechtsschutz, Schließfach,
+      Tier
+    types:
+    - id: haftpflicht
+      label: Haftpflicht
+      hints:
+      - Privathaftpflicht
+      - Haftpflichtversicherung
+      - D&O
+    - id: rechtsschutz
+      label: Rechtsschutz
+      hints:
+      - Rechtsschutzversicherung
+      - Verkehrsrechtsschutz
+    - id: unfall
+      label: Unfallversicherung
+      hints:
+      - Unfallversicherung
+      - Gliedertaxe
+      - Invalidität
+    - id: hausrat_wohngebaeude
+      label: Hausrat / Wohngebäude
+      hints:
+      - Hausratversicherung
+      - Wohngebäudeversicherung
+    - id: versicherungsschein
+      label: Versicherungsschein
+      hints:
+      - Versicherungsschein
+      - Police
+      - Deckung
+    - id: beitrag
+      label: Beitrag / Rechnung
+      hints:
+      - Beitrag
+      - Beitragsanpassung
+      - Rechnung
+      - prämie
+    - id: korrespondenz
+      label: Korrespondenz
+      hints:
+      - Schreiben
+      - Mitteilung
+      - Angebot
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
+  garten:
+    label: Garten
+    vault_folder: 55 Garten
+    description: Gartenbau, Landschaftspflege, Pflanzen, Bewässerung, Hochwasserschutz
+    types:
+    - id: rechnung
+      label: Rechnung
+      hints:
+      - Rechnung
+      - Zahlung
+      - fattura
+      - Angebot
+    - id: bewaesserung
+      label: Bewässerung / Brunnen
+      hints:
+      - Bewässerung
+      - Brunnen
+      - Pumpe
+      - irrigazione
+      - pozzo
+    - id: bepflanzung
+      label: Bepflanzung
+      hints:
+      - Pflanzen
+      - Bäume
+      - piante
+      - alberi
+      - Saatgut
+    - id: korrespondenz
+      label: Korrespondenz
+      hints:
+      - Schreiben
+      - Mitteilung
+      - comunicazione
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
+  fahrzeuge:
+    label: Fahrzeuge
+    vault_folder: 60 Fahrzeuge
+    description: Auto, KFZ, Werkstatt, TÜV, Reparatur, KFZ-Versicherung
+    types:
+    - id: versicherung
+      label: KFZ-Versicherung
+      hints:
+      - Polizza
+      - assicurazione
+      - Kraftfahrtversicherung
+      - Kasko
+      - Haftpflicht
+      - Police
+    - id: werkstatt_reparatur
+      label: Werkstatt / Reparatur
+      hints:
+      - Rechnung
+      - Reparatur
+      - Inspektion
+      - Wartung
+      - tagliando
+      - manutenzione
+      - parcella
+    - id: steuer
+      label: KFZ-Steuer
+      hints:
+      - Kraftfahrzeugsteuer
+      - bollo auto
+      - tassa automobilistica
+      - superbollo
+    - id: zulassung
+      label: Zulassung / Behörde
+      hints:
+      - immatricolazione
+      - carta di circolazione
+      - libretto
+      - Zulassungsbescheinigung
+      - Motorizzazione
+    - id: kaufvertrag
+      label: Kaufvertrag
+      hints:
+      - Kaufvertrag
+      - contratto di vendita
+      - Fahrzeugbrief
+      - proprieta
+    - id: busse
+      label: Bußgeld / Strafe
+      hints:
+      - Polizia Stradale
+      - incidente
+      - verbale
+      - multa
+      - Bußgeld
+      - Ordnungswidrigkeit
+    - id: sonstiges
+      label: Sonstiges / Korrespondenz
+      hints:
+      - Schreiben
+      - Mitteilung
+      - comunicazione
+  italien:
+    label: Italien
+    vault_folder: 70 Italien
+    description: 'Italienische Dokumente die nicht Immobilien betreffen: Behörden,
+      Comune, allgemeine Dokumente'
+    types:
+    - id: behoerde
+      label: Behörde / Comune
+      hints:
+      - Comune
+      - comune di
+      - ufficio
+      - Motorizzazione
+      - Ministero
+    - id: steuer
+      label: Steuer / Abgabe
+      hints:
+      - IMU
+      - TARI
+      - imposta
+      - tassa
+      - tributo
+      - F24
+    - id: korrespondenz
+      label: Korrespondenz
+      hints:
+      - Schreiben
+      - Mitteilung
+      - comunicazione
+      - lettera
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
+  business:
+    label: Business
+    vault_folder: 80 Business
+    description: Geschäftliches, Firma, Arbeit, Arbeitgeber, Gehalt
+    types:
+    - id: gehaltsabrechnung
+      label: Gehaltsabrechnung
+      hints:
+      - Gehaltsabrechnung
+      - Lohnabrechnung
+      - Verdienstbescheinigung
+      - busta paga
+      - cedolino
+    - id: arbeitsvertrag
+      label: Arbeitsvertrag / Zeugnis
+      hints:
+      - Arbeitsvertrag
+      - Arbeitszeugnis
+      - Zwischenzeugnis
+      - contratto di lavoro
+    - id: rechnung
+      label: Rechnung / Honorar
+      hints:
+      - Rechnung
+      - Honorar
+      - fattura
+      - Vergütung
+      - Abrechnung
+    - id: steuer
+      label: Steuer / Sozialversicherung
+      hints:
+      - Steuer
+      - Sozialversicherung
+      - Rentenversicherung
+      - Krankenversicherung Arbeitgeber
+    - id: korrespondenz
+      label: Korrespondenz
+      hints:
+      - Schreiben
+      - Mitteilung
+      - Bestätigung
+      - Information
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
+  business_888bydesign:
+    label: 888 by Design GmbH
+    vault_folder: 80 Business
+    description: '888 by Design GmbH — Firmendokumente: Gründung, HRB, Steuern, Bank,
+      Investoren, HYRE, Thalox, Qonto, comdirect Geschäftskonto, Geschäftsberichte'
+    types:
+    - id: gruendung
+      label: Gründung / HRB
+      hints:
+      - HRB
+      - Handelsregister
+      - Gründung
+      - Gesellschafter
+      - Notar
+    - id: steuer
+      label: Steuer
+      hints:
+      - Steuerbescheid
+      - Umsatzsteuer
+      - Körperschaftsteuer
+      - Gewerbesteuer
+    - id: bank
+      label: Bank / Konto
+      hints:
+      - Kontoauszug
+      - Qonto
+      - comdirect
+      - Geschäftskonto
+    - id: rechnung
+      label: Rechnung
+      hints:
+      - Rechnung
+      - Honorar
+      - fattura
+      - Vergütung
+    - id: investoren
+      label: Investoren / HYRE
+      hints:
+      - Investor
+      - HYRE
+      - Thalox
+      - Beteiligung
+      - Cap Table
+    - id: korrespondenz
+      label: Korrespondenz
+      hints:
+      - Schreiben
+      - Mitteilung
+      - Bestätigung
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
+  business_leadmanagement:
+    label: Lead Management
+    vault_folder: 80 Business
+    description: Lead-Management, CRM, Kundenakquise, Vertriebspipeline, Wonderz,
+      DemandGen, BizGen
+    types:
+    - id: vertrag
+      label: Vertrag / Vereinbarung
+      hints:
+      - Vertrag
+      - Vereinbarung
+      - contratto
+      - NDA
+    - id: rechnung
+      label: Rechnung
+      hints:
+      - Rechnung
+      - Honorar
+      - fattura
+    - id: leadlieferung
+      label: Lead-Lieferung / Report
+      hints:
+      - Lead
+      - Wonderz
+      - DemandGen
+      - BizGen
+      - Kampagne
+      - Report
+    - id: korrespondenz
+      label: Korrespondenz
+      hints:
+      - Schreiben
+      - Mitteilung
+      - Angebot
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
+  digitales:
+    label: Digitales
+    vault_folder: 82 Digitales
+    description: Home Assistant, IT-Projekte, Netzwerk, Software, Computer, Drucker,
+      Smart Home
+    types:
+    - id: rechnung
+      label: Rechnung / Abo
+      hints:
+      - Rechnung
+      - Abo
+      - Subscription
+      - Zahlung
+    - id: hardware
+      label: Hardware / Gerät
+      hints:
+      - Computer
+      - Drucker
+      - Server
+      - Router
+      - Switch
+      - NAS
+    - id: software
+      label: Software / Dienst
+      hints:
+      - Software
+      - App
+      - Cloud
+      - API
+      - Domain
+      - Hosting
+    - id: korrespondenz
+      label: Korrespondenz
+      hints:
+      - Schreiben
+      - Mitteilung
+      - Support
+      - Ticket
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
+  wissen:
+    label: Wissen
+    vault_folder: 85 Wissen
+    description: Bildung, Kurse, Bücher, Fortbildung
+    types:
+    - id: kurs
+      label: Kurs / Fortbildung
+      hints:
+      - Kurs
+      - Fortbildung
+      - Seminar
+      - Workshop
+      - corso
+    - id: buch
+      label: Buch / Publikation
+      hints:
+      - Buch
+      - E-Book
+      - Publikation
+      - libro
+    - id: zertifikat
+      label: Zertifikat / Abschluss
+      hints:
+      - Zertifikat
+      - Abschluss
+      - Diplom
+      - certificato
+      - attestato
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
+  reisen:
+    label: Reisen
+    vault_folder: 90 Reisen
+    description: Flüge, Hotels, Buchungen, Urlaub
+    types:
+    - id: flug
+      label: Flug
+      hints:
+      - Flug
+      - Bordkarte
+      - Flugticket
+      - boarding
+      - volo
+      - carta imbarco
+    - id: hotel
+      label: Hotel / Unterkunft
+      hints:
+      - Hotel
+      - Unterkunft
+      - Buchung
+      - Reservierung
+      - prenotazione
+      - alloggio
+    - id: mietwagen
+      label: Mietwagen / Transfer
+      hints:
+      - Mietwagen
+      - Transfer
+      - Shuttle
+      - noleggio auto
+    - id: reiseversicherung
+      label: Reiseversicherung
+      hints:
+      - Reiseversicherung
+      - Reiserücktritt
+      - Reisekrankenversicherung
+    - id: rechnung
+      label: Rechnung / Buchung
+      hints:
+      - Rechnung
+      - Buchungsbestätigung
+      - Zahlung
+      - fattura
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
+  bedienungsanleitung:
+    label: Bedienungsanleitungen
+    vault_folder: 95 Bedienungsanleitungen
+    description: Geräte-Handbücher, Produktanleitungen
+    types:
+    - id: anleitung
+      label: Bedienungsanleitung
+      hints:
+      - Bedienungsanleitung
+      - Handbuch
+      - manual
+      - istruzioni
+      - Gebrauchsanweisung
+    - id: garantie
+      label: Garantie / Gewährleistung
+      hints:
+      - Garantie
+      - Gewährleistung
+      - garanzie
+      - Warranty
+    - id: sonstiges
+      label: Sonstiges
+      hints: []
+  archiv:
+    label: Archiv
+    vault_folder: 99 Archiv
+    description: Nicht zuordenbar, veraltet, unklar — NUR als letzter Ausweg
+    types:
+    - id: archiv
+      label: Archiv / Unklar
+      hints:
+      - nicht zuordenbar
+      - veraltet
+      - unklar
+branchen_regeln:
+- beschreibung: 'Handwerker, Bausanierung, Abwasser, Kläranlage, Heizung, Elektrik,
+    Sanitär, Dachdecker, Maurer, Gartenbau, Asbest-/Schadstoffsanierung (IT: Ecologia,
+    Bonifica, Fognaria, Servizi Ecologici, Manutenzione edile) — Leistung ist Wartung/Reparatur/
+    Sanierung an einem Gebäude oder Grundstück.
 
-# ── Keyword-Override-Regeln ───────────────────────────────────────────────────
-# Laufen NACH dem LLM. Wenn ANY keyword im Dokumenttext gefunden wird, wird
-# die Klassifikation überschrieben. Konfidenz wird auf "hoch" gesetzt.
-# keywords: Liste von Strings (case-insensitiv, Teilstring-Match)
-# alle_keywords: falls true, müssen ALLE keywords vorhanden sein (AND)
+    '
+  absender_keywords:
+  - Handwerker
+  - Sanitär
+  - Heizung
+  - Elektrik
+  - Dachdecker
+  - Maurer
+  - Gartenbau
+  - Schadstoffsanierung
+  - Ecologia
+  - Bonifica
+  - Fognaria
+  - Manutenzione edile
+  - Servizi Ecologici
+  - Bausanierung
+  - Abwasser
+  category_id: immobilien
+  hinweis: 'Gilt für alle Immobilien-Dokumente (eigen und vermietet).
+
+    '
 keyword_rules:
-  - keywords: ["Darlehensvertrag", "Kreditvertrag", "Annuitätendarlehen",
-               "Darlehensnehmer", "Nettokreditbetrag", "Tilgungsplan",
-               "Baufinanzierung", "Immobilienkredit"]
-    category_id: finanzen
-    beschreibung: "Darlehen / Kredit"
-
-  - keywords: ["Reservierungsbestätigung", "Buchungsbestätigung", "Booking Confirmation",
-               "Reservation Confirmation", "sembo", "Booking.com", "hotels.com",
-               "Expedia", "HRS ", "Check-in", "Check-out", "Agriturismo",
-               "Albergo", "nights stay", "Übernachtungen"]
-    category_id: reisen
-    beschreibung: "Hotel-Reservierung / Buchungsbestätigung"
-
-  - keywords: ["Bordkarte", "Boarding Pass", "E-Ticket Flug", "Flugschein",
-               "Qatar Airways", "Lufthansa", "Ryanair", "EasyJet", "Emirates",
-               "Condor", "TUIfly", "Gate ", "Flight Number", "Flugnummer"]
-    category_id: reisen
-    beschreibung: "Flug / Bordkarte"
-
-  - keywords: ["Mietvertrag", "Mietzins", "Kaltmiete", "Warmmiete",
-               "Mieter", "Vermieter", "Mietbeginn", "Mietzeit"]
-    category_id: immobilien
-    beschreibung: "Mietvertrag"
-
-  - keywords: ["Gehaltsabrechnung", "Lohnabrechnung", "Bruttolohn", "Nettolohn",
-               "Sozialversicherung", "Lohnsteuer", "Arbeitnehmerin", "Arbeitnehmer"]
-    category_id: business
-    beschreibung: "Gehaltsabrechnung"
-
-  - keywords: ["Steuerbescheid", "Einkommensteuerbescheid", "Grundsteuerbescheid",
-               "Finanzamt", "Festsetzung", "zu zahlende Steuer", "Steuererstattung",
-               "Agenzia delle Entrate", "IMU ", "TARI "]
-    category_id: finanzen
-    beschreibung: "Steuerbescheid"
-
-  - keywords: ["Kaufvertrag", "Grundbuchauszug", "Katasterauszug", "Notariell",
-               "Notar", "Rogito", "Visura Catastale", "Baugenehmigung"]
-    category_id: immobilien
-    beschreibung: "Immobilien Kaufvertrag / Grundbuch"
-
-  - keywords: ["Lipowskystraße", "Lipowskystrasse", "Lipowsky", "LipowskyStra", "LipowskyStr"]
-    category_id: immobilien
-    beschreibung: "Lipowskystraße München"
-
-  - keywords: ["Schießhausstraße", "Schiesshaus", "Schiesshausstrasse", "Schießhaus",
-               "SchieBhaus", "SchieBhausstra"]
-    category_id: immobilien
-    beschreibung: "Schießhausstraße Neuburg"
-
-  - keywords: ["Kolberger Straße", "Kolberger Strasse", "Kolbergerstraße", "Kolbergerstrasse",
-               "Kolberger Str", "Kolbergerstr", "KolbergerStra", "Troltsch"]
-    category_id: immobilien
-    beschreibung: "Kolberger Straße Karlsruhe / Troltsch Hausverwaltung"
-
-  - keywords: ["Kornstraße", "Kornstrasse", "Kornstr"]
-    category_id: immobilien
-    beschreibung: "Kornstraße Bremen"
-
-  - keywords: ["Schechen", "Blumenstraße Schechen", "Blumenstrasse Schechen"]
-    category_id: immobilien
-    beschreibung: "Blumenstraße Schechen"
-
-  - keywords: ["Kontoauszug", "Kontoabschluss", "Umsatzübersicht",
-               "Estratto conto", "Girokonto", "Bankabschluss"]
-    category_id: finanzen
-    beschreibung: "Kontoauszug"
-
-  # KFZ-Schutzregel: läuft VOR der KV-Regel — verhindert Fehlzuordnung bei Beitragserstattungen
-  - keywords: ["Kraftfahrtversicherung", "Kraftfahrzeugversicherung",
-               "Kraftfahrzeughaftpflicht", "Kfz-Haftpflicht", "KFZ-Haftpflicht",
-               "Versicherungsschein zur Kraftfahrt", "Fahrzeugversicherung",
-               "Kfz-Versicherung", "KFZ-Versicherung",
-               "casco", "Kasko", "Teilkasko", "Vollkasko"]
-    category_id: fahrzeuge
-    beschreibung: "KFZ-Versicherung / Kraftfahrtversicherung"
-
-  # KFZ Italienisch: Polizza, Assicurazione, Carta di Circolazione — läuft VOR Immobilien
-  - keywords: ["polizza.*assicurazione", "assicurazione.*polizza",
-               "polizza n.", "polizza no.", "Polizza No",
-               "certificato di assicurazione", "carta verde.*assicurazione",
-               "assicurazione.*rca", "assicurazione.*rc auto",
-               "assicurazione.*responsabilit", "assicurazione.*veicolo",
-               "bollo auto", "tassa automobilistica", "superbollo",
-               "immatricolazione", "libretto di circolazione",
-               "carta di circolazione"]
-    category_id: fahrzeuge
-    beschreibung: "KFZ Italienisch: Polizza / Assicurazione / Bollo / Immatricolazione"
-
-  # KFZ Italienisch — Versicherer mit KFZ-Bezug (nur in Kombination mit Fahrzeug-Kontext)
-  - keywords: ["Allianz Next.*GY", "Allianz Next.*kfz",
-               "Zurich Insurance.*GY", "Zurich Insurance.*MB",
-               "Zurich.*polizza.*auto", "Zurich.*assicurazione.*auto",
-               "Reale Mutua.*Automia", "Reale Mutua.*polizza.*auto",
-               "Reale Mutua.*assicurazione.*trattore",
-               "Eisendle.*KFZ", "Eisendle.*polizza", "Eisendle.*assicurazione",
-               "LP PRATICHE AUTO", "L.P. PRATICHE AUTO"]
-    category_id: fahrzeuge
-    beschreibung: "KFZ Italienisch: Versicherer mit KFZ-Kontext"
-
-  - keywords: ["Leistungsabrechnung", "haben abgerechnet", "Erstattungsbetrag",
-               "eingereichte Belege",
-               "HUK-COBURG", "HUK COBURG", "Gothaer Krankenversicherung",
-               "Barmenia Krankenversicherung", "vigo Krankenversicherung"]
-    category_id: krankenversicherung
-    beschreibung: "Krankenversicherung Leistungsabrechnung"
-
-  - keywords: ["NÜRNBERGER", "Nürnberger Lebensversicherung", "Nürnberger Versicherung",
-               "Nürnberger Rentenversicherung", "NÜRNBERGER Versicherung",
-               "Bezügeabrechnung"]
-    category_id: finanzen
-    beschreibung: "Nürnberger Versicherung / Rentenversicherung"
-
-  # ── Rezept / Verschreibung / Apotheke (KV-Subtyp-Erkennung) ──────────
-  # "Rp." ist der härteste Indikator für ein Rezept — diese Abkürzung
-  # kommt ausschließlich auf Verschreibungen vor. Die Regel läuft NACH
-  # dem LLM und korrigiert Fehlklassifikationen deterministisch.
-  - keywords: ["Rp.", "Rp ", "Rezept", "Verschreibung", "Privatrezept",
-               "Kassenrezept", "Wiederholungsrezept", "Betaeubungsmittelrezept"]
-    category_id: krankenversicherung
-    beschreibung: "Rezept / Verschreibung"
-
-  - keywords: ["Apotheke", "Apothekenrechnung", "Arzneimittelrechnung",
-               "Apothekenabrechnung"]
-    category_id: krankenversicherung
-    beschreibung: "Apotheke / Arzneimittel"
-
-  - keywords: ["Tierarzt", "Tierklinik", "Veterinär", "Veterinaria",
-               "Clinica Veterinaria", "Tierheilpraktiker"]
-    category_id: familie
-    beschreibung: "Tierarzt / Tierklinik"
-
-  - keywords: ["Polizia Stradale", "POLIZIA DI STATO", "Sottosezione Polizia",
-               "Ufficio Infortunistica", "sinistro stradale", "verbale di incidente",
-               "incidente stradale", "codice della strada", "cds"]
-    category_id: fahrzeuge
-    beschreibung: "Polizia Stradale / Verkehrsunfall"
-
-  # Altersvorsorge erkennen
-  - keywords: ["Standmitteilung", "Stand der Versicherung", "Jahresinformation",
-               "Wertmitteilung", "Rückkaufswert", "Ablaufleistung",
-               "AXA Lebensversicherung", "AXA Colonia", "LV 1871", "LV1871",
-               "Nürnberger Lebensversicherung", "Nürnberger Pensionskasse",
-               "Nürnberger Direktversicherung", "Nürnberger U-Kasse",
-               "Unterstützungskasse", "HDI-Gerling", "Allvest", "Basisrente",
-               "fondsgebundene Rentenversicherung", "kapitalbildende Lebensversicherung"]
-    category_id: finanzen_versicherung_altersvorsorge
-    beschreibung: "Altersvorsorge: Lebens-/Rentenversicherung, Standmitteilung"
-
-  # Immobilien-Versicherungen (läuft VOR sachversicherungen)
-  - keywords: ["Wohngebäudeversicherung", "Wohngebäude-Versicherung",
-               "Gebäudeversicherung", "Haus- und Grundbesitz", "Haus und Grundbesitz",
-               "Hausratversicherung", "Hausrat-Versicherung",
-               "Societa Reale Mutua", "Reale Mutua",
-               "AIG Europe", "AIG Gewerbe",
-               "Versicherungskammer Bayern Hausrat",
-               "Allianz Wohngebäude", "Allianz Hausrat"]
-    category_id: immobilien
-    beschreibung: "Immobilien-Versicherung: Wohngebäude, Hausrat, Gebäude"
-
-  # Sachversicherungen erkennen
-  - keywords: ["Privathaftpflicht", "Haftpflichtversicherung",
-               "Rechtsschutzversicherung", "Unfallversicherung", "D&O-Versicherung",
-               "Schließfachversicherung", "Tierversicherung",
-               "DOCURA", "VGH Versicherung", "VOV", "NV Versicherungen",
-               "CASAMIA",
-               "WGV Rechtsschutz", "Nürnberger PrivatSchutz",
-               "Versicherungskammer Bayern Haftpflicht"]
-    category_id: finanzen_versicherung_sach
-    beschreibung: "Sachversicherung: Haftpflicht, Rechtsschutz, Unfall, D&O"
-
-  # 888 by Design GmbH — Firmendokumente
-  - keywords: ["888 by Design", "888bydesign", "888-by-design",
-               "888 by design GmbH", "888 by Design GmbH"]
-    category_id: business_888bydesign
-    beschreibung: "888 by Design GmbH (Firmenname direkt)"
-
-  - keywords: ["HYRE Solutions", "HYRE Wandeldarlehen", "HYRE Kapitalerhöhung",
-               "HYRE UVZ", "HYRE Stammeinlage",
-               "Thalox Wandeldarlehen", "Thalox Solutions",
-               "Thalox Stammeinlage", "Thalox Kapitalerhöhung"]
-    category_id: business_888bydesign
-    beschreibung: "888 by Design: HYRE / Thalox Investments"
-
-  - keywords: ["Qonto", "QONTO"]
-    category_id: business_888bydesign
-    beschreibung: "888 by Design: Qonto Geschäftskonto"
-
-  - keywords: ["Wagniskapital", "BAFA.*Zuschuss", "Bundesamt.*Wirtschaft.*Ausfuhr",
-               "Förderantrag.*BAFA", "Verwendungsnachweis.*BAFA",
-               "Bundesministerium.*Wirtschaft.*Klimaschutz.*Förder"]
-    category_id: business_888bydesign
-    beschreibung: "888 by Design: BAFA / Förderung / Zuschüsse"
-
-  - keywords: ["comdirect.*GmbH", "comdirect business", "Geschäftskonto.*comdirect",
-               "comdirect Geschäftskonto"]
-    category_id: business_888bydesign
-    beschreibung: "888 by Design: comdirect Geschäftskonto"
-
-  - keywords: ["HRB.*Traunstein", "Handelsregister.*Traunstein",
-               "Amtsgericht.*Traunstein.*HRB", "Landesjustizkasse.*Eintragung",
-               "Gesellschafterliste", "Gesellschafterversammlung",
-               "GmbH-Gesellschafter", "GmbH Gesellschafter"]
-    category_id: business_888bydesign
-    beschreibung: "888 by Design: Handelsregister / HRB / GmbH"
-
-  - keywords: ["Körperschaftssteuer.*Bescheid", "Körperschaftsteuer",
-               "Umsatzsteuer.*Voranmeldung.*GmbH", "Umsatzsteuererklärung.*GmbH",
-               "Gewerbesteuer.*Bescheid", "Gewerbesteuermessbetrag"]
-    category_id: business_888bydesign
-    beschreibung: "888 by Design: GmbH-Steuern (KSt, USt, GewSt)"
-
-  - keywords: ["Finanzamt.*UID.*GmbH", "Finanzamt.*Steuernummer.*GmbH",
-               "Finanzamt.*Körperschaft"]
-    category_id: business_888bydesign
-    beschreibung: "888 by Design: GmbH-Steuer-ID / UID"
-
-  # ── Erweiterte Keyword-Regeln (2026-06-04) aus Inbox-Analyse ──────────────────
-  # ACHTUNG: Keywords sind Substring-Match (kein Regex!). "alle_keywords: true" = AND-Logik.
-
-  - keywords: ["Miro", "Rechnung"]
-    alle_keywords: true
-    category_id: business
-    beschreibung: "Miro SaaS-Rechnung"
-
-  - keywords: ["Zoom", "Rechnung"]
-    alle_keywords: true
-    category_id: business
-    beschreibung: "Zoom SaaS-Rechnung"
-
-  - keywords: ["Stripe", "Rechnung"]
-    alle_keywords: true
-    category_id: business
-    beschreibung: "Stripe Zahlungsdienstleister"
-
-  - keywords: ["WIX", "Rechnung"]
-    alle_keywords: true
-    category_id: business
-    beschreibung: "WIX SaaS-Rechnung"
-
-  - keywords: ["LinkedIn Sales", "LinkedIn Premium", "LinkedIn Corp"]
-    category_id: business
-    beschreibung: "LinkedIn Business-Rechnung"
-
-  - keywords: ["Bewirtung", "Bewirtungsbeleg", "Geschäftsessen", "Arbeitsessen"]
-    category_id: business
-    beschreibung: "Bewirtung / Geschäftsessen"
-
-  - keywords: ["Deutsche Post", "DHL", "Nachsendung", "Nachsendeauftrag"]
-    category_id: business
-    beschreibung: "Deutsche Post / DHL Business"
-
-  - keywords: ["GEZ", "Rundfunkgebühren", "Rundfunkbeitrag",
-               "ARD ZDF Deutschlandradio", "Beitragsservice"]
-    category_id: finanzen
-    beschreibung: "GEZ / Rundfunkbeitrag"
-
-  - keywords: ["Parkticket", "Parkgebühr", "Parkbeleg", "Parkhaus",
-               "Parcheggio", "Parkautomaten", "Parcometro"]
-    category_id: business
-    beschreibung: "Parkgebühren / Parkticket (Reisekosten)"
-
-  - keywords: ["Kreditkartenabrechnung", "Kreditkartenumsätze",
-               "MasterCard", "Visa.*Abrechnung", "American Express"]
-    category_id: finanzen
-    beschreibung: "Kreditkartenabrechnung"
-
-  - keywords: ["Steuerberatung", "Steuerberater", "Steuerkanzlei",
-               "Steuerberatungskosten", "Steuerberaterhonorar"]
-    category_id: finanzen
-    beschreibung: "Steuerberatung / Steuerberater"
-
-  - keywords: ["Reisekostenabrechnung", "Reisekosten", "Auslagenersatz",
-               "Spesenabrechnung", "Travel Expense"]
-    category_id: business
-    beschreibung: "Reisekostenabrechnung"
-
-  - keywords: ["Zinssatzänderung", "Zinsanpassung", "Zinsänderung"]
-    category_id: finanzen
-    beschreibung: "Zinssatzänderung / Zinsanpassung"
-
-  - keywords: ["iPhone", "iPad", "MacBook", "Apple Store", "iTunes Store"]
-    alle_keywords: false
-    category_id: business
-    beschreibung: "Apple Hardware/Software-Rechnung"
-
-  - keywords: ["Notar", "Kostenrechnung"]
-    alle_keywords: true
-    category_id: immobilien
-    beschreibung: "Notarkosten / Notar-Rechnung"
+- keywords:
+  - Darlehensvertrag
+  - Kreditvertrag
+  - Annuitätendarlehen
+  - Darlehensnehmer
+  - Nettokreditbetrag
+  - Tilgungsplan
+  - Baufinanzierung
+  - Immobilienkredit
+  category_id: finanzen
+  beschreibung: Darlehen / Kredit
+- keywords:
+  - Reservierungsbestätigung
+  - Buchungsbestätigung
+  - Booking Confirmation
+  - Reservation Confirmation
+  - sembo
+  - Booking.com
+  - hotels.com
+  - Expedia
+  - 'HRS '
+  - Check-in
+  - Check-out
+  - Agriturismo
+  - Albergo
+  - nights stay
+  - Übernachtungen
+  category_id: reisen
+  beschreibung: Hotel-Reservierung / Buchungsbestätigung
+- keywords:
+  - Bordkarte
+  - Boarding Pass
+  - E-Ticket Flug
+  - Flugschein
+  - Qatar Airways
+  - Lufthansa
+  - Ryanair
+  - EasyJet
+  - Emirates
+  - Condor
+  - TUIfly
+  - 'Gate '
+  - Flight Number
+  - Flugnummer
+  category_id: reisen
+  beschreibung: Flug / Bordkarte
+- keywords:
+  - Mietvertrag
+  - Mietzins
+  - Kaltmiete
+  - Warmmiete
+  - Mieter
+  - Vermieter
+  - Mietbeginn
+  - Mietzeit
+  category_id: immobilien
+  beschreibung: Mietvertrag
+- keywords:
+  - Gehaltsabrechnung
+  - Lohnabrechnung
+  - Bruttolohn
+  - Nettolohn
+  - Sozialversicherung
+  - Lohnsteuer
+  - Arbeitnehmerin
+  - Arbeitnehmer
+  category_id: business
+  beschreibung: Gehaltsabrechnung
+- keywords:
+  - Steuerbescheid
+  - Einkommensteuerbescheid
+  - Grundsteuerbescheid
+  - Finanzamt
+  - Festsetzung
+  - zu zahlende Steuer
+  - Steuererstattung
+  - Agenzia delle Entrate
+  - 'IMU '
+  - 'TARI '
+  category_id: finanzen
+  beschreibung: Steuerbescheid
+- keywords:
+  - Kaufvertrag
+  - Grundbuchauszug
+  - Katasterauszug
+  - Notariell
+  - Notar
+  - Rogito
+  - Visura Catastale
+  - Baugenehmigung
+  category_id: immobilien
+  beschreibung: Immobilien Kaufvertrag / Grundbuch
+- keywords:
+  - Lipowskystraße
+  - Lipowskystrasse
+  - Lipowsky
+  - LipowskyStra
+  - LipowskyStr
+  category_id: immobilien
+  beschreibung: Lipowskystraße München
+- keywords:
+  - Schießhausstraße
+  - Schiesshaus
+  - Schiesshausstrasse
+  - Schießhaus
+  - SchieBhaus
+  - SchieBhausstra
+  category_id: immobilien
+  beschreibung: Schießhausstraße Neuburg
+- keywords:
+  - Kolberger Straße
+  - Kolberger Strasse
+  - Kolbergerstraße
+  - Kolbergerstrasse
+  - Kolberger Str
+  - Kolbergerstr
+  - KolbergerStra
+  - Troltsch
+  category_id: immobilien
+  beschreibung: Kolberger Straße Karlsruhe / Troltsch Hausverwaltung
+- keywords:
+  - Kornstraße
+  - Kornstrasse
+  - Kornstr
+  category_id: immobilien
+  beschreibung: Kornstraße Bremen
+- keywords:
+  - Schechen
+  - Blumenstraße Schechen
+  - Blumenstrasse Schechen
+  category_id: immobilien
+  beschreibung: Blumenstraße Schechen
+- keywords:
+  - Kontoauszug
+  - Kontoabschluss
+  - Umsatzübersicht
+  - Estratto conto
+  - Girokonto
+  - Bankabschluss
+  category_id: finanzen
+  beschreibung: Kontoauszug
+- keywords:
+  - Kraftfahrtversicherung
+  - Kraftfahrzeugversicherung
+  - Kraftfahrzeughaftpflicht
+  - Kfz-Haftpflicht
+  - KFZ-Haftpflicht
+  - Versicherungsschein zur Kraftfahrt
+  - Fahrzeugversicherung
+  - Kfz-Versicherung
+  - KFZ-Versicherung
+  - casco
+  - Kasko
+  - Teilkasko
+  - Vollkasko
+  category_id: fahrzeuge
+  beschreibung: KFZ-Versicherung / Kraftfahrtversicherung
+- keywords:
+  - polizza.*assicurazione
+  - assicurazione.*polizza
+  - polizza n.
+  - polizza no.
+  - Polizza No
+  - certificato di assicurazione
+  - carta verde.*assicurazione
+  - assicurazione.*rca
+  - assicurazione.*rc auto
+  - assicurazione.*responsabilit
+  - assicurazione.*veicolo
+  - bollo auto
+  - tassa automobilistica
+  - superbollo
+  - immatricolazione
+  - libretto di circolazione
+  - carta di circolazione
+  - targa
+  - Targa
+  - TARGA
+  - targhe
+  - carta di proprieta
+  - patente di guida
+  - revisione auto
+  - tagliando auto
+  - manutenzione veicolo
+  category_id: fahrzeuge
+  beschreibung: 'KFZ Italienisch: Polizza / Assicurazione / Bollo / Targa / Immatricolazione'
+- keywords:
+  - Allianz Next.*GY
+  - Allianz Next.*kfz
+  - Zurich Insurance.*GY
+  - Zurich Insurance.*MB
+  - Zurich.*polizza.*auto
+  - Zurich.*assicurazione.*auto
+  - Reale Mutua.*Automia
+  - Reale Mutua.*polizza.*auto
+  - Reale Mutua.*assicurazione.*trattore
+  - Eisendle.*KFZ
+  - Eisendle.*polizza
+  - Eisendle.*assicurazione
+  - LP PRATICHE AUTO
+  - L.P. PRATICHE AUTO
+  category_id: fahrzeuge
+  beschreibung: 'KFZ Italienisch: Versicherer mit KFZ-Kontext'
+- keywords:
+  - Leistungsabrechnung
+  - haben abgerechnet
+  - Erstattungsbetrag
+  - eingereichte Belege
+  - HUK-COBURG
+  - HUK COBURG
+  - Gothaer Krankenversicherung
+  - Barmenia Krankenversicherung
+  - vigo Krankenversicherung
+  category_id: krankenversicherung
+  beschreibung: Krankenversicherung Leistungsabrechnung
+- keywords:
+  - NÜRNBERGER
+  - Nürnberger Lebensversicherung
+  - Nürnberger Versicherung
+  - Nürnberger Rentenversicherung
+  - NÜRNBERGER Versicherung
+  - Bezügeabrechnung
+  category_id: finanzen
+  beschreibung: Nürnberger Versicherung / Rentenversicherung
+- keywords:
+  - Rp.
+  - 'Rp '
+  - Rezept
+  - Verschreibung
+  - Privatrezept
+  - Kassenrezept
+  - Wiederholungsrezept
+  - Betaeubungsmittelrezept
+  category_id: krankenversicherung
+  beschreibung: Rezept / Verschreibung
+- keywords:
+  - Apotheke
+  - Apothekenrechnung
+  - Arzneimittelrechnung
+  - Apothekenabrechnung
+  category_id: krankenversicherung
+  beschreibung: Apotheke / Arzneimittel
+- keywords:
+  - Tierarzt
+  - Tierklinik
+  - Veterinär
+  - Veterinaria
+  - Clinica Veterinaria
+  - Tierheilpraktiker
+  category_id: familie
+  beschreibung: Tierarzt / Tierklinik
+- keywords:
+  - Polizia Stradale
+  - POLIZIA DI STATO
+  - Sottosezione Polizia
+  - Ufficio Infortunistica
+  - sinistro stradale
+  - verbale di incidente
+  - incidente stradale
+  - codice della strada
+  - cds
+  category_id: fahrzeuge
+  beschreibung: Polizia Stradale / Verkehrsunfall
+- keywords:
+  - Standmitteilung
+  - Stand der Versicherung
+  - Jahresinformation
+  - Wertmitteilung
+  - Rückkaufswert
+  - Ablaufleistung
+  - AXA Lebensversicherung
+  - AXA Colonia
+  - LV 1871
+  - LV1871
+  - Nürnberger Lebensversicherung
+  - Nürnberger Pensionskasse
+  - Nürnberger Direktversicherung
+  - Nürnberger U-Kasse
+  - Unterstützungskasse
+  - HDI-Gerling
+  - HDI Lebensversicherung
+  - Allvest
+  - Basisrente
+  - Riester-Rente
+  - Rürup-Rente
+  - fondsgebundene Rentenversicherung
+  - kapitalbildende Lebensversicherung
+  - Renteninformation
+  - Versorgungsauskunft
+  - Altersvorsorgevertrag
+  - Allianz Lebensversicherung
+  - Allianz Pensionskasse
+  category_id: finanzen_versicherung_altersvorsorge
+  beschreibung: 'Altersvorsorge: Lebens-/Rentenversicherung, Standmitteilung'
+- keywords:
+  - Wohngebäudeversicherung
+  - Wohngebäude-Versicherung
+  - Gebäudeversicherung
+  - Haus- und Grundbesitz
+  - Haus und Grundbesitz
+  - Hausratversicherung
+  - Hausrat-Versicherung
+  - Societa Reale Mutua
+  - Reale Mutua
+  - AIG Europe
+  - AIG Gewerbe
+  - Versicherungskammer Bayern Hausrat
+  - Allianz Wohngebäude
+  - Allianz Hausrat
+  category_id: immobilien
+  beschreibung: 'Immobilien-Versicherung: Wohngebäude, Hausrat, Gebäude'
+- keywords:
+  - Privathaftpflicht
+  - Haftpflichtversicherung
+  - Rechtsschutzversicherung
+  - Unfallversicherung
+  - D&O-Versicherung
+  - Schließfachversicherung
+  - Tierversicherung
+  - DOCURA
+  - VGH Versicherung
+  - VOV
+  - NV Versicherungen
+  - CASAMIA
+  - VHV Versicherung
+  - HanseMerkur
+  - WGV Rechtsschutz
+  - WGV Haftpflicht
+  - Nürnberger PrivatSchutz
+  - Versicherungskammer Bayern Haftpflicht
+  - Concordia Versicherung
+  category_id: finanzen_versicherung_sach
+  beschreibung: 'Sachversicherung: Haftpflicht, Rechtsschutz, Unfall, D&O'
+- keywords:
+  - 888 by Design
+  - 888bydesign
+  - 888-by-design
+  - 888 by design GmbH
+  - 888 by Design GmbH
+  category_id: business_888bydesign
+  beschreibung: 888 by Design GmbH (Firmenname direkt)
+- keywords:
+  - HYRE Solutions
+  - HYRE Wandeldarlehen
+  - HYRE Kapitalerhöhung
+  - HYRE UVZ
+  - HYRE Stammeinlage
+  - Thalox Wandeldarlehen
+  - Thalox Solutions
+  - Thalox Stammeinlage
+  - Thalox Kapitalerhöhung
+  category_id: business_888bydesign
+  beschreibung: '888 by Design: HYRE / Thalox Investments'
+- keywords:
+  - Qonto
+  - QONTO
+  category_id: business_888bydesign
+  beschreibung: '888 by Design: Qonto Geschäftskonto'
+- keywords:
+  - Wagniskapital
+  - BAFA.*Zuschuss
+  - Bundesamt.*Wirtschaft.*Ausfuhr
+  - Förderantrag.*BAFA
+  - Verwendungsnachweis.*BAFA
+  - Bundesministerium.*Wirtschaft.*Klimaschutz.*Förder
+  category_id: business_888bydesign
+  beschreibung: '888 by Design: BAFA / Förderung / Zuschüsse'
+- keywords:
+  - comdirect.*GmbH
+  - comdirect business
+  - Geschäftskonto.*comdirect
+  - comdirect Geschäftskonto
+  category_id: business_888bydesign
+  beschreibung: '888 by Design: comdirect Geschäftskonto'
+- keywords:
+  - HRB.*Traunstein
+  - Handelsregister.*Traunstein
+  - Amtsgericht.*Traunstein.*HRB
+  - Landesjustizkasse.*Eintragung
+  - Gesellschafterliste
+  - Gesellschafterversammlung
+  - GmbH-Gesellschafter
+  - GmbH Gesellschafter
+  category_id: business_888bydesign
+  beschreibung: '888 by Design: Handelsregister / HRB / GmbH'
+- keywords:
+  - Körperschaftssteuer.*Bescheid
+  - Körperschaftsteuer
+  - Umsatzsteuer.*Voranmeldung.*GmbH
+  - Umsatzsteuererklärung.*GmbH
+  - Gewerbesteuer.*Bescheid
+  - Gewerbesteuermessbetrag
+  category_id: business_888bydesign
+  beschreibung: '888 by Design: GmbH-Steuern (KSt, USt, GewSt)'
+- keywords:
+  - Finanzamt.*UID.*GmbH
+  - Finanzamt.*Steuernummer.*GmbH
+  - Finanzamt.*Körperschaft
+  category_id: business_888bydesign
+  beschreibung: '888 by Design: GmbH-Steuer-ID / UID'
+- keywords:
+  - Miro
+  - Rechnung
+  alle_keywords: true
+  category_id: business
+  beschreibung: Miro SaaS-Rechnung
+- keywords:
+  - Zoom
+  - Rechnung
+  alle_keywords: true
+  category_id: business
+  beschreibung: Zoom SaaS-Rechnung
+- keywords:
+  - Stripe
+  - Rechnung
+  alle_keywords: true
+  category_id: business
+  beschreibung: Stripe Zahlungsdienstleister
+- keywords:
+  - WIX
+  - Rechnung
+  alle_keywords: true
+  category_id: business
+  beschreibung: WIX SaaS-Rechnung
+- keywords:
+  - LinkedIn Sales
+  - LinkedIn Premium
+  - LinkedIn Corp
+  category_id: business
+  beschreibung: LinkedIn Business-Rechnung
+- keywords:
+  - Bewirtung
+  - Bewirtungsbeleg
+  - Geschäftsessen
+  - Arbeitsessen
+  category_id: business
+  beschreibung: Bewirtung / Geschäftsessen
+- keywords:
+  - Deutsche Post
+  - DHL
+  - Nachsendung
+  - Nachsendeauftrag
+  category_id: business
+  beschreibung: Deutsche Post / DHL Business
+- keywords:
+  - GEZ
+  - Rundfunkgebühren
+  - Rundfunkbeitrag
+  - ARD ZDF Deutschlandradio
+  - Beitragsservice
+  category_id: finanzen
+  beschreibung: GEZ / Rundfunkbeitrag
+- keywords:
+  - Parkticket
+  - Parkgebühr
+  - Parkbeleg
+  - Parkhaus
+  - Parcheggio
+  - Parkautomaten
+  - Parcometro
+  category_id: business
+  beschreibung: Parkgebühren / Parkticket (Reisekosten)
+- keywords:
+  - Kreditkartenabrechnung
+  - Kreditkartenumsätze
+  - MasterCard
+  - Visa.*Abrechnung
+  - American Express
+  category_id: finanzen
+  beschreibung: Kreditkartenabrechnung
+- keywords:
+  - Steuerberatung
+  - Steuerberater
+  - Steuerkanzlei
+  - Steuerberatungskosten
+  - Steuerberaterhonorar
+  category_id: finanzen
+  beschreibung: Steuerberatung / Steuerberater
+- keywords:
+  - Reisekostenabrechnung
+  - Reisekosten
+  - Auslagenersatz
+  - Spesenabrechnung
+  - Travel Expense
+  category_id: business
+  beschreibung: Reisekostenabrechnung
+- keywords:
+  - Zinssatzänderung
+  - Zinsanpassung
+  - Zinsänderung
+  category_id: finanzen
+  beschreibung: Zinssatzänderung / Zinsanpassung
+- keywords:
+  - iPhone
+  - iPad
+  - MacBook
+  - Apple Store
+  - iTunes Store
+  alle_keywords: false
+  category_id: business
+  beschreibung: Apple Hardware/Software-Rechnung
+- keywords:
+  - Notar
+  - Kostenrechnung
+  alle_keywords: true
+  category_id: immobilien
+  beschreibung: Notarkosten / Notar-Rechnung
+- keywords:
+  - FALKE KGaA
+  category_id: finanzen
+  beschreibung: FALKE Bekleidungs-Rechnung (Socken, Pullover etc.)

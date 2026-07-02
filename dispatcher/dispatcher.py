@@ -1957,12 +1957,18 @@ def load_categories() -> dict:
 def build_category_description(categories: dict) -> str:
     lines = []
     for cat_id, cat in categories.items():
+        # Legacy-Kategorien nicht ans LLM übergeben
+        if "LEGACY" in (cat.get("description") or "").upper():
+            continue
         desc = cat.get("description", "")
         desc_str = f" — {desc}" if desc else ""
         lines.append(f"\nKategorie: {cat['label']} (id: {cat_id}){desc_str}")
         for t in cat.get("types", []):
             hints = ", ".join(t.get("hints", []))
             lines.append(f"  - Typ: {t['label']} (id: {t['id']}) | Erkennungshinweise: {hints}")
+        # Wenn Kategorie Types hat, Pflichtfeld-Hinweis
+        if cat.get("types"):
+            lines.append(f"  → type_id MUSS aus dieser Liste gewählt werden (oder null wenn unsicher)")
     return "\n".join(lines)
 
 # ── Queue ──────────────────────────────────────────────────────────────────────
@@ -2646,6 +2652,51 @@ def tg_poll():
                                 cb_msg.get("text", "") + "\n\n⏭️ Übersprungen — nicht archiviert",
                                 reply_markup={"inline_keyboard": []}
                             )
+
+                        elif cb_data.startswith("adr_yes:"):
+                            # Adress-Review bestätigt → Adressat setzen + Lernregel speichern
+                            parts = cb_data.split(":")
+                            fname = parts[1]; person = parts[2] if len(parts) > 2 else "?"
+                            try:
+                                with get_db() as con:
+                                    # 1. Adressat in DB updaten
+                                    con.execute(
+                                        "UPDATE dokumente SET adressat = ? WHERE dateiname = ?",
+                                        (person, fname)
+                                    )
+                                    # 2. Absender dieses Dokuments ermitteln
+                                    doc = con.execute(
+                                        "SELECT absender FROM dokumente WHERE dateiname = ?",
+                                        (fname,)
+                                    ).fetchone()
+                                    absender = doc["absender"] if doc and doc["absender"] else None
+                                    # 3. Lernregel: Absender → Adressat (für zukünftige Dokumente)
+                                    if absender:
+                                        con.execute(
+                                            "INSERT OR IGNORE INTO lernregeln (typ, muster, category_id, beschreibung) VALUES (?, ?, ?, ?)",
+                                            ("adressat", absender.strip(), person,
+                                             f"Auto: Absender '{absender[:60]}' → Adressat {person}")
+                                        )
+                                        log.info(f"Lernregel gespeichert: Absender '{absender}' → {person}")
+                                log.info(f"Adress-Review bestätigt: {fname} → {person}")
+                                tg_answer_callback(cb_id, f"✅ Adressat = {person}")
+                                extra = f"\n📌 Lernregel: Absender → {person}" if absender else ""
+                                tg_edit_message(cb_chat, cb_msg_id,
+                                    cb_msg.get("text","") + f"\n\n✅ Bestätigt: Adressat = {person}{extra}",
+                                    reply_markup={"inline_keyboard": []})
+                            except Exception as e:
+                                log.warning(f"adr_yes Fehler: {e}")
+                                tg_answer_callback(cb_id, "❌ Fehler")
+
+                        elif cb_data.startswith("adr_no:"):
+                            # Adress-Review abgelehnt
+                            parts = cb_data.split(":")
+                            fname = parts[1]; person = parts[2] if len(parts) > 2 else "?"
+                            log.info(f"Adress-Review abgelehnt: {fname} (Vorschlag war: {person})")
+                            tg_answer_callback(cb_id, "👌 LLM bleibt")
+                            tg_edit_message(cb_chat, cb_msg_id,
+                                cb_msg.get("text","") + "\n\n👌 Abgelehnt — LLM-Adressat bleibt",
+                                reply_markup={"inline_keyboard": []})
 
                         elif cb_data.startswith(("gkat:", "gadr:", "gabs:", "gabsneu:", "gfin:", "gedit:", "reject:", "confirm:", "correct:", "back:", "field:", "setcat:", "setadr:")):
                             # Wilson-Callbacks — an Wilson-Relay weiterleiten
@@ -3789,7 +3840,6 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
     <a href="cache" target="_blank" rel="noopener">🔍 Cache</a>
     <a href="batch" target="_blank" rel="noopener">🧰 Batch</a>
     <a href="office" target="_blank" rel="noopener">📊 Office</a>
-    <a href="enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
     <a href="frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
@@ -5337,7 +5387,6 @@ _PIPELINE_HTML = r"""<!DOCTYPE html>
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
   <h1>Dispatcher · Pipeline</h1>
   <a href="/vault" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600" title="Vault-Struktur">📁 Vault</a>
-  <a href="/enex" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600" title="ENEX Import">🐘 ENEX</a>
   <a href="#stats" onclick="showStats();return false;" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600;margin-left:auto" title="Schritt-Statistiken">📊 Statistiken</a>
   <button class="help-btn" onclick="openHelp()">❓ Hilfe</button>
   <span class="sse-dot" id="sse-dot"></span>
@@ -5677,7 +5726,7 @@ function showContent(mode) {
 
   if (mode === 'logs') {
     title.textContent = '📜 Dispatcher-Logs: ' + fn;
-    const stem = fn.replace(/\.(pdf|enex)$/i, '');
+    const stem = fn.replace(/\.pdf$/i, '');
     const render = (entries) => {
       body.innerHTML = entries.length === 0
         ? '<span style="color:var(--muted)">Keine Log-Einträge für dieses Dokument im Ringbuffer.</span>'
@@ -6206,7 +6255,6 @@ _VAULT_HTML = r"""<!DOCTYPE html>
   <a href="/" class="back-link">← Dashboard</a>
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
   <h1>Vault - Struktur</h1>
-  <a href="/enex" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600" title="ENEX Import">🐘 ENEX</a>
   <button class="help-btn" onclick="openHelp()">❓ Hilfe</button>
   <span class="ts" id="ts"></span>
 </header>
@@ -6703,7 +6751,6 @@ button.primary:disabled{opacity:.4;cursor:not-allowed}
     <a href="/">Haupt</a>
     <a href="/pipeline">Pipeline</a>
     <a href="/vault">Vault</a>
-    <a href="/enex">🐘 ENEX</a>
     <span id="rules-toggle" style="margin-left:12px;cursor:pointer;color:var(--accent);font-size:12px" onclick="toggleRulesView()">📚 Lernregeln anzeigen</span>
     <button class="help-btn" onclick="openHelp()" style="margin-left:auto;font-size:11px;padding:3px 10px;border:1px solid #2a2d3a;border-radius:6px;background:transparent;color:#888;cursor:pointer;font-weight:600">❓ Hilfe</button>
   </div>
@@ -7217,7 +7264,6 @@ _WILSON_HTML = r"""<!DOCTYPE html>
   <span style="font-size:20px">🥧</span>
   <h1>Wilson · OpenClaw Dashboard</h1>
   <a href="/vault" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600;margin-left:auto" title="Vault-Struktur">📁 Vault</a>
-  <a href="/enex" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600" title="ENEX Import">🐘 ENEX</a>
   <button class="help-btn" onclick="openHelp()">❓ Hilfe</button>
   <span class="badge" id="overall-badge">Laden…</span>
   <span class="ts" id="ts">–</span>
@@ -7892,7 +7938,6 @@ load();
 CACHE_READER_URL = os.environ.get("CACHE_READER_URL", "http://cache-reader:8501")
 
 
-
 _CACHE_HTML = r"""<!DOCTYPE html>
 <html lang="de">
 <head>
@@ -8008,12 +8053,13 @@ nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
     <a href="/cache" class="hl">🔍 Cache</a>
     <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
     <a href="/office" target="_blank" rel="noopener">📊 Office</a>
-    <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
     <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
     <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
     <a href="/db" target="_blank" rel="noopener">🗄️ DB</a>
+    <a href="/absender" target="_blank" rel="noopener">📇 Absender</a>
+    <a href="/pipeline-debug" target="_blank" rel="noopener">🔬 Debug</a>
   </nav>
   <button class="help-btn" onclick="openHelp()" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;white-space:nowrap">❓ Hilfe</button>
   <span class="ts" id="ts">Laden…</span>
@@ -8395,12 +8441,13 @@ table.items tr.item-error td.err-cell{color:var(--err)}
     <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
     <a href="/batch" class="hl">🧰 Batch</a>
     <a href="/office" target="_blank" rel="noopener">📊 Office</a>
-    <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
     <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
     <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
     <a href="/db" target="_blank" rel="noopener">🗄️ DB</a>
+    <a href="/absender" target="_blank" rel="noopener">📇 Absender</a>
+    <a href="/pipeline-debug" target="_blank" rel="noopener">🔬 Debug</a>
   </nav>
   <button onclick="openHelp()" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;white-space:nowrap">❓ Hilfe</button>
   <span class="ts" id="ts">Laden…</span>
@@ -8758,12 +8805,13 @@ th{font-weight:600;color:var(--muted);font-size:11px;text-transform:uppercase}
     <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
     <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
     <a href="/office" class="hl">📊 Office</a>
-    <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
     <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
     <a href="/frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
     <a href="/db" target="_blank" rel="noopener">🗄️ DB</a>
+    <a href="/absender" target="_blank" rel="noopener">📇 Absender</a>
+    <a href="/pipeline-debug" target="_blank" rel="noopener">🔬 Debug</a>
   </nav>
   <span class="ts" id="ts">Laden…</span>
 </header>
@@ -9012,11 +9060,12 @@ button:disabled{opacity:.4;cursor:not-allowed}
     <a href="/cache">🔍 Cache</a>
     <a href="/batch">🧰 Batch</a>
     <a href="/office">📊 Office</a>
-    <a href="/enex">🐘 ENEX</a>
     <a href="/wilson">🥧 Wilson</a>
     <a href="/adressbuch">📇 Adressbuch</a>
     <a href="/frontmatter">🏷️ Frontmatter</a>
     <a href="/db">🗄️ DB</a>
+    <a href="/absender">📇 Absender</a>
+    <a href="/pipeline-debug">🔬 Debug</a>
   </nav>
   <button class="help-btn-dark" onclick="openHelp()" style="margin-left:auto">❓ Hilfe</button>
 </header>
@@ -9420,11 +9469,12 @@ pre{background:#0f1117;border:1px solid var(--border);border-radius:6px;padding:
     <a href="/cache">🔍 Cache</a>
     <a href="/batch">🧰 Batch</a>
     <a href="/office">📊 Office</a>
-    <a href="/enex">🐘 ENEX</a>
     <a href="/wilson">🥧 Wilson</a>
     <a href="/adressbuch">📇 Adressbuch</a>
     <a href="/duplikate">&#127366; Duplikate</a>
     <a href="/db">🗄️ DB</a>
+    <a href="/absender">📇 Absender</a>
+    <a href="/pipeline-debug">🔬 Debug</a>
   </nav>
   <button class="help-btn-dark" onclick="openHelp()" style="margin-left:auto">❓ Hilfe</button>
   <span id="scan-ts" style="font-size:11px;color:var(--muted)"></span>
@@ -9604,6 +9654,943 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElement
 </html>
 """
 
+
+_ABSENDER_HTML = r"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Absender-DB · Dispatcher</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--border:#dde1ea;--text:#1a1d2e;--muted:#6b7280;--accent:#4f46e5;--ok:#059669;--warn:#d97706;--err:#dc2626}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:13px;padding:0}
+header{display:flex;align-items:center;gap:14px;padding:12px 20px;border-bottom:1px solid var(--border);background:var(--card);position:sticky;top:0;z-index:10}
+header h1{font-size:16px;font-weight:700;color:var(--accent)}
+nav{display:flex;gap:6px;flex-wrap:wrap}
+nav a{font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;text-decoration:none;color:var(--muted);font-weight:600}
+nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
+.main{max-width:1200px;margin:16px auto;padding:0 16px}
+.toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px}
+.toolbar button{padding:7px 16px;background:var(--accent);color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer}
+.toolbar button:hover{opacity:.9}
+.toolbar input{padding:6px 12px;border:1px solid var(--border);border-radius:7px;font-size:12px;min-width:200px}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+th{text-align:left;padding:8px 12px;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;background:#fafbfc;border-bottom:2px solid var(--border);cursor:pointer;white-space:nowrap}
+th:hover{color:var(--accent)}
+td{padding:7px 12px;font-size:12px;border-bottom:1px solid #f0f1f5}
+tr:hover td{background:#f8f9ff}
+tr.italia td{background:#fffef0}
+.aliases{font-size:10px;color:var(--muted);display:block;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.aliases:hover{overflow:visible;white-space:normal}
+.badge{font-size:10px;padding:1px 7px;border-radius:999px;font-weight:600;display:inline-block}
+.badge-kfz{background:#fef3c7;color:#92400e}
+.badge-av{background:#ede9fe;color:#6b21a8}
+.badge-sv{background:#dbeafe;color:#1d4ed8}
+.badge-kv{background:#fce7f3;color:#9d174d}
+.badge-italien{background:#fee2e2;color:#991b1b}
+.badge-finanzen{background:#e0f2fe;color:#0c4a6e}
+.badge-immobilien{background:#dcfce7;color:#14532d}
+.badge-family{background:#f0fdf4;color:#166534}
+.badge-none{background:#f1f5f9;color:#64748b}
+.edit-btn{cursor:pointer;font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:transparent;color:var(--accent)}
+.edit-btn:hover{background:var(--accent);color:#fff}
+.del-btn{cursor:pointer;font-size:11px;padding:2px 8px;border:1px solid #fee2e2;border-radius:5px;background:transparent;color:var(--err);margin-left:4px}
+.del-btn:hover{background:var(--err);color:#fff}
+/* Modal */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:100;align-items:center;justify-content:center}
+.modal-overlay.open{display:flex}
+.modal{background:var(--card);border-radius:12px;padding:24px;max-width:500px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+.modal h2{font-size:14px;font-weight:700;margin-bottom:16px}
+.modal label{display:block;font-size:11px;font-weight:600;color:var(--muted);margin-bottom:4px;margin-top:12px}
+.modal input,.modal select{width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px}
+.modal input:focus,.modal select:focus{border-color:var(--accent);outline:none}
+.modal-actions{display:flex;gap:8px;margin-top:18px;justify-content:flex-end}
+.modal-actions button{padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer}
+.btn-primary{background:var(--accent);color:#fff;border:none}
+.btn-ghost{background:transparent;border:1px solid var(--border);color:var(--muted)}
+.help{font-size:10px;color:var(--muted);margin-top:2px}
+.toast{position:fixed;bottom:20px;right:20px;padding:10px 18px;border-radius:8px;font-size:12px;font-weight:600;z-index:200;opacity:0;transition:opacity .3s}
+.toast.show{opacity:1}
+.toast.ok{background:#dcfce7;color:#14532d}
+.toast.err{background:#fee2e2;color:#991b1b}
+.count{font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>📇 Absender-DB</h1>
+  <nav>
+    <a href="/">🏠 Dashboard</a>
+    <a href="/pipeline">⚡ Pipeline</a>
+    <a href="/absender" class="hl">📇 Absender</a>
+  </nav>
+  <span class="count" id="count"></span>
+</header>
+<div class="main">
+  <div class="toolbar">
+    <input type="search" id="filter" placeholder="Filtern…" oninput="renderTable()">
+    <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap">
+      <input type="checkbox" id="chk-unkonf" onchange="renderTable()"> nur unkonfigurierte
+    </label>
+    <button onclick="openAdd()">＋ Neu</button>
+    <button onclick="location.reload()" style="background:transparent;border:1px solid var(--border);color:var(--muted)">↻</button>
+  </div>
+  <table>
+    <thead><tr>
+      <th onclick="sortBy('name')">Absender ⇅</th>
+      <th>Aliasse</th>
+      <th>Part.IVA</th>
+      <th onclick="sortBy('kategorie_hint')">Kategorie ⇅</th>
+      <th>Typ</th>
+      <th>Adressat</th>
+      <th></th>
+    </tr></thead>
+    <tbody id="tbody"><tr><td colspan="7" style="text-align:center;color:var(--muted);padding:28px">Laden…</td></tr></tbody>
+  </table>
+</div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal">
+    <h2 id="modal-title">Absender bearbeiten</h2>
+    <label>ID <span class="help">(snake_case, z.B. axa_lebensversicherung)</span></label>
+    <input id="ed-id" placeholder="z.B. axa_lebensversicherung">
+    <label>Name (erster Alias)</label>
+    <input id="ed-name" placeholder="AXA Lebensversicherung AG">
+    <label>Aliasse <span class="help">(ein Alias pro Zeile)</span></label>
+    <textarea id="ed-aliases" rows="3" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px" placeholder="AXA&#10;AXA Lebensversicherung&#10;AXA Colonia"></textarea>
+    <label>Part.IVA <span class="help">(durch Komma getrennt)</span></label>
+    <input id="ed-iva" placeholder="01122334455">
+    <label>Kategorie</label>
+    <select id="ed-kategorie">
+      <option value="">— keine —</option>
+    </select>
+    <label>Typ</label>
+    <input id="ed-typ" placeholder="z.B. rechnung, fahrzeug, behoerde">
+    <label>Adressat-Default</label>
+    <select id="ed-adressat">
+      <option value="">— kein Default —</option>
+      <option value="Reinhard">Reinhard</option>
+      <option value="Marion">Marion</option>
+    </select>
+    <label>Land</label>
+    <select id="ed-land">
+      <option value="">— unbekannt —</option>
+      <option value="DE">DE</option>
+      <option value="IT">IT</option>
+    </select>
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="closeModal()">Abbrechen</button>
+      <button class="btn-primary" id="btn-save" onclick="saveSender()">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let senders = [];
+let categories = [];
+let sortCol = 'name';
+let sortDir = 1;
+let editId = null;
+
+async function load(){
+  try{
+    const [sr,cr] = await Promise.all([
+      fetch('/api/absender').then(r=>r.json()),
+      fetch('/api/categories').then(r=>r.json())
+    ]);
+    senders = sr;
+    categories = cr;
+    const cfg = senders.filter(s=>s.configured).length;
+    const total = senders.length;
+    document.getElementById('count').textContent = total + ' Absender (' + cfg + ' konfiguriert)';
+    const sel = document.getElementById('ed-kategorie');
+    sel.innerHTML = '<option value="">— keine —</option>';
+    Object.entries(categories).forEach(([id,cat]) => {
+      sel.innerHTML += `<option value="${id}">${cat.label||id}</option>`;
+    });
+    renderTable();
+  }catch(e){
+    document.getElementById('tbody').innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--err);padding:28px">Fehler: '+e.message+'</td></tr>';
+  }
+}
+
+function sortBy(col){
+  if(sortCol===col) sortDir=-sortDir; else{sortCol=col;sortDir=1;}
+  renderTable();
+}
+
+function renderTable(){
+  const f = (document.getElementById('filter').value||'').toLowerCase();
+  const unkOnly = document.getElementById('chk-unkonf').checked;
+  let list = [...senders].filter(s => {
+    if(unkOnly && s.configured) return false;
+    if(!f) return true;
+    const hay = (s.name+' '+(s.aliases||[]).join(' ')+' '+(s.kategorie_hint||'')+' '+(s.typ_hint||'')).toLowerCase();
+    return hay.includes(f);
+  });
+  list.sort((a,b) => {
+    // Konfigurierte zuerst, dann nach Name
+    if(a.configured!==b.configured) return a.configured ? -1 : 1;
+    let va = (a[sortCol]||''), vb = (b[sortCol]||'');
+    if(typeof va==='string') va=va.toLowerCase();
+    if(typeof vb==='string') vb=vb.toLowerCase();
+    return va<vb ? -sortDir : va>vb ? sortDir : 0;
+  });
+  document.getElementById('tbody').innerHTML = list.map(s => {
+    const kat = s.kategorie_hint||'';
+    let badgeClass = 'badge-none';
+    if(kat==='fahrzeuge') badgeClass='badge-kfz';
+    else if(kat==='krankenversicherung') badgeClass='badge-kv';
+    else if(kat.startsWith('finanzen_versicherung_alters')) badgeClass='badge-av';
+    else if(kat.startsWith('finanzen_versicherung_sach')) badgeClass='badge-sv';
+    else if(kat==='italien') badgeClass='badge-italien';
+    else if(kat==='finanzen') badgeClass='badge-finanzen';
+    else if(kat==='immobilien'||kat==='immobilien_eigen'||kat==='immobilien_vermietet') badgeClass='badge-immobilien';
+    else if(kat==='familie') badgeClass='badge-family';
+    const iva = (s.part_iva||[]).join(', ') || '–';
+    const countInfo = s.db_count ? ` <span style="font-size:10px;color:var(--muted)">(${s.db_count}×)</span>` : '';
+    const dbKats = (s.db_kats||[]).filter(k=>k).join(', ') || '–';
+    const editBtn = s.configured
+      ? `<button class="edit-btn" onclick="openEdit('${s.id}')">✎</button>`
+      : `<button class="edit-btn" onclick="openNewFromDB('${escJS(s.name)}','${escJS(dbKats)}')" title="Aus DB übernehmen">＋ konfigurieren</button>`;
+    const rowClass = s.configured ? '' : 'style="opacity:0.7;background:#fffff5"';
+    return `<tr ${rowClass}>
+      <td><strong>${esc(s.name)}</strong>${countInfo}</td>
+      <td><span class="aliases">${esc((s.aliases||[]).join(', '))}</span></td>
+      <td>${esc(iva)}</td>
+      <td><span class="badge ${badgeClass}">${esc(kat||dbKats)}</span></td>
+      <td>${esc(s.typ_hint||'—')}</td>
+      <td>${esc(s.adressat_default||'—')}</td>
+      <td>${editBtn}</td>
+    </tr>`;
+  }).join('');
+}
+function escJS(s,v){ return String(s).replace(/[\\'"]/g,'\\$&'); }
+
+function openEdit(id){
+  const s = senders.find(x=>x.id===id);
+  if(!s) return;
+  editId = id;
+  document.getElementById('modal-title').textContent = 'Absender bearbeiten: ' + s.name;
+  document.getElementById('ed-id').value = s.id;
+  document.getElementById('ed-name').value = s.name;
+  document.getElementById('ed-aliases').value = s.aliases.join('\n');
+  document.getElementById('ed-iva').value = (s.part_iva||[]).join(', ');
+  document.getElementById('ed-kategorie').value = s.kategorie_hint||'';
+  document.getElementById('ed-typ').value = s.typ_hint||'';
+  document.getElementById('ed-adressat').value = s.adressat_default||'';
+  document.getElementById('ed-land').value = s.land||'';
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function openAdd(){
+  editId = null;
+  document.getElementById('modal-title').textContent = 'Neuer Absender';
+  document.getElementById('ed-id').value = '';
+  document.getElementById('ed-name').value = '';
+  document.getElementById('ed-aliases').value = '';
+  document.getElementById('ed-iva').value = '';
+  document.getElementById('ed-kategorie').value = '';
+  document.getElementById('ed-typ').value = '';
+  document.getElementById('ed-adressat').value = '';
+  document.getElementById('ed-land').value = '';
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function openNewFromDB(name, dbKats){
+  editId = null;
+  // Generate id from name
+  const id = name.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'').slice(0,40);
+  document.getElementById('modal-title').textContent = 'Neuer Absender aus DB';
+  document.getElementById('ed-id').value = id;
+  document.getElementById('ed-name').value = name;
+  document.getElementById('ed-aliases').value = name;
+  document.getElementById('ed-iva').value = '';
+  // DB-Kategorie vorschlagen (erste, die häufig vorkommt)
+  document.getElementById('ed-kategorie').value = '';
+  document.getElementById('ed-typ').value = '';
+  document.getElementById('ed-adressat').value = '';
+  document.getElementById('ed-land').value = '';
+  document.getElementById('modal-overlay').classList.add('open');
+}
+function closeModal(){
+  document.getElementById('modal-overlay').classList.remove('open');
+}
+
+async function saveSender(){
+  const id = document.getElementById('ed-id').value.trim();
+  const name = document.getElementById('ed-name').value.trim();
+  const aliases = document.getElementById('ed-aliases').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  const iva = document.getElementById('ed-iva').value.split(',').map(s=>s.trim()).filter(Boolean);
+  const kat = document.getElementById('ed-kategorie').value;
+  const typ = document.getElementById('ed-typ').value.trim();
+  const adr = document.getElementById('ed-adressat').value;
+  const land = document.getElementById('ed-land').value;
+  if(!id||!name){ toast('ID und Name sind Pflichtfelder','err'); return; }
+  const payload = {id,name,aliases,part_iva:iva,kategorie_hint:kat||null,typ_hint:typ||null,adressat_default:adr||null,land:land||null};
+  if(editId && editId!==id) payload.old_id = editId;
+  try{
+    const r = await fetch('/api/absender/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    senders = d.senders;
+    closeModal();
+    renderTable();
+    document.getElementById('count').textContent = senders.length + ' Absender';
+    toast('Gespeichert ✓','ok');
+  }catch(e){ toast('Fehler: '+e.message,'err'); }
+}
+
+function toast(msg,type){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'toast '+type+' show';
+  setTimeout(()=>t.classList.remove('show'),2500);
+}
+function esc(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
+document.getElementById('modal-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeModal()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal()});
+load();
+</script>
+</body>
+</html>
+"""
+
+_PIPELINE_DEBUG_HTML = r"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pipeline Debugger</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#1a1b26;color:#a9b1d6;font-family:'Menlo','Consolas','SF Mono',monospace;font-size:12px;height:100vh;display:flex;flex-direction:column}
+header{background:#16171f;border-bottom:1px solid #2f3348;padding:8px 14px;display:flex;align-items:center;gap:10px;flex-shrink:0}
+header h1{font-size:13px;color:#7aa2f7;font-weight:400}
+header .dot{width:8px;height:8px;border-radius:50%}.dot-red{background:#f7768e}.dot-yellow{background:#e0af68}.dot-green{background:#9ece6a}
+nav a{color:#565f89;text-decoration:none;font-size:10px;margin-left:8px}nav a:hover{color:#7aa2f7}
+.terminal{flex:1;overflow-y:auto;padding:12px 16px;line-height:1.6;white-space:pre-wrap;word-break:break-all}
+.line{padding:1px 0}.line .ts{color:#565f89}.line .prompt{color:#9ece6a}.line .cmd{color:#7aa2f7}.line .out{color:#a9b1d6}.line .err{color:#f7768e}.line .warn{color:#e0af68}.line .highlight{color:#bb9af7}.line .ok{color:#9ece6a}
+.upload-bar{background:#16171f;border-top:1px solid #2f3348;padding:10px 14px;flex-shrink:0;display:flex;gap:10px;align-items:center}
+.upload-bar input[type=file]{display:none}
+.upload-bar label{cursor:pointer;color:#7aa2f7;font-size:11px;padding:4px 12px;border:1px solid #2f3348;border-radius:4px}
+.upload-bar label:hover{background:#2f3348}
+.upload-bar .status{color:#565f89;font-size:10px;margin-left:auto}
+.spin{display:inline-block;width:10px;height:10px;border:2px solid #2f3348;border-top-color:#7aa2f7;border-radius:50%;animation:s .6s linear infinite}@keyframes s{to{transform:rotate(360deg)}}
+.progress-bar{height:3px;background:#2f3348;border-radius:2px;overflow:hidden;flex:1;max-width:300px}
+.progress-bar div{height:100%;background:#7aa2f7;transition:width .5s}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot dot-red"></span><span class="dot dot-yellow"></span><span class="dot dot-green"></span>
+  <h1>pipeline-debug ~ %</h1>
+  <nav><a href="/">exit</a></nav>
+</header>
+<div class="terminal" id="term">
+  <div class="line"><span class="ts">[--:--:--]</span> <span class="prompt">$</span> <span class="cmd">pipeline-debug --ready</span></div>
+  <div class="line"><span class="out">Pipeline Debugger bereit. PDF hochladen zum Starten.</span></div>
+  <div class="line"><span class="out">Schritte: OCR → Header → Identifier → DocType → Sprache → LLM → Overrides → Frontmatter</span></div>
+  <div class="line"></div>
+</div>
+<div class="upload-bar">
+  <input type="file" id="file-input" accept=".pdf,application/pdf" onchange="upload(this.files[0])">
+  <label for="file-input">📄 PDF hochladen</label>
+  <div class="progress-bar" id="pbar-wrap" style="display:none"><div id="pbar" style="width:0%"></div></div>
+  <span class="status" id="status"></span>
+</div>
+<script>
+const term=document.getElementById('term');
+function log(ts,cls,msg){
+  const d=new Date(); const t=d.toTimeString().slice(0,8);
+  term.innerHTML+=`<div class="line"><span class="ts">[${t}]</span> <span class="${cls}">${esc(msg)}</span></div>`;
+  term.scrollTop=term.scrollHeight;
+}
+function sep(title){
+  log('','prompt','═══ '+title+' ═══');
+}
+async function upload(file){
+  if(!file)return;
+  log('','cmd','upload: '+file.name+' ('+(file.size/1024).toFixed(0)+' KB)');
+  log('','out','Pipeline wird gestartet…');
+  document.getElementById('pbar-wrap').style.display='block';
+  document.getElementById('status').textContent='OCR läuft…';
+  
+  const fd=new FormData();fd.append('pdf',file);
+  try{
+    const r=await fetch('/api/pipeline-debug/run',{method:'POST',body:fd});
+    const d=await r.json();
+    if(!r.ok){log('','err','Fehler: '+(d.error||'?'));return}
+    pollRun(d.run_id);
+  }catch(e){log('','err','Fehler: '+e.message)}
+}
+
+async function pollRun(runId){
+  let lastN=0;
+  const poll=async()=>{
+    try{
+      const r=await fetch('/api/pipeline-debug/status/'+runId);
+      const d=await r.json();
+      if(d.error){log('','err',d.error);return}
+      // Neue Steps rendern
+      const steps=d.steps||[];
+      for(let i=lastN;i<steps.length;i++){
+        renderStep(steps[i],i);
+      }
+      lastN=steps.length;
+      // Progressbar
+      const total=8;
+      document.getElementById('pbar').style.width=(lastN/total*100)+'%';
+      if(lastN>=1) document.getElementById('status').textContent='Schritt '+lastN+'/'+total;
+      if(!d.done){
+        setTimeout(poll,1500);
+      }else{
+        document.getElementById('pbar').style.width='100%';
+        document.getElementById('status').textContent='Fertig ✅';
+        log('','ok','Pipeline abgeschlossen.');
+        if(d.errors&&d.errors.length) d.errors.forEach(e=>log('','err','ERROR: '+e));
+      }
+    }catch(e){
+      setTimeout(poll,2000);
+    }
+  };
+  poll();
+}
+
+function renderStep(s,i){
+  const n=i+1;
+  sep('Schritt '+n+': '+s.label+' ('+(s.duration_ms?(s.duration_ms/1000).toFixed(1)+'s':'-')+')');
+  if(s.id==='ocr'){
+    log('','out','Zeichen: '+s.chars+' | Quality-Gate: '+(s.gate==='passed'?'BESTANDEN (≥150)':'FEHLGESCHLAGEN (<150)'));
+    if(s.preview) log('','out','OCR-Text ('+s.preview.length+' Zeichen):');
+    if(s.preview){const lines=s.preview.split('\\n'); for(let i=0;i<lines.length;i++)log('','out',lines[i]);}
+  }else if(s.id==='header'){
+    log('','out','Absender:  '+j(s.absender));
+    log('','out','Empfänger: '+j(s.empfaenger));
+  }else if(s.id==='identifiers'){
+    const ids=s.identifiers||{};
+    log('','out','Cod.Fiscale: '+j(ids.cod_fiscale_person));
+    log('','out','Part.IVA:    '+j(ids.part_iva_firma));
+    log('','out','IBAN:        '+j(ids.iban));
+    if(s.adressat_match) log('','highlight','Adressat-Match:  '+s.adressat_match.person_key);
+    if(s.absender_match) log('','highlight','Absender-Match:   '+s.absender_match.id+' → kat='+(s.absender_match.kategorie_hint||'-')+' typ='+(s.absender_match.typ_hint||'-'));
+  }else if(s.id==='doctype'){
+    log('','out','Erkannter Typ: '+j(s.typ));
+    log('','out','Keyword:       '+j(s.keyword));
+    log('','out','Kategorie-Hint:'+j(s.kategorie_hint));
+  }else if(s.id==='lang'){
+    log('','out','Sprache: '+s.lang+' ('+(s.prob*100).toFixed(0)+'%)');
+  }else if(s.id==='llm'||s.id==='llm-retry'){
+    if(s.raw){
+      const r=s.raw;
+      // Prompt & Modell anzeigen (wenn _debug aktiv)
+      if(r._prompt){
+        log('','prompt','═══ LLM-PROMPT (Modell: '+(r._model||'?')+', Context: '+(r._context||'?')+', Endpoint: '+(r._endpoint||'?')+') ═══');
+        const lines=r._prompt.split('\\n');
+        if(lines.length>50){log('','out','Prompt: '+lines.length+' Zeilen — erste 50:');}
+        for(let i=0;i<Math.min(lines.length,50);i++)log('','out',lines[i]);
+        if(lines.length>50)log('','out','… ('+(lines.length-50)+' weitere Zeilen)');
+        log('','prompt','═══ ENDE PROMPT ═══');
+      }
+      log('','highlight','category_id:  '+(r.category_id||'NULL'));
+      log('','highlight','type_id:      '+(r.type_id||'NULL'));
+      log('','out','absender:     '+j(r.absender));
+      log('','out','adressat:     '+j(r.adressat));
+      log('','out','rechnungsdatum: '+j(r.rechnungsdatum));
+      log('','out','rechnungsbetrag:'+j(r.rechnungsbetrag));
+      log('','out','konfidenz_category: '+j(r.konfidenz_category));
+      log('','out','konfidenz_type:     '+j(r.konfidenz_type));
+      log('','out','konfidenz_absender:  '+j(r.konfidenz_absender));
+      log('','out','konfidenz_adressat:  '+j(r.konfidenz_adressat));
+    }else{log('','warn','Kein LLM-Ergebnis');}
+  }else if(s.id==='overrides'){
+    log('','out','#  Feld               Vorher → Nachher               Quelle');
+    log('','out','─  ────               ──────   ──────               ──────');
+    (s.overrides||[]).forEach(o=>{
+      const cls=o.changed?'warn':'out';
+      const mark=o.changed?'🔄':'  ';
+      const before=(o.before||'-').slice(0,20).padEnd(20);
+      const after=(o.after||'-').slice(0,20).padEnd(20);
+      log('',cls,mark+' #'+String(o.step).padStart(2)+' '+o.field.padEnd(18)+' '+before+' → '+after+' '+o.source);
+    });
+  }else if(s.id==='output'){
+    log('','highlight','Zielpfad: 📁 '+s.vault_path);
+    log('','out','category_id: '+j(s.category_id));
+    log('','out','type_id:     '+j(s.type_id));
+    log('','out','');
+    log('','ok','── Frontmatter ──');
+    (s.frontmatter||'').split('\n').forEach(l=>log('','out',l));
+  }
+}
+function esc(s){return String(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'})[c])}
+function j(v){return v?JSON.stringify(v):'—'}
+</script>
+</body>
+</html>
+"""
+
+_DB_HTML = r"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docling Workflow · Dispatcher-DB</title>
+<style>
+:root{--bg:#f4f5f7;--surface:#fff;--border:#dde1ea;--text:#1a1d2e;--muted:#6b7280;--ok:#059669;--warn:#d97706;--err:#dc2626;--accent:#4f46e5}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;min-height:100vh}
+header{border-bottom:1px solid var(--border);padding:13px 24px;display:flex;align-items:center;gap:10px;background:var(--surface);flex-wrap:wrap}
+header h1{font-size:16px;font-weight:700;color:var(--accent);white-space:nowrap;margin-right:4px}
+nav a{font-size:12px;padding:4px 12px;border:1px solid var(--border);border-radius:7px;color:var(--text);text-decoration:none;font-weight:600;white-space:nowrap;transition:all .15s;margin-right:5px}
+nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
+.ts{font-size:12px;color:var(--muted);margin-left:auto;white-space:nowrap}
+.kpi-row{display:flex;flex-wrap:wrap;gap:12px;padding:18px 24px}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 18px;min-width:130px;flex:1}
+.kpi .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700;margin-bottom:6px}
+.kpi .val{font-size:26px;font-weight:700;color:var(--text)}
+.kpi.accent .val{color:var(--accent)}.kpi.ok .val{color:var(--ok)}.kpi.warn .val{color:var(--warn)}.kpi.err .val{color:var(--err)}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:0 24px 16px}
+.section{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.section.full{margin:0 24px 16px}
+.section h2{font-size:13px;font-weight:700;color:var(--text);padding:12px 18px;border-bottom:1px solid var(--border);background:#fafbfc;display:flex;align-items:center;gap:8px}
+.section h2 .cnt{margin-left:auto;font-size:11px;color:var(--muted);font-weight:400}
+.cat-table{width:100%;border-collapse:collapse;font-size:12px}
+.cat-table th{text-align:left;padding:7px 12px;font-weight:700;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--border)}
+.cat-table td{padding:7px 12px;border-bottom:1px solid #f0f1f5}
+.cat-table tr:last-child td{border-bottom:none}
+.cat-table tr:hover td{background:#fafbfc}
+.bar{height:6px;border-radius:3px;background:var(--accent);display:inline-block;vertical-align:middle;margin-right:6px;opacity:.65;min-width:2px}
+.cat-tag{font-size:11px;background:#eef2ff;color:var(--accent);border-radius:4px;padding:1px 6px;font-weight:600;cursor:pointer}
+.cat-tag:hover{background:#e0e7ff}
+.filter-row{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;padding:14px 18px;border-bottom:1px solid var(--border);background:#fafbfc}
+.fg{display:flex;flex-direction:column;gap:3px}
+.fg label{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.fg input,.fg select{font-size:13px;padding:5px 9px;border:1px solid var(--border);border-radius:6px;background:#fff;color:var(--text);height:32px}
+.fg input:focus,.fg select:focus{border-color:var(--accent);outline:none}
+.fg.wide input{width:220px}.fg.med select{width:155px}.fg.sm input,.fg.sm select{width:120px}
+button.primary{padding:7px 16px;background:var(--accent);color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;height:32px}
+button.primary:hover{opacity:.9}
+button.sec{padding:7px 12px;background:#fff;color:var(--muted);border:1px solid var(--border);border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;height:32px}
+button.sec:hover{border-color:var(--accent);color:var(--accent)}
+table.docs{width:100%;border-collapse:collapse;font-size:12.5px}
+table.docs th{text-align:left;padding:8px 10px;font-weight:700;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--border);background:#fafbfc;white-space:nowrap}
+table.docs td{padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
+table.docs tr:hover td{background:#fafbfc}
+.kbadge{display:inline-block;font-size:10px;padding:2px 7px;border-radius:999px;font-weight:700}
+.kbadge.hoch{background:#d1fae5;color:var(--ok)}.kbadge.mittel{background:#fef3c7;color:var(--warn)}.kbadge.niedrig{background:#fee2e2;color:var(--err)}.kbadge.none{background:#f1f2f6;color:var(--muted)}
+.truncate{max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pdf-link{color:var(--accent);text-decoration:none;font-size:11px;font-weight:600}
+.pdf-link:hover{text-decoration:underline}
+.empty{color:var(--muted);font-size:12px;text-align:center;padding:28px}
+.hint{font-size:11px;color:var(--muted);padding:10px 18px}
+
+/* Inline-Edit Controls */
+.editable-cat, .editable-date { cursor:pointer; border-radius:3px; padding:2px 4px; transition:background .15s; }
+.editable-cat:hover, .editable-date:hover { background:#eef2ff; outline:1px dashed var(--accent); }
+.cat-select { font-size:12px; padding:4px 6px; border:2px solid var(--accent); border-radius:5px; background:#fff; color:var(--text); max-width:180px; }
+.date-input { font-size:12px; padding:4px 6px; border:2px solid var(--accent); border-radius:5px; width:130px; }
+.btn-inline-save { font-size:12px; padding:4px 10px; margin-left:4px; background:var(--ok); color:#fff; border:none; border-radius:5px; cursor:pointer; font-weight:700; }
+.btn-inline-save:hover { opacity:.85; }
+.btn-inline-cancel { font-size:12px; padding:4px 8px; margin-left:2px; background:#fff; color:var(--muted); border:1px solid var(--border); border-radius:5px; cursor:pointer; }
+.btn-inline-cancel:hover { color:var(--err); border-color:var(--err); }
+.btn-detail { font-size:11px; padding:2px 8px; background:var(--bg); color:var(--muted); border:1px solid var(--border); border-radius:4px; cursor:pointer; }
+.btn-detail:hover { background:var(--accent); color:#fff; border-color:var(--accent); }
+.detail-pre { font-size:11px; background:#f8f9fb; padding:8px; border-radius:6px; max-height:200px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+</style>
+<script>
+// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
+// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
+// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
+(function(){
+  const p = window.location.pathname.replace(/\/+$/,'');
+  if (p !== '' && p !== '/' && p.split('/').length > 2) {
+    const _fetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return _fetch.call(window, url, opts);
+    };
+    const _ES = window.EventSource;
+    window.EventSource = function(url, conf) {
+      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
+      return new _ES(url, conf);
+    };
+    window.EventSource.prototype = _ES.prototype;
+    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a');
+      if (a) {
+        const raw = a.getAttribute('href');
+        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
+          e.preventDefault();
+          window.location.href = p + raw;
+        }
+      }
+    });
+  }
+})();
+</script>
+</head>
+<body>
+<header>
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+  <h1>Dispatcher-DB</h1>
+  <nav>
+    <a href="/">⊞ Dashboard</a>
+    <a href="/pipeline" target="_blank" rel="noopener">⚡ Pipeline</a>
+    <a href="/review" target="_blank" rel="noopener">📋 Review</a>
+    <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
+    <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
+    <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
+    <a href="/office" target="_blank" rel="noopener">📊 Office</a>
+    <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
+    <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
+    <a href="/db" class="hl">🗄️ DB</a>
+  </nav>
+  <button onclick="openHelp()" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;white-space:nowrap">❓ Hilfe</button>
+  <span class="ts" id="ts">Laden…</span>
+</header>
+
+<div class="kpi-row">
+  <div class="kpi accent"><div class="lbl">Verarbeitete PDFs gesamt</div><div class="val" id="k-total">–</div></div>
+  <div class="kpi ok"><div class="lbl">Heute verarbeitet</div><div class="val" id="k-today">–</div></div>
+  <div class="kpi"><div class="lbl">Letzte 7 Tage</div><div class="val" id="k-7d">–</div></div>
+  <div class="kpi warn"><div class="lbl">Inbox / unklar</div><div class="val" id="k-inbox">–</div></div>
+</div>
+
+<div class="two-col">
+  <div class="section">
+    <h2>📊 Nach Kategorie <span class="cnt" id="cat-cnt"></span></h2>
+    <table class="cat-table"><thead><tr><th>Kategorie</th><th>Anzahl</th><th>Anteil</th></tr></thead>
+    <tbody id="cat-tbody"><tr><td colspan="3" class="empty">Laden…</td></tr></tbody></table>
+  </div>
+  <div class="section">
+    <h2>📅 Nach Jahr <span class="cnt" id="year-cnt"></span></h2>
+    <table class="cat-table"><thead><tr><th>Jahr</th><th>Anzahl</th><th>Anteil</th></tr></thead>
+    <tbody id="year-tbody"><tr><td colspan="3" class="empty">Laden…</td></tr></tbody></table>
+  </div>
+</div>
+
+<div class="section full">
+  <h2>🔎 Dokumente durchsuchen <span class="cnt" id="doc-cnt"></span></h2>
+  <div class="filter-row">
+    <div class="fg wide"><label>Suche</label><input id="f-q" type="search" placeholder="Dateiname, Absender…" oninput="schedFilter()"></div>
+    <div class="fg med"><label>Kategorie</label><select id="f-kat" onchange="loadDocs()"><option value="">Alle Kategorien</option></select></div>
+    <div class="fg sm"><label>Adressat</label><select id="f-adr" onchange="loadDocs()"><option value="">Alle</option><option>Reinhard</option><option>Marion</option></select></div>
+    <div class="fg sm"><label>Konfidenz</label><select id="f-konfid" onchange="loadDocs()"><option value="">Alle</option><option value="hoch">Hoch</option><option value="mittel">Mittel</option><option value="niedrig">Niedrig</option></select></div>
+    <div class="fg sm"><label>Von (Datum)</label><input id="f-von" type="date" onchange="loadDocs()"></div>
+    <div class="fg sm"><label>Bis (Datum)</label><input id="f-bis" type="date" onchange="loadDocs()"></div>
+    <button class="primary" onclick="loadDocs()">Suchen</button>
+    <button class="sec" onclick="resetFilter()">✕ Reset</button>
+  </div>
+  <div style="overflow-x:auto">
+    <table class="docs">
+      <thead><tr>
+        <th>Datum</th><th>Dateiname</th><th>Kategorie</th>
+        <th>Absender</th><th>Adressat</th><th>Konfidenz</th>
+        <th>Eingetragen</th><th>PDF</th>
+      </tr></thead>
+      <tbody id="docs-tbody"><tr><td colspan="8" class="empty">Laden…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="hint" id="doc-hint"></div>
+</div>
+
+<div style="height:24px"></div>
+
+<script>
+let _ft = null;
+
+function schedFilter(){clearTimeout(_ft);_ft=setTimeout(loadDocs,350)}
+
+function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+
+async function loadStats(){
+  try{
+    const r = await fetch('/api/db/stats');
+    const d = await r.json();
+    document.getElementById('ts').textContent = 'Stand: ' + new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+    document.getElementById('k-total').textContent = d.total ?? '–';
+    document.getElementById('k-today').textContent = d.today ?? '–';
+    document.getElementById('k-7d').textContent   = d.last_7d ?? '–';
+    document.getElementById('k-inbox').textContent = d.inbox ?? '–';
+    const total = d.total || 1;
+    // Category table
+    const cats = d.by_category || [];
+    document.getElementById('cat-cnt').textContent = cats.length + ' Kategorien';
+    const maxC = cats[0]?.count || 1;
+    document.getElementById('cat-tbody').innerHTML = cats.map(c=>`<tr>
+      <td><span class="cat-tag" onclick="filterKat('${esc(c.kategorie||'')}')">${esc(c.kategorie||'Inbox')}</span></td>
+      <td style="font-weight:700">${c.count}</td>
+      <td><span class="bar" style="width:${Math.round(c.count/maxC*120)}px"></span><span style="font-size:11px;color:var(--muted)">${Math.round(c.count/total*100)}%</span></td>
+    </tr>`).join('') || '<tr><td colspan="3" class="empty">Keine Daten</td></tr>';
+    // Year table
+    const years = d.by_year || [];
+    document.getElementById('year-cnt').textContent = years.length + ' Jahre';
+    const maxY = years[0]?.count || 1;
+    document.getElementById('year-tbody').innerHTML = years.map(y=>`<tr>
+      <td style="font-weight:700">${esc(y.year||'–')}</td>
+      <td>${y.count}</td>
+      <td><span class="bar" style="width:${Math.round(y.count/maxY*120)}px"></span><span style="font-size:11px;color:var(--muted)">${Math.round(y.count/total*100)}%</span></td>
+    </tr>`).join('') || '<tr><td colspan="3" class="empty">Keine Daten</td></tr>';
+  }catch(e){console.error(e)}
+}
+
+function filterKat(kat){
+  document.getElementById('f-kat').value = kat;
+  loadDocs();
+}
+
+async function loadCategories(){
+  try{
+    const r = await fetch('/api/categories');
+    const cats = await r.json();
+    const sel = document.getElementById('f-kat');
+    Object.entries(cats).sort((a,b)=>a[1].label.localeCompare(b[1].label,'de')).forEach(([id,c])=>{
+      const o = document.createElement('option');
+      o.value = id; o.textContent = c.label; sel.appendChild(o);
+    });
+  }catch(e){}
+}
+
+async function loadDocs(){
+  const q      = document.getElementById('f-q').value.trim();
+  const kat    = document.getElementById('f-kat').value;
+  const adr    = document.getElementById('f-adr').value;
+  const konfid = document.getElementById('f-konfid').value;
+  const von    = document.getElementById('f-von').value;
+  const bis    = document.getElementById('f-bis').value;
+  const p = new URLSearchParams({limit:101});
+  if(q)      p.set('q',q);
+  if(kat)    p.set('kategorie',kat);
+  if(adr)    p.set('adressat',adr);
+  if(konfid) p.set('konfidenz',konfid);
+  if(von)    p.set('von',von);
+  if(bis)    p.set('bis',bis);
+  try{
+    const r = await fetch('/api/recent?' + p);
+    const docs = await r.json();
+    const hasMore = docs.length > 100;
+    const shown = hasMore ? docs.slice(0,100) : docs;
+    document.getElementById('doc-cnt').textContent = shown.length + (hasMore?' (erste 100 — Filter verfeinern)':'') + ' Treffer';
+    document.getElementById('doc-hint').textContent = hasMore ? '⚠ Mehr als 100 Treffer — bitte Filter verfeinern.' : '';
+    document.getElementById('docs-tbody').innerHTML = shown.map(d=>{
+      const kc = (d.konfidenz||'').toLowerCase();
+      const kb = kc ? `<span class="kbadge ${kc}">${esc(d.konfidenz)}</span>` : `<span class="kbadge none">–</span>`;
+      const date = (d.rechnungsdatum||'–').slice(0,10);
+      const ts   = (d.erstellt_am||'–').slice(0,16).replace('T',' ');
+      const fname = esc((d.pdf_name||d.dateiname||'–').slice(0,55));
+      const kat_id = d.kategorie || '';
+      const kat_s = kat_id
+        ? `<span class="cat-tag editable-cat" onclick="editCategory(event,${d.id},'${esc(kat_id)}')" title="Klick: Kategorie ändern">${esc(kat_id)}</span>`
+        : `<span class="editable-cat" onclick="editCategory(event,${d.id},'')" title="Klick: Kategorie setzen" style="color:var(--muted);cursor:pointer">–</span>`;
+      const dateCell = d.rechnungsdatum
+        ? `<span class="editable-date" onclick="editDate(event,${d.id},'${esc(d.rechnungsdatum||'')}')" title="Klick: Datum ändern">${date}</span>`
+        : '<span style="color:var(--muted);cursor:pointer" onclick="editDate(event,'+d.id+',\'\')" title="Datum setzen">–</span>';
+      const pdfLink = d.vault_pfad
+        ? `<a class="pdf-link" href="/api/vault-pdf?md=${encodeURIComponent(d.vault_pfad)}" target="_blank" rel="noopener">📄</a>`
+        : '–';
+      const detailBtn = `<button class="btn-detail" onclick='showDetail(${JSON.stringify(d).replace(/'/g,"&#39;")})' title="Details als JSON">🔍</button>`;
+      return `<tr>
+        <td style="white-space:nowrap;color:var(--muted);font-size:12px">${dateCell}</td>
+        <td class="truncate" title="${esc(d.dateiname||'')}">${fname}</td>
+        <td>${kat_s}</td>
+        <td class="truncate"><span class="editable-cat" onclick="editAbsender(event,${d.id},'${esc(d.absender||'')}')" title="Klick: Absender ändern" style="cursor:pointer">${esc((d.absender||'–').slice(0,40))}</span></td>
+        <td style="font-size:12px">${esc(d.adressat||'–')}</td>
+        <td>${kb}</td>
+        <td style="font-size:11px;color:var(--muted);white-space:nowrap">${ts}</td>
+        <td style="white-space:nowrap">${pdfLink} ${detailBtn}</td>
+      </tr>`;
+    }).join('') || `<tr><td colspan="8" class="empty">Keine Dokumente gefunden.</td></tr>`;
+  }catch(e){
+    document.getElementById('docs-tbody').innerHTML=`<tr><td colspan="8" class="empty" style="color:var(--err)">Fehler: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function resetFilter(){
+  ['f-q','f-von','f-bis'].forEach(id=>document.getElementById(id).value='');
+  ['f-kat','f-adr','f-konfid'].forEach(id=>document.getElementById(id).value='');
+  loadDocs();
+}
+
+// ── Inline-Edit: Kategorie & Datum ──
+let _catOptions = null;
+async function editCategory(ev, docId, currentKat) {
+  ev.stopPropagation();
+  const cell = ev.target.closest('td');
+  if (!cell) return;
+  if (!_catOptions) {
+    try {
+      const r = await fetch('/api/categories');
+      _catOptions = await r.json();
+    } catch(e) { return; }
+  }
+  const sel = document.createElement('select');
+  sel.style.cssText = 'font-size:12px;padding:3px 5px;border:2px solid var(--accent);border-radius:5px;background:#fff;max-width:160px';
+  Object.entries(_catOptions).sort((a,b)=>a[1].label.localeCompare(b[1].label,'de')).forEach(([id,c])=>{
+    const o = document.createElement('option');
+    o.value = id; o.textContent = c.label;
+    if (id === currentKat) o.selected = true;
+    sel.appendChild(o);
+  });
+  const save = document.createElement('button');
+  save.style.cssText = 'font-size:11px;padding:3px 8px;margin-left:4px;background:var(--ok);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:700';
+  save.textContent = '✓';
+  const cancel = document.createElement('button');
+  cancel.style.cssText = 'font-size:11px;padding:3px 6px;margin-left:2px;background:#fff;color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer';
+  cancel.textContent = '✕';
+  cancel.onclick = () => loadDocs();
+  save.onclick = async () => {
+    const newKat = sel.value;
+    try {
+      const r = await fetch('/api/pipeline/update', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({doc_id: docId, kategorie: newKat})
+      });
+      if (r.ok) loadDocs(); else alert('Fehler');
+    } catch(e) { alert('Fehler: '+e); }
+  };
+  cell.textContent = '';
+  cell.appendChild(sel);
+  cell.appendChild(save);
+  cell.appendChild(cancel);
+}
+
+async function editAbsender(ev, docId, currentVal) {
+  ev.stopPropagation();
+  const cell = ev.target.closest('td');
+  if (!cell) return;
+  const inp = document.createElement('input');
+  inp.type = 'text'; inp.value = currentVal;
+  inp.style.cssText = 'font-size:12px;padding:3px 5px;border:2px solid var(--accent);border-radius:5px;width:180px';
+  inp.setAttribute('list', 'sender-list-' + docId);
+  const datalist = document.createElement('datalist');
+  datalist.id = 'sender-list-' + docId;
+  inp.addEventListener('input', async () => {
+    const q = inp.value.trim();
+    if (q.length < 1) return;
+    try {
+      const r = await fetch('/api/senders?q=' + encodeURIComponent(q));
+      const d = await r.json();
+      datalist.innerHTML = (d.senders||[]).map(s => '<option value="'+esc(s)+'">').join('');
+    } catch(e) {}
+  });
+  // Initial load
+  try {
+    const r = await fetch('/api/senders');
+    const d = await r.json();
+    datalist.innerHTML = (d.senders||[]).slice(0,100).map(s => '<option value="'+esc(s)+'">').join('');
+  } catch(e) {}
+  const save = document.createElement('button');
+  save.style.cssText = 'font-size:11px;padding:3px 8px;margin-left:4px;background:var(--ok);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:700';
+  save.textContent = '✓';
+  const cancel = document.createElement('button');
+  cancel.style.cssText = 'font-size:11px;padding:3px 6px;margin-left:2px;background:#fff;color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer';
+  cancel.textContent = '✕';
+  cancel.onclick = () => loadDocs();
+  save.onclick = async () => {
+    const val = inp.value.trim();
+    try {
+      const r = await fetch('/api/pipeline/update', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({doc_id: docId, absender: val})
+      });
+      if (r.ok) loadDocs(); else alert('Fehler');
+    } catch(e) { alert('Fehler: '+e); }
+  };
+  cell.textContent = '';
+  cell.appendChild(inp);
+  cell.appendChild(datalist);
+  cell.appendChild(save);
+  cell.appendChild(cancel);
+  inp.focus();
+}
+
+async function editDate(ev, docId, currentDate) {
+  ev.stopPropagation();
+  const cell = ev.target.closest('td');
+  if (!cell) return;
+  const inp = document.createElement('input');
+  inp.type = 'date';
+  inp.style.cssText = 'font-size:12px;padding:3px 5px;border:2px solid var(--accent);border-radius:5px;width:130px';
+  if (currentDate && currentDate.length >= 10 && currentDate.includes('.')) {
+    const parts = currentDate.split('.');
+    if (parts.length === 3) inp.value = parts[2]+'-'+parts[1]+'-'+parts[0];
+  }
+  const save = document.createElement('button');
+  save.className = 'btn-inline-save'; save.textContent = '✓';
+  const cancel = document.createElement('button');
+  cancel.className = 'btn-inline-cancel'; cancel.textContent = '✕';
+  cancel.onclick = () => loadDocs();
+  save.onclick = async () => {
+    const d = inp.value; // YYYY-MM-DD
+    const dd = d ? d.split('-')[2]+'.'+d.split('-')[1]+'.'+d.split('-')[0] : '';
+    try {
+      const r = await fetch('/api/pipeline/update', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({doc_id: docId, rechnungsdatum: dd})
+      });
+      if (r.ok) loadDocs(); else alert('Fehler');
+    } catch(e) { alert('Fehler: '+e); }
+  };
+  cell.textContent = '';
+  cell.appendChild(inp);
+  cell.appendChild(save);
+  cell.appendChild(cancel);
+  cell.classList.remove('editable-date');
+}
+
+function openHelp(){document.getElementById('help-overlay').classList.add('open')}
+function closeHelp(){document.getElementById('help-overlay').classList.remove('open')}
+
+// ── Detail-Modal für JSON-Infos ──
+function showDetail(doc) {
+  const overlay = document.getElementById('detail-overlay');
+  const pre = document.getElementById('detail-json');
+  pre.textContent = JSON.stringify(doc, null, 2);
+  overlay.classList.add('open');
+}
+function closeDetail(e) {
+  if (e && e.target !== document.getElementById('detail-overlay')) return;
+  document.getElementById('detail-overlay').classList.remove('open');
+}
+
+loadStats();
+loadCategories();
+loadDocs();
+</script>
+<style>.help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center}.help-overlay.open{display:flex}.help-box{background:#23263a;border-radius:14px;padding:28px 32px;max-width:520px;width:90%;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.4);color:#e8eaf0}.help-box h2{font-size:15px;font-weight:700;color:#7c6af7;margin-bottom:18px}.help-box h3{font-size:11px;font-weight:700;color:#8a8fb0;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;margin-top:14px}.help-box p{font-size:13px;line-height:1.6;color:#c8cad8}.help-close{position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:#8a8fb0;line-height:1;padding:2px}.help-close:hover{color:#e8eaf0}</style>
+<div id="help-overlay" class="help-overlay">
+  <div class="help-box">
+    <button class="help-close" onclick="closeHelp()">✕</button>
+    <h2>❓ Dispatcher-Datenbank</h2>
+    <h3>Was ist das?</h3>
+    <p>Die SQLite-Datenbank des Docling-Workflows. Jedes PDF, das durch Wilson → OCR → LLM → Dispatcher gelaufen ist, hat hier einen Eintrag mit Kategorie, Absender, Konfidenz und Vault-Pfad.</p>
+    <h3>Suche &amp; Filter</h3>
+    <p>Suche nach Dateiname oder Absender, filtere nach Kategorie, Adressat, Konfidenz oder Zeitraum (Rechnungsdatum). Klick auf ein Kategorie-Tag filtert sofort. Bis zu 100 Treffer werden angezeigt.</p>
+    <h3>Kein Vault-Vault</h3>
+    <p>Diese DB enthält nur Dokumente aus der Dispatcher-Pipeline — keine manuell erstellten Notizen aus dem Projekte-Vault.</p>
+  </div>
+</div>
+<script>
+document.getElementById('help-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeHelp()})
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('help-overlay').classList.contains('open'))closeHelp()})
+</script>
+
+<div id="detail-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;align-items:center;justify-content:center" onclick="closeDetail(event)">
+  <div style="background:var(--surface);border-radius:10px;padding:20px;max-width:620px;width:90%;max-height:80vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+  document.getElementById('detail-overlay').addEventListener('click',closeDetail)
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail()})
+    <h3 style="margin:0 0 10px 0;font-size:14px">📋 Dokument-Details</h3>
+    <pre id="detail-json" class="detail-pre"></pre>
+    <button onclick="closeDetail()" style="margin-top:10px;padding:6px 16px;border:1px solid var(--border);border-radius:6px;background:var(--bg);cursor:pointer;font-size:12px">Schließen</button>
+  </div>
+</div>
+<style>#detail-overlay.open{display:flex!important}</style>
+</body>
+</html>
+"""
 
 _DB_HTML = r"""<!DOCTYPE html>
 <html lang="de">
@@ -10068,543 +11055,6 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElement
 """
 
 
-_ENEX_HTML = r"""<!DOCTYPE html>
-<html lang="de">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>🐘 ENEX Import</title>
-<style>
-  :root{--bg:#ffffff;--card:#f8f9fb;--border:#e2e8f0;--text:#1e293b;--muted:#64748b;
-    --accent:#6366f1;--green:#16a34a;--yellow:#ca8a04;--red:#dc2626;--blue:#2563eb;
-    --purple:#9333ea;--radius:10px;--nav-h:48px}
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;min-height:100vh}
-  nav{height:var(--nav-h);background:var(--bg);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;gap:6px;position:sticky;top:0;z-index:100}
-  nav a{color:var(--muted);text-decoration:none;padding:6px 12px;border-radius:6px;font-size:13px;font-weight:500;transition:color .15s,background .15s}
-  nav a:hover{color:var(--text);background:rgba(0,0,0,.05)}
-  nav a.hl{color:var(--accent);background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25)}
-  nav .sep{flex:1}
-  nav .refresh-btn{background:none;border:1px solid var(--border);color:var(--muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;transition:color .15s,border-color .15s}
-  nav .refresh-btn:hover{color:var(--text);border-color:var(--accent)}
-  .page{padding:20px 24px;max-width:1600px;margin:0 auto}
-  h1{font-size:20px;font-weight:700;margin-bottom:4px}
-  .subtitle{color:var(--muted);font-size:13px;margin-bottom:20px}
-  /* Stat cards */
-  .stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:24px}
-  .stat{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;box-shadow:0 1px 3px rgba(0,0,0,.04)}
-  .stat-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
-  .stat-value{font-size:26px;font-weight:700;line-height:1}
-  .stat-sub{font-size:10px;color:var(--muted);margin-top:3px}
-  .c-green{color:var(--green)} .c-yellow{color:var(--yellow)} .c-red{color:var(--red)} .c-blue{color:var(--blue)} .c-purple{color:var(--purple)}
-  /* Toolbar */
-  .toolbar{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap}
-  .filter-btn{background:var(--bg);border:1px solid var(--border);color:var(--muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;transition:all .15s}
-  .filter-btn:hover{color:var(--text);border-color:var(--accent)}
-  .filter-btn.active{background:rgba(99,102,241,.08);border-color:var(--accent);color:var(--accent);font-weight:600}
-  .ocr-btn{margin-left:auto;background:var(--accent);border:none;color:#fff;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;transition:background .15s}
-  .ocr-btn:hover{background:#4f46e5}
-  .ocr-btn:disabled{opacity:.5;cursor:not-allowed}
-  /* Table */
-  .tbl-wrap{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.04)}
-  table{width:100%;border-collapse:collapse;table-layout:fixed}
-  col.c-id     {width:46px}
-  col.c-doc    {width:22%}
-  col.c-vault  {width:18%}
-  col.c-meta   {width:16%}
-  col.c-addr   {width:70px}
-  col.c-tags   {width:auto}
-  col.c-ocr    {width:200px}
-  col.c-dates  {width:150px}
-  th{padding:9px 12px;text-align:left;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);background:var(--card);white-space:nowrap}
-  td{padding:0;border-bottom:1px solid var(--border);vertical-align:top}
-  tr:last-child td{border-bottom:none}
-  tr:hover td{background:#fafbff}
-  /* Two-row cell layout */
-  .cell{padding:8px 12px}
-  .row1{font-size:13px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .row2{font-size:11px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .row2.mono{font-family:monospace;font-size:10px}
-  /* Tag pills */
-  .tag-list{display:flex;flex-wrap:wrap;gap:3px;padding:8px 12px}
-  .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:500;background:#f1f5f9;color:#475569;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis}
-  .tag.enex{background:#e0e7ff;color:#4338ca}
-  /* Badges */
-  .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
-  .b-pending    {background:#fef9c3;color:#854d0e}
-  .b-completed  {background:#dcfce7;color:#15803d}
-  .b-failed     {background:#fee2e2;color:#b91c1c}
-  .b-not_required{background:#f1f5f9;color:var(--muted)}
-  .b-merged     {background:#d1fae5;color:#065f46}
-  .b-pdfminer   {background:#dbeafe;color:#1d4ed8}
-  .b-docling    {background:#f3e8ff;color:#7e22ce}
-  /* rescan button + error detail */
-  .rescan-btn{font-size:10px;padding:2px 8px;margin-top:5px;display:inline-block;border:1px solid #fca5a5;border-radius:6px;background:#fff1f2;color:#b91c1c;cursor:pointer;font-weight:600;transition:all .15s;white-space:nowrap}
-  .rescan-btn:hover{background:#fee2e2}
-  .rescan-btn:disabled{opacity:.5;cursor:not-allowed}
-  .err-detail{font-size:10px;color:#b91c1c;margin-top:4px;line-height:1.4;cursor:help;word-break:break-word}
-  a.doc-link{color:var(--accent);text-decoration:none;font-weight:500}
-  a.doc-link:hover{text-decoration:underline}
-  .view-btn{font-size:10px;padding:2px 8px;margin-top:3px;display:inline-block;border:1px solid #93c5fd;border-radius:6px;background:#eff6ff;color:#1d4ed8;cursor:pointer;font-weight:600;transition:all .15s;white-space:nowrap;margin-left:3px}
-  .view-btn:hover{background:#dbeafe}
-  .del-btn{font-size:10px;padding:2px 8px;margin-top:3px;display:inline-block;border:1px solid #fca5a5;border-radius:6px;background:#fff1f2;color:#b91c1c;cursor:pointer;font-weight:600;transition:all .15s;white-space:nowrap;margin-left:3px}
-  .del-btn:hover{background:#fee2e2}
-  .del-btn:disabled{opacity:.5;cursor:not-allowed}
-  /* doc modal */
-  .doc-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9998;align-items:center;justify-content:center}
-  .doc-overlay.open{display:flex}
-  .doc-box{background:#1e2130;border-radius:12px;padding:24px 28px;max-width:700px;width:96%;max-height:85vh;display:flex;flex-direction:column;gap:12px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
-  .doc-box h3{font-size:14px;font-weight:700;color:#e2e8f0;flex-shrink:0}
-  .doc-box pre{flex:1;overflow-y:auto;background:#0f1117;color:#a5b4fc;font-size:11px;padding:14px;border-radius:8px;white-space:pre-wrap;word-break:break-word;line-height:1.6;min-height:0}
-  .doc-box .doc-empty{color:#64748b;font-size:13px;text-align:center;padding:30px}
-  .doc-footer{display:flex;justify-content:flex-end;gap:8px;flex-shrink:0}
-  .doc-close-btn{padding:6px 18px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:12px;font-weight:600}
-  .doc-close-btn:hover{background:#1e293b;color:#e2e8f0}
-  .doc-del-btn{padding:6px 18px;border-radius:6px;border:none;background:#dc2626;color:#fff;cursor:pointer;font-size:12px;font-weight:600}
-  .doc-del-btn:hover{background:#b91c1c}
-  .doc-del-btn:disabled{opacity:.5;cursor:not-allowed}
-  /* adressat pill */
-  .pill-r{background:#fce7f3;color:#9d174d;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600}
-  .pill-m{background:#ede9fe;color:#5b21b6;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600}
-  .pill-l{background:#fef3c7;color:#92400e;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600}
-  .empty{text-align:center;padding:40px;color:var(--muted);font-size:13px}
-  .toast{position:fixed;bottom:24px;right:24px;background:#1e293b;color:#f8fafc;border:1px solid #334155;padding:12px 20px;border-radius:var(--radius);font-size:13px;opacity:0;transform:translateY(8px);transition:all .3s;pointer-events:none;z-index:999}
-  .toast.show{opacity:1;transform:none}
-  /* help button */
-  .help-btn{font-size:11px;padding:4px 11px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;transition:all .15s;white-space:nowrap}
-  .help-btn:hover{border-color:var(--accent);color:var(--accent)}
-  /* help modal */
-  .help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center}
-  .help-overlay.open{display:flex}
-  .help-box{background:#23263a;border-radius:14px;padding:28px 32px;max-width:580px;width:94%;max-height:88vh;overflow-y:auto;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.4);color:#e8eaf0}
-  .help-box h2{font-size:15px;font-weight:700;color:#7c6af7;margin-bottom:18px}
-  .help-box h3{font-size:11px;font-weight:700;color:#8a8fb0;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;margin-top:16px}
-  .help-box p{font-size:13px;line-height:1.65;color:#c8cad8;margin-bottom:6px}
-  .help-box ul{padding-left:16px;margin-bottom:6px}
-  .help-box li{font-size:13px;line-height:1.65;color:#c8cad8;margin-bottom:4px}
-  .help-box code{background:#1a1d2e;color:#a5b4fc;padding:1px 6px;border-radius:4px;font-size:12px}
-  .help-close{position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:#8a8fb0;line-height:1;padding:2px}
-  .help-close:hover{color:#e8eaf0}
-  .help-badge{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600;margin-right:4px;vertical-align:middle}
-</style>
-<script>
-// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
-// Fängt fetch() und EventSource() ab und prepended den Proxy-Pfad
-// (z.B. /p/dispatcher), wenn die Seite via Ryzen Hub eingebettet ist.
-(function(){
-  const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/' && p.split('/').length > 2) {
-    const _fetch = window.fetch;
-    window.fetch = function(url, opts) {
-      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
-      return _fetch.call(window, url, opts);
-    };
-    const _ES = window.EventSource;
-    window.EventSource = function(url, conf) {
-      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
-      return new _ES(url, conf);
-    };
-    window.EventSource.prototype = _ES.prototype;
-    // Auch Link-Klicks umschreiben: /wilson -> /p/dispatcher/wilson
-    document.addEventListener('click', function(e) {
-      const a = e.target.closest('a');
-      if (a) {
-        const raw = a.getAttribute('href');
-        if (raw && raw.startsWith('/') && !raw.startsWith('//')) {
-          e.preventDefault();
-          window.location.href = p + raw;
-        }
-      }
-    });
-  }
-})();
-</script>
-</head>
-<body>
-<nav>
-  <a href="/">🏠 Home</a>
-  <a href="/pipeline" target="_blank" rel="noopener">⚡ Pipeline</a>
-  <a href="/review" target="_blank" rel="noopener">📋 Review</a>
-  <a href="/vault" target="_blank" rel="noopener">📂 Vault</a>
-  <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
-  <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
-  <a href="/enex" class="hl">🐘 ENEX</a>
-  <span class="sep"></span>
-  <button class="refresh-btn" onclick="loadAll()">↺ Aktualisieren</button>
-</nav>
-
-<div class="page">
-  <h1>🐘 ENEX Import</h1>
-  <p class="subtitle">Evernote-Exporte · Phase 1 Sofortimport · Phase 2 OCR-Nachtlauf</p>
-
-  <div class="stats">
-    <div class="stat"><div class="stat-label">Gesamt</div><div class="stat-value" id="s-total">—</div></div>
-    <div class="stat"><div class="stat-label">⏳ OCR ausstehend</div><div class="stat-value c-yellow" id="s-pending">—</div></div>
-    <div class="stat"><div class="stat-label">✅ OCR fertig</div><div class="stat-value c-green" id="s-completed">—</div></div>
-    <div class="stat"><div class="stat-label">🔀 Gemerged</div><div class="stat-value c-green" id="s-merged">—</div><div class="stat-sub">PDF bereits vorhanden</div></div>
-    <div class="stat"><div class="stat-label">📄 Kein PDF</div><div class="stat-value" id="s-not_required">—</div></div>
-    <div class="stat"><div class="stat-label">❌ Fehler</div><div class="stat-value c-red" id="s-failed">—</div></div>
-  </div>
-
-  <div id="rerun-box" style="display:none;margin:12px 0;padding:14px 18px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;font-size:13px">
-    <div style="font-weight:700;margin-bottom:8px;color:#15803d">⚙️ OCR-Rerun läuft</div>
-    <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:8px">
-      <span>Bearbeitet: <b id="rr-done">—</b> / <b id="rr-total">—</b></span>
-      <span>Ø Tempo: <b id="rr-avg">—</b></span>
-      <span>ETA: <b id="rr-eta">—</b></span>
-      <span>Fehler: <b id="rr-failed">—</b></span>
-    </div>
-    <div style="background:#dcfce7;border-radius:6px;height:10px;overflow:hidden">
-      <div id="rr-bar" style="height:100%;background:#22c55e;width:0%;transition:width .5s"></div>
-    </div>
-    <div id="rr-last" style="margin-top:6px;color:#6b7280;font-size:11px;font-family:monospace">—</div>
-  </div>
-
-  <div class="toolbar">
-    <button class="filter-btn active" onclick="setFilter('all',event)">Alle</button>
-    <button class="filter-btn" onclick="setFilter('pending',event)">⏳ Ausstehend</button>
-    <button class="filter-btn" onclick="setFilter('completed',event)">✅ OCR fertig</button>
-    <button class="filter-btn" onclick="setFilter('merged',event)">🔀 Gemerged</button>
-    <button class="filter-btn" onclick="setFilter('not_required',event)">📄 Kein PDF</button>
-    <button class="filter-btn" onclick="setFilter('failed',event)">❌ Fehler</button>
-    <button class="ocr-btn" id="ocr-btn" onclick="triggerOcr()">🌙 OCR-Worker starten</button>
-    <button class="help-btn" onclick="openHelp()">❓ Hilfe</button>
-  </div>
-
-  <div class="tbl-wrap">
-    <table>
-      <colgroup>
-        <col class="c-id"><col class="c-doc"><col class="c-vault">
-        <col class="c-meta"><col class="c-addr"><col class="c-tags">
-        <col class="c-ocr"><col class="c-dates">
-      </colgroup>
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Dateiname · Evernote-Titel</th>
-          <th>Vault-Pfad · Datum</th>
-          <th>Kategorie · Typ</th>
-          <th>Adr.</th>
-          <th>Evernote-Tags</th>
-          <th>OCR-Status · Quelle</th>
-          <th>Importiert · OCR am</th>
-        </tr>
-      </thead>
-      <tbody id="tbl-body">
-        <tr><td colspan="8" class="empty">Lädt…</td></tr>
-      </tbody>
-    </table>
-  </div>
-</div>
-
-<div class="toast" id="toast"></div>
-
-<script>
-let currentFilter = 'all';
-
-function setFilter(f, ev) {
-  currentFilter = f;
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-  if (ev && ev.target) ev.target.classList.add('active');
-  loadQueue();
-}
-
-async function loadStats() {
-  try {
-    const d = await (await fetch('/api/enex/stats')).json();
-    document.getElementById('s-total').textContent        = d.total        ?? '—';
-    document.getElementById('s-pending').textContent      = d.pending      ?? '—';
-    document.getElementById('s-completed').textContent    = d.completed    ?? '—';
-    document.getElementById('s-merged').textContent       = d.merged       ?? '—';
-    document.getElementById('s-not_required').textContent = d.not_required ?? '—';
-    document.getElementById('s-failed').textContent       = d.failed       ?? '—';
-  } catch(e) { console.error('stats:', e); }
-  try {
-    const r = await (await fetch('/api/enex/ocr/rerun-status')).json();
-    const box = document.getElementById('rerun-box');
-    if (r.running || r.done > 0) {
-      box.style.display = 'block';
-      document.getElementById('rr-done').textContent   = r.done   ?? '—';
-      document.getElementById('rr-total').textContent  = r.total  ?? '—';
-      document.getElementById('rr-avg').textContent    = r.avg_s  ? r.avg_s + 's/Dok' : '—';
-      document.getElementById('rr-eta').textContent    = r.running ? (r.eta ?? '—') : '—';
-      document.getElementById('rr-failed').textContent = r.failed ?? '0';
-      document.getElementById('rr-last').textContent   = r.running ? (r.last_file ?? '') : '';
-      const pct = r.total > 0 ? Math.round(r.done / r.total * 100) : 0;
-      document.getElementById('rr-bar').style.width = pct + '%';
-      if (!r.running) {
-        document.getElementById('rerun-box').style.background = '#f0f9ff';
-        document.getElementById('rerun-box').style.borderColor = '#7dd3fc';
-        document.getElementById('rerun-box').querySelector('div').textContent = '✅ OCR-Rerun abgeschlossen';
-      }
-    } else { box.style.display = 'none'; }
-  } catch(e) { /* kein Rerun aktiv */ }
-}
-
-const OCR_LABELS = {
-  pending:      '⏳ ausstehend',
-  completed:    '✅ OCR fertig',
-  merged:       '🔀 gemerged',
-  failed:       '❌ Fehler',
-  not_required: '📄 kein PDF',
-};
-const OCR_CLS = {
-  pending:'b-pending', completed:'b-completed', merged:'b-merged',
-  failed:'b-failed', not_required:'b-not_required',
-};
-
-function statusBadge(s) {
-  return `<span class="badge ${OCR_CLS[s]||''}">${OCR_LABELS[s]||s||'—'}</span>`;
-}
-function sourceBadge(s) {
-  if (!s) return '';
-  return `<span class="badge ${s==='pdfminer'?'b-pdfminer':'b-docling'}" style="margin-top:3px;display:block">${s}</span>`;
-}
-function adressatPill(a) {
-  if (!a) return '—';
-  const cls = a==='Reinhard'?'pill-r':a==='Marion'?'pill-m':a==='Linoa'?'pill-l':'';
-  return `<span class="${cls||'badge'}">${a}</span>`;
-}
-function fmtDate(iso) {
-  if (!iso) return '—';
-  try { return new Date(iso).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'}); }
-  catch { return iso.slice(0,16).replace('T',' '); }
-}
-function fmtDay(iso) {
-  if (!iso) return '';
-  try { return new Date(iso).toLocaleDateString('de-DE',{dateStyle:'short'}); }
-  catch { return iso.slice(0,10); }
-}
-function esc(s) {
-  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-function shortPath(p) {
-  if (!p) return '—';
-  const parts = p.split('/');
-  return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : p;
-}
-function renderTags(raw) {
-  if (!raw) return '<span style="color:var(--muted);font-size:11px;padding:8px 12px;display:block">—</span>';
-  let tags;
-  try { tags = JSON.parse(raw); } catch { return `<span class="tag">${esc(raw)}</span>`; }
-  if (!tags.length) return '<span style="color:var(--muted);font-size:11px;padding:8px 12px;display:block">—</span>';
-  return '<div class="tag-list">' + tags.map(t => `<span class="tag enex" title="${esc(t)}">${esc(t)}</span>`).join('') + '</div>';
-}
-
-async function loadQueue() {
-  try {
-    const url = '/api/enex/queue?filter=' + currentFilter + '&limit=200';
-    const rows = await (await fetch(url)).json();
-    const tbody = document.getElementById('tbl-body');
-    if (!Array.isArray(rows) || !rows.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty">Keine Einträge</td></tr>';
-      return;
-    }
-    tbody.innerHTML = rows.map(r => {
-      const fname  = esc((r.dateiname||'').replace(/\.md$/,''));
-      const etitle = esc(r.evernote_title||'');
-      const vpath  = esc(shortPath(r.vault_pfad||''));
-      const vpathFull = esc(r.vault_pfad||'');
-      const kat    = esc(r.kategorie||'—');
-      const typ    = esc(r.typ||'');
-      const datum  = esc(r.rechnungsdatum||'');
-      return `<tr>
-        <td><div class="cell"><div class="row1" style="font-size:11px;color:var(--muted)">${r.id}</div></div></td>
-        <td><div class="cell">
-          <div class="row1" title="${fname}"><a class="doc-link" href="/enex/doc/${r.id}" target="_blank" rel="noopener">${fname||'—'}</a></div>
-          <div class="row2" title="${etitle}">${etitle||'<em style="opacity:.5">kein Evernote-Titel</em>'}</div>
-        </div></td>
-        <td><div class="cell">
-          <div class="row1 mono" title="${vpathFull}">${vpath}</div>
-          <div class="row2">${datum}${r.anlagen_dateiname ? ` &nbsp;<a href="/enex/doc/${r.id}/pdf" target="_blank" rel="noopener" style="color:var(--blue);font-size:10px;text-decoration:none;font-weight:600" title="${esc(r.anlagen_dateiname)}">📄 PDF</a>` : ''}</div>
-        </div></td>
-        <td><div class="cell">
-          <div class="row1">${kat}</div>
-          <div class="row2">${typ}</div>
-        </div></td>
-        <td><div class="cell" style="padding-top:10px">${adressatPill(r.adressat)}</div></td>
-        <td>${renderTags(r.enex_tags)}</td>
-        <td><div class="cell">
-          <span class="badge ${OCR_CLS[r.ocr_status]||''}" ${r.ocr_status==='failed'&&r.ocr_error?`title="${esc(r.ocr_error)}"`:''}>
-            ${OCR_LABELS[r.ocr_status]||r.ocr_status||'—'}
-          </span>
-          ${r.ocr_status==='failed'&&r.ocr_error?`<div class="err-detail" title="${esc(r.ocr_error)}">${esc(r.ocr_error)}</div>`:''}
-          ${sourceBadge(r.ocr_source)}
-          ${r.ocr_status==='failed'?`<div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:4px">
-            <button class="rescan-btn" onclick="rescanDoc(${r.id},this)">↻ Rescan</button>
-            <button class="del-btn" onclick="deleteDoc(${r.id},'${esc(r.dateiname||'')}',this)">🗑 Löschen</button>
-          </div>`:''}
-
-        </div></td>
-        <td><div class="cell">
-          <div class="row1" style="font-size:11px">${fmtDate(r.erstellt_am)}</div>
-          <div class="row2">${r.ocr_processed_at ? fmtDate(r.ocr_processed_at) : '—'}</div>
-        </div></td>
-      </tr>`;
-    }).join('');
-  } catch(e) { console.error('queue:', e); }
-}
-
-function showToast(msg, ms=3000) {
-  const t = document.getElementById('toast');
-  t.textContent = msg; t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), ms);
-}
-
-async function triggerOcr() {
-  const btn = document.getElementById('ocr-btn');
-  btn.disabled = true; btn.textContent = '⏳ Wird gestartet…';
-  try {
-    const d = await (await fetch('/api/enex/ocr/trigger', {method:'POST'})).json();
-    showToast(d.message || '✅ OCR-Worker gestartet', 4000);
-  } catch(e) {
-    showToast('❌ Fehler: ' + e.message, 4000);
-  } finally {
-    btn.disabled = false; btn.textContent = '🌙 OCR-Worker starten';
-    setTimeout(loadAll, 2000);
-  }
-}
-
-async function rescanDoc(id, btn) {
-  if (btn) { btn.disabled = true; btn.textContent = '⏳…'; }
-  try {
-    const d = await (await fetch('/api/enex/rescan/' + id, {method:'POST'})).json();
-    if (d.status === 'started') {
-      showToast('↻ Rescan gestartet: ' + (d.dateiname || id), 4000);
-      setTimeout(loadAll, 4000);
-    } else {
-      showToast('❌ ' + (d.error || JSON.stringify(d)), 4000);
-      if (btn) { btn.disabled = false; btn.textContent = '↻ Rescan'; }
-    }
-  } catch(e) {
-    showToast('❌ Fehler: ' + e.message, 4000);
-    if (btn) { btn.disabled = false; btn.textContent = '↻ Rescan'; }
-  }
-}
-
-async function loadAll() { await Promise.all([loadStats(), loadQueue()]); }
-loadAll();
-setInterval(loadAll, 30000);
-
-function openHelp()  { document.getElementById('help-overlay').classList.add('open'); }
-function closeHelp() { document.getElementById('help-overlay').classList.remove('open'); }
-
-let _docModal = null; // {id, dateiname}
-function closeDocModal() {
-  document.getElementById('doc-overlay').classList.remove('open');
-  _docModal = null;
-}
-
-async function showDoc(id, dateiname) {
-  _docModal = {id, dateiname};
-  const overlay = document.getElementById('doc-overlay');
-  const title   = document.getElementById('doc-title');
-  const pre     = document.getElementById('doc-content');
-  const delBtn  = document.getElementById('doc-del-btn');
-  title.textContent = dateiname || ('Dokument #' + id);
-  pre.textContent   = '⏳ Lädt…';
-  delBtn.disabled   = false;
-  overlay.classList.add('open');
-  try {
-    const d = await (await fetch('/api/enex/doc/' + id + '/content')).json();
-    if (d.error) { pre.textContent = '❌ ' + d.error; return; }
-    if (!d.exists) {
-      pre.innerHTML = '<span style="color:#64748b">Datei nicht mehr im Vault vorhanden.</span>';
-    } else {
-      pre.textContent = d.content || '(leer)';
-    }
-  } catch(e) {
-    pre.textContent = '❌ Fehler: ' + e.message;
-  }
-}
-
-async function deleteDoc(id, dateiname, btn) {
-  const label = dateiname || ('Dokument #' + id);
-  if (!confirm('⚠️ Dokument wirklich löschen?\n\n' + label + '\n\nDie Markdown-Datei im Vault und der Datenbank-Eintrag werden entfernt. Diese Aktion kann nicht rückgängig gemacht werden.')) return;
-  if (btn) { btn.disabled = true; btn.textContent = '⏳…'; }
-  try {
-    const resp = await fetch('/api/enex/doc/' + id, {method:'DELETE'});
-    const d = await resp.json();
-    if (d.status === 'deleted') {
-      showToast('🗑 Gelöscht: ' + (d.dateiname || label), 4000);
-      closeDocModal();
-      setTimeout(loadAll, 500);
-    } else {
-      showToast('❌ ' + (d.error || JSON.stringify(d)), 4000);
-      if (btn) { btn.disabled = false; btn.textContent = '🗑 Löschen'; }
-    }
-  } catch(e) {
-    showToast('❌ Fehler: ' + e.message, 4000);
-    if (btn) { btn.disabled = false; btn.textContent = '🗑 Löschen'; }
-  }
-}
-
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { closeHelp(); closeDocModal(); }
-});
-</script>
-
-<div id="doc-overlay" class="doc-overlay" onclick="if(event.target===this)closeDocModal()">
-  <div class="doc-box">
-    <h3 id="doc-title"></h3>
-    <pre id="doc-content"></pre>
-    <div class="doc-footer">
-      <button class="doc-close-btn" onclick="closeDocModal()">Schließen</button>
-      <button class="doc-del-btn" id="doc-del-btn" onclick="if(_docModal)deleteDoc(_docModal.id,_docModal.dateiname,this)">🗑 Löschen</button>
-    </div>
-  </div>
-</div>
-
-<div id="help-overlay" class="help-overlay" onclick="if(event.target===this)closeHelp()">
-  <div class="help-box">
-    <button class="help-close" onclick="closeHelp()">✕</button>
-    <h2>❓ ENEX Import — Hilfe</h2>
-
-    <h3>Was ist dieses Dashboard?</h3>
-    <p>Zeigt alle Dokumente, die aus Evernote-Exporten (.enex) importiert wurden. Der Import läuft in zwei Phasen:</p>
-    <ul>
-      <li><strong>Phase 1 — Sofortimport:</strong> Der ENEX-Parser extrahiert Notizen und legt .md-Dateien im Vault an. PDF-Anhänge werden im <code>Anlagen/</code>-Ordner abgelegt.</li>
-      <li><strong>Phase 2 — OCR-Nachtlauf:</strong> Täglich 00:00–07:00 Uhr liest der OCR-Worker alle ausstehenden PDFs ein und ergänzt den Markdown-Text.</li>
-    </ul>
-
-    <h3>OCR-Status — Bedeutung</h3>
-    <ul>
-      <li><span class="help-badge" style="background:#fef9c3;color:#854d0e">⏳ ausstehend</span> PDF gefunden, OCR noch nicht durchgeführt — wird nächste Nacht verarbeitet.</li>
-      <li><span class="help-badge" style="background:#dcfce7;color:#15803d">✅ OCR fertig</span> Text erfolgreich extrahiert (via pdfminer oder Docling).</li>
-      <li><span class="help-badge" style="background:#d1fae5;color:#065f46">🔀 gemerged</span> Dokument war per PDF-Hash bereits im Vault — kein Duplikat angelegt.</li>
-      <li><span class="help-badge" style="background:#f1f5f9;color:#64748b">📄 kein PDF</span> Die Evernote-Notiz enthielt keinen PDF-Anhang — OCR nicht erforderlich.</li>
-      <li><span class="help-badge" style="background:#fee2e2;color:#b91c1c">❌ Fehler</span> OCR fehlgeschlagen. Der Fehlertext steht direkt unter dem Badge in der Tabelle.</li>
-    </ul>
-
-    <h3>Fehlermeldungen — was bedeuten sie?</h3>
-    <ul>
-      <li><code>Kein PDF gefunden</code> — Die PDF-Anlage fehlt im <code>Anlagen/</code>-Verzeichnis des Vaults. Möglicherweise wurde die Datei verschoben oder der Import war unvollständig.</li>
-      <li><code>Docling Timeout nach Xs</code> — Das PDF ist zu groß (typisch &gt;20 MB) oder der Docling-Service war beim Nachtlauf überlastet. Rescan zu einem ruhigeren Zeitpunkt hilft.</li>
-      <li><code>Docling: leere Antwort</code> — Docling konnte keinen Text extrahieren. Ursachen: korruptes PDF, rein grafische Seiten ohne erkennbaren Text, oder beschädigter Anhang.</li>
-      <li><code>MD-Datei konnte nicht aktualisiert werden</code> — Interner Schreibfehler. Die .md-Datei im Vault existiert nicht mehr oder ist nicht beschreibbar.</li>
-    </ul>
-    <p style="font-size:11px;color:#8a8fb0;margin-top:4px">Hinweis: Fehler vor dem 4. Mai 2026 haben noch keinen Fehlertext — der wurde erst ab diesem Datum gespeichert. Rescan befüllt ihn neu.</p>
-
-    <h3>Rescan-Button</h3>
-    <p>Bei Dokumenten mit Status <span class="help-badge" style="background:#fee2e2;color:#b91c1c">❌ Fehler</span> erscheint ein <strong>↻ Rescan</strong>-Button. Er setzt den Status auf „ausstehend" zurück und startet den OCR-Worker sofort für genau dieses eine Dokument — ohne das Nacht-Zeitfenster abwarten zu müssen.</p>
-
-    <h3>OCR-Quellen</h3>
-    <ul>
-      <li><span class="help-badge" style="background:#dbeafe;color:#1d4ed8">pdfminer</span> Schnelle Extraktion für born-digital PDFs (unter 1 Sekunde). Wird bevorzugt, wenn genug Text vorhanden ist.</li>
-      <li><span class="help-badge" style="background:#f3e8ff;color:#7e22ce">docling</span> KI-OCR für Scan-PDFs (2–10 Minuten je Dokument). Wird eingesetzt, wenn pdfminer zu wenig Text liefert.</li>
-    </ul>
-
-    <h3>Manueller OCR-Worker</h3>
-    <p>Der Button <strong>🌙 OCR-Worker starten</strong> startet den Worker sofort (Zeitfenster wird ignoriert) und verarbeitet bis zu 10 ausstehende Dokumente der Reihe nach.</p>
-
-    <h3>Filter</h3>
-    <p>Die Filter-Buttons oben begrenzen die Tabelle auf einen bestimmten Status. Besonders nützlich: <strong>❌ Fehler</strong> zeigt nur Problemdokumente — hier sind Rescan-Buttons für alle angezeigt.</p>
-  </div>
-</div>
-</body>
-</html>
-"""
-
 _BACKUP_HTML = r"""<!DOCTYPE html>
 <html lang="de">
 <head>
@@ -11008,6 +11458,14 @@ setInterval(load, 60000);
 </html>
 """
 
+
+def _write_json(progress_file, status, steps, errors=None):
+    """Schreibt Pipeline-Fortschritt."""
+    try:
+        progress_file.write_text(json.dumps({"status":status,"steps":steps,"done":status=="done","errors":errors or []}))
+    except Exception:
+        pass
+
 class _ApiHandler(BaseHTTPRequestHandler):
 
     def _json_response(self, data, status=200):
@@ -11057,201 +11515,6 @@ class _ApiHandler(BaseHTTPRequestHandler):
             return
 
         # GET /pipeline — Pipeline-Step-Dashboard
-        # GET /api/enex/stats — Zusammenfassung ENEX-Importe
-        elif path == "/api/enex/stats":
-            try:
-                with get_db() as con:
-                    def _count(where):
-                        return con.execute(
-                            f"SELECT COUNT(*) FROM dokumente WHERE import_source='enex' AND {where}"
-                        ).fetchone()[0]
-                    total        = con.execute("SELECT COUNT(*) FROM dokumente WHERE import_source='enex'").fetchone()[0]
-                    pending      = _count("ocr_status='pending'")
-                    completed    = _count("ocr_status='completed'")
-                    failed       = _count("ocr_status='failed'")
-                    not_required = _count("ocr_status='not_required'")
-                    merged       = _count("ocr_status='merged'")
-                self._json_response({
-                    "total": total, "pending": pending, "completed": completed,
-                    "failed": failed, "not_required": not_required, "merged": merged,
-                })
-            except Exception as e:
-                self._json_response({"error": str(e)}, 500)
-            return
-        # GET /api/enex/ocr/rerun-status — Fortschritt enex_ocr_rerun.py (liest Host-Log)
-        elif path == "/api/enex/ocr/rerun-status":
-            import re as _re
-            LOG = Path("/data/dispatcher-temp/enex_ocr_rerun.log")
-            try:
-                if not LOG.exists():
-                    self._json_response({"running": False, "done": 0, "total": 0}); return
-                lines = LOG.read_text("utf-8", errors="ignore").splitlines()
-                total = done = failed = 0
-                avg_s = None
-                eta = last_file = None
-                running = False
-                for line in lines:
-                    m = _re.search(r'Starte OCR-Lauf:\s*(\d+)', line)
-                    if m: total = int(m.group(1))
-                    m = _re.search(r'\[(\d+)/(\d+)\].*?: (.+?)\.md', line)
-                    if m:
-                        done = int(m.group(1)); total = total or int(m.group(2))
-                        last_file = m.group(3).split('/')[-1] + '.md'
-                        running = True
-                    if 'fehlgeschlagen' in line or 'Fehler' in line.lower():
-                        failed += 1
-                    m = _re.search(r'Ø\s+([\d.]+)s/Dok.*?ETA\s*~(.+)', line)
-                    if m: avg_s = float(m.group(1)); eta = m.group(2).strip()
-                    if 'Fertig in' in line: running = False
-                self._json_response({
-                    "running":   running,
-                    "done":      done,
-                    "total":     total,
-                    "failed":    failed,
-                    "avg_s":     round(avg_s, 0) if avg_s else None,
-                    "eta":       eta,
-                    "last_file": last_file,
-                })
-            except Exception as e:
-                self._json_response({"error": str(e)}, 500)
-            return
-        # GET /api/enex/queue — ENEX-Dokumente (filter: all|pending|completed|failed|not_required)
-        elif path == "/api/enex/queue":
-            try:
-                status_filter = params.get("filter", ["all"])[0]
-                try:
-                    limit = int(params.get("limit", ["200"])[0])
-                except ValueError:
-                    limit = 200
-                _cols = ("id, dateiname, vault_pfad, kategorie, typ, adressat, "
-                         "rechnungsdatum, ocr_status, ocr_source, ocr_processed_at, "
-                         "erstellt_am, enex_tags, ocr_error, anlagen_dateiname")
-                with get_db() as con:
-                    if status_filter == "all":
-                        rows = con.execute(
-                            f"SELECT {_cols} FROM dokumente "
-                            "WHERE import_source='enex' ORDER BY id DESC LIMIT ?",
-                            (limit,)
-                        ).fetchall()
-                    else:
-                        rows = con.execute(
-                            f"SELECT {_cols} FROM dokumente "
-                            "WHERE import_source='enex' AND ocr_status=? "
-                            "ORDER BY id DESC LIMIT ?",
-                            (status_filter, limit)
-                        ).fetchall()
-                self._json_response([dict(r) for r in rows])
-            except Exception as e:
-                self._json_response({"error": str(e)}, 500)
-            return
-        # GET /api/enex/doc/<id>/content — Vault-MD-Datei eines ENEX-Dokuments anzeigen
-        elif path.startswith("/api/enex/doc/") and path.endswith("/content"):
-            try:
-                doc_id = int(path.split("/")[-2])
-            except (ValueError, IndexError):
-                self._json_response({"error": "Ungültige ID"}, 400); return
-            with get_db() as con:
-                row = con.execute(
-                    "SELECT dateiname, vault_pfad FROM dokumente WHERE id=? AND import_source='enex'",
-                    (doc_id,)
-                ).fetchone()
-            if not row:
-                self._json_response({"error": "Dokument nicht gefunden"}, 404); return
-            if not row["vault_pfad"] or not VAULT_ROOT:
-                self._json_response({"exists": False, "content": "", "dateiname": row["dateiname"]}); return
-            md_file = VAULT_ROOT / row["vault_pfad"]
-            if not md_file.exists():
-                self._json_response({"exists": False, "content": "", "dateiname": row["dateiname"]}); return
-            try:
-                content = md_file.read_text(encoding="utf-8", errors="replace")[:12000]
-                self._json_response({"exists": True, "content": content, "dateiname": row["dateiname"]})
-            except Exception as e:
-                self._json_response({"error": str(e)}, 500)
-            return
-
-        # GET /enex/doc/<id> — Vault-MD-Datei in separatem Fenster anzeigen
-        elif path.startswith("/enex/doc/") and not path.endswith("/pdf"):
-            try:
-                doc_id = int(path.split("/")[-1])
-            except (ValueError, IndexError):
-                self._html_response("<h1>Ungültige ID</h1>"); return
-            with get_db() as con:
-                row = con.execute(
-                    "SELECT dateiname, vault_pfad, kategorie, ocr_status, ocr_error FROM dokumente WHERE id=? AND import_source='enex'",
-                    (doc_id,)
-                ).fetchone()
-            if not row:
-                self._html_response("<h1>Dokument nicht gefunden</h1>"); return
-            content = ""
-            exists = False
-            pdf_name = None
-            if row["vault_pfad"] and VAULT_ROOT:
-                md_file = VAULT_ROOT / row["vault_pfad"]
-                if md_file.exists():
-                    exists = True
-                    content = md_file.read_text(encoding="utf-8", errors="replace")
-                    import re as _re
-                    m = _re.search(r"original:\s*'?\[\[Anlagen/([^\]]+)\]\]'?", content)
-                    if m:
-                        candidate = VAULT_ROOT / "Anlagen" / m.group(1)
-                        if candidate.exists():
-                            pdf_name = m.group(1)
-            title_html = row["dateiname"].replace('"', '&quot;').replace("'", "&#39;")
-            content_html = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            not_found_note = "" if exists else '<p style="color:#f87171;margin-bottom:12px">⚠️ Datei nicht im Vault gefunden.</p>'
-            pdf_btn = f'<a href="/enex/doc/{doc_id}/pdf" target="_blank" style="display:inline-block;margin-bottom:16px;padding:7px 18px;background:#2563eb;color:#fff;border-radius:7px;text-decoration:none;font-size:13px;font-weight:600">📄 PDF öffnen</a>' if pdf_name else ""
-            self._html_response(f"""<!DOCTYPE html><html lang="de"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title_html}</title>
-<style>
-  *{{box-sizing:border-box;margin:0;padding:0}}
-  body{{background:#0f1117;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;padding:24px;min-height:100vh}}
-  h1{{font-size:15px;font-weight:700;color:#a5b4fc;margin-bottom:4px;word-break:break-all}}
-  .meta{{font-size:11px;color:#64748b;margin-bottom:14px}}
-  pre{{white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.7;color:#cbd5e1;font-family:'SF Mono',ui-monospace,monospace}}
-</style>
-<script>
-// ── Base-Path-Interceptor für Ryzen Hub Proxy ──────────────────────
-(function(){{
-  const p = window.location.pathname.replace(/\/+$/,'');
-  if (p !== '' && p !== '/' && p.split('/').length > 2) {{
-    const _fetch = window.fetch;
-    window.fetch = function(url, opts) {{
-      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
-      return _fetch.call(window, url, opts);
-    }};
-    const _ES = window.EventSource;
-    window.EventSource = function(url, conf) {{
-      if (typeof url === 'string' && url.startsWith('/')) url = p + url;
-      return new _ES(url, conf);
-    }};
-    window.EventSource.prototype = _ES.prototype;
-  }}
-}})();
-</script>
-</head><body>
-<h1>{title_html}</h1>
-<div class="meta">{row["vault_pfad"] or "—"} &nbsp;·&nbsp; {row["kategorie"] or "—"} &nbsp;·&nbsp; OCR: {row["ocr_status"] or "—"}</div>
-{not_found_note}{pdf_btn}
-<pre>{content_html or "(leer)"}</pre>
-</body></html>""")
-            return
-
-        # GET /enex/doc/<id>/pdf — PDF-Anlage direkt servieren
-        elif path.startswith("/enex/doc/") and path.endswith("/pdf"):
-            try:
-                doc_id = int(path.split("/")[-2])
-            except (ValueError, IndexError):
-                self.send_error(400, "Ungültige ID"); return
-            if not VAULT_ROOT:
-                self.send_error(503, "Vault nicht konfiguriert"); return
-            with get_db() as con:
-                row = con.execute(
-                    "SELECT vault_pfad, anlagen_dateiname FROM dokumente WHERE id=? AND import_source='enex'",
-                    (doc_id,)
-                ).fetchone()
-            if not row:
-                self.send_error(404, "Dokument nicht gefunden"); return
             # PDF-Pfad: erst DB-Spalte, dann Frontmatter der MD-Datei
             pdf_name = row["anlagen_dateiname"]
             if not pdf_name and row["vault_pfad"]:
@@ -11284,8 +11547,12 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._html_response(_ENZYME_HTML)
             return
 
-        elif path == "/enex":
-            self._html_response(_ENEX_HTML)
+        elif path == "/absender":
+            self._html_response(_ABSENDER_HTML)
+            return
+
+        elif path == "/pipeline-debug":
+            self._html_response(_PIPELINE_DEBUG_HTML)
             return
 
         elif path == "/backup":
@@ -11709,6 +11976,85 @@ class _ApiHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._json_response({"error": str(e)}, 500)
             return
+
+        # GET /api/absender — Absender aus absender.yaml + DB (merged)
+        elif path == "/api/absender":
+            try:
+                import yaml as _yaml
+                # 1. Konfigurierte Absender aus absender.yaml
+                configured = {}
+                if ABSENDER_FILE.exists():
+                    with open(ABSENDER_FILE, encoding="utf-8") as f:
+                        data = _yaml.safe_load(f) or {}
+                    for s in (data.get("absender") or []):
+                        if not isinstance(s, dict): continue
+                        sid = s.get("id", "")
+                        aliases = s.get("aliases", []) or []
+                        configured[sid] = {
+                            "id": sid,
+                            "name": aliases[0] if aliases else sid,
+                            "aliases": [a.lower() for a in aliases],
+                            "part_iva": s.get("part_iva", []) or [],
+                            "ust_id": s.get("ust_id", []) or [],
+                            "land": s.get("land") or None,
+                            "kategorie_hint": s.get("kategorie_hint") or None,
+                            "typ_hint": s.get("typ_hint") or None,
+                            "adressat_default": s.get("adressat_default") or None,
+                            "db_count": 0, "db_kats": [],
+                            "configured": True,
+                        }
+                # 2. Absender aus DB
+                with get_db() as con:
+                    rows = con.execute("""
+                        SELECT LOWER(absender) as name, COUNT(*) as cnt,
+                               GROUP_CONCAT(DISTINCT kategorie) as kats,
+                               GROUP_CONCAT(DISTINCT adressat) as adrs
+                        FROM dokumente WHERE absender IS NOT NULL AND absender != ''
+                        GROUP BY LOWER(absender) ORDER BY cnt DESC
+                    """).fetchall()
+                # 3. Mergen: konfigurierte Absender mit DB-Daten anreichern,
+                #    nicht-konfigurierte als neue Einträge
+                result = list(configured.values())
+                seen_yaml_ids = set(configured.keys())
+                for row in rows:
+                    db_name = (row["name"] or "").strip()
+                    if not db_name: continue
+                    # Prüfen ob dieser DB-Absender zu einem konfigurierten matched
+                    matched = False
+                    for sid, cfg in configured.items():
+                        if db_name in cfg["aliases"]:
+                            cfg["db_count"] = row["cnt"]
+                            cfg["db_kats"] = [k for k in (row["kats"] or "").split(",") if k]
+                            matched = True
+                            break
+                    if not matched:
+                        result.append({
+                            "id": "", "name": db_name, "aliases": [db_name],
+                            "part_iva": [], "ust_id": [], "land": None,
+                            "kategorie_hint": None, "typ_hint": None,
+                            "adressat_default": None,
+                            "db_count": row["cnt"], "db_kats": [k for k in (row["kats"] or "").split(",") if k],
+                            "configured": False,
+                        })
+                result.sort(key=lambda x: (not x["configured"], x["name"].lower()))
+                self._json_response(result)
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+
+        # GET /api/pipeline-debug/status/<run_id> — Fortschritt abfragen
+        elif path.startswith("/api/pipeline-debug/status/"):
+            run_id = path.rsplit("/",1)[-1]
+            progress_file = TEMP_DIR / ("_debug_" + run_id + "_progress.json")
+            if not progress_file.exists():
+                self._json_response({"error": "Unbekannte run_id"}, 404); return
+            try:
+                data = json.loads(progress_file.read_text())
+                self._json_response(data)
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+
 
         # GET /api/recent — letzte Dokumente (mit optionalen Filtern)
         elif path == "/api/recent":
@@ -13406,46 +13752,6 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 self._json_response({"ok": True, "msg": "Update gestartet."})
             return
 
-        # POST /api/enex/ocr/trigger — Manuellen OCR-Worker starten
-        elif path == "/api/enex/ocr/trigger":
-            def _run():
-                import subprocess as _sp
-                _sp.run(
-                    ["python", "/app/enex_ocr_worker.py", "--force-window", "--limit", "10"],
-                    capture_output=True
-                )
-            threading.Thread(target=_run, daemon=True).start()
-            self._json_response({"message": "✅ OCR-Worker gestartet (bis zu 10 Dokumente, Zeitfenster ignoriert)"})
-            return
-
-        # POST /api/enex/rescan/<id> — Einzeldokument erneut per OCR verarbeiten
-        elif path.startswith("/api/enex/rescan/"):
-            try:
-                rescan_doc_id = int(path.split("/")[-1])
-            except ValueError:
-                self._json_response({"error": "Ungültige ID"}, 400); return
-            with get_db() as con:
-                row = con.execute(
-                    "SELECT id, dateiname FROM dokumente WHERE id=? AND import_source='enex'",
-                    (rescan_doc_id,)
-                ).fetchone()
-                if not row:
-                    self._json_response({"error": "Dokument nicht gefunden"}, 404); return
-                con.execute(
-                    "UPDATE dokumente SET ocr_status='pending', ocr_error=NULL, ocr_processed_at=NULL WHERE id=?",
-                    (rescan_doc_id,)
-                )
-            def _rescan_run(did=rescan_doc_id):
-                import subprocess as _sp
-                _sp.run(
-                    ["python", "/app/enex_ocr_worker.py", "--force-window", "--doc-id", str(did)],
-                    capture_output=True
-                )
-            threading.Thread(target=_rescan_run, daemon=True).start()
-            log.info(f"Rescan manuell gestartet: Dokument #{rescan_doc_id} ({row['dateiname']})")
-            self._json_response({"status": "started", "id": rescan_doc_id, "dateiname": row["dateiname"]})
-            return
-
         # POST /api/summarizer/start — Vault-Summarizer starten
         elif path == "/api/summarizer/start":
             global _summarizer_proc
@@ -13494,32 +13800,175 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._json_response(result)
             return
 
+        # POST /api/absender/save — Absender speichern/aktualisieren
+        elif path == "/api/absender/save":
+            try:
+                import yaml as _yaml
+                data = self._read_body()
+                if not data:
+                    self._json_response({"error": "Leerer Body"}, 400); return
+                entry = json.loads(data) if isinstance(data, (bytes, str)) else data
+                if not entry.get("id"):
+                    self._json_response({"error": "ID ist Pflichtfeld"}, 400); return
+                if not entry.get("name"):
+                    self._json_response({"error": "Name ist Pflichtfeld"}, 400); return
+                # Lade bestehende Datei
+                if ABSENDER_FILE.exists():
+                    with open(ABSENDER_FILE, encoding="utf-8") as f:
+                        doc = _yaml.safe_load(f) or {}
+                else:
+                    doc = {"absender": []}
+                raw = doc.get("absender", [])
+                # Alten Eintrag entfernen (falls old_id gesetzt)
+                old_id = entry.pop("old_id", entry["id"])
+                raw = [s for s in raw if (isinstance(s, dict) and s.get("id") != old_id)]
+                # Neuen Eintrag bauen
+                new_entry = {"id": entry["id"]}
+                aliases = entry.get("aliases", []) or []
+                if isinstance(aliases, str):
+                    aliases = [a.strip() for a in aliases.split(",") if a.strip()]
+                if entry.get("name") and entry["name"] not in aliases:
+                    aliases.insert(0, entry["name"])
+                if aliases:
+                    new_entry["aliases"] = aliases
+                if entry.get("part_iva"):
+                    iva = entry["part_iva"]
+                    if isinstance(iva, str):
+                        iva = [i.strip() for i in iva.split(",") if i.strip()]
+                    if iva:
+                        new_entry["part_iva"] = iva
+                if entry.get("ust_id"):
+                    new_entry["ust_id"] = entry["ust_id"] if isinstance(entry["ust_id"], list) else [entry["ust_id"]]
+                if entry.get("land"):
+                    new_entry["land"] = entry["land"]
+                if entry.get("kategorie_hint"):
+                    new_entry["kategorie_hint"] = entry["kategorie_hint"]
+                if entry.get("typ_hint"):
+                    new_entry["typ_hint"] = entry["typ_hint"]
+                if entry.get("adressat_default"):
+                    new_entry["adressat_default"] = entry["adressat_default"]
+                # Hinweis-Feld erhalten
+                for old in raw:
+                    if old.get("hinweis") and old.get("id") == entry.get("id"):
+                        new_entry["hinweis"] = old["hinweis"]
+                raw.append(new_entry)
+                raw.sort(key=lambda x: x.get("id", ""))
+                doc["absender"] = raw
+                # Schreiben
+                ABSENDER_FILE.parent.mkdir(parents=True, exist_ok=True)
+                with open(ABSENDER_FILE, "w", encoding="utf-8") as f:
+                    _yaml.dump(doc, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+                # Ergebnis als sortierte Liste zurückgeben (wie GET)
+                result = []
+                for s in raw:
+                    if not isinstance(s, dict): continue
+                    a = s.get("aliases", []) or []
+                    result.append({
+                        "id": s.get("id", ""), "name": a[0] if a else s.get("id", ""),
+                        "aliases": a, "part_iva": s.get("part_iva", []) or [],
+                        "ust_id": s.get("ust_id", []) or [], "land": s.get("land") or None,
+                        "kategorie_hint": s.get("kategorie_hint") or None,
+                        "typ_hint": s.get("typ_hint") or None,
+                        "adressat_default": s.get("adressat_default") or None,
+                    })
+                result.sort(key=lambda x: x["name"].lower())
+                # Kategorien neu laden
+                global _categories_cache, _categories_ts
+                _categories_cache = None
+                self._json_response({"ok": True, "senders": result})
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+
+
+
+
+
+
+
+
+        # POST /api/pipeline-debug/run — PDF-Upload, startet Pipeline im Hintergrund
+        elif path == "/api/pipeline-debug/run":
+            ctype = self.headers.get("Content-Type","")
+            if "boundary=" not in ctype:
+                self._json_response({"error":"multipart/form-data erwartet"},400); return
+            try:
+                boundary = ctype.split("boundary=")[1].strip().strip('"')
+                raw_body = self.rfile.read(int(self.headers.get("Content-Length","0")))
+                parts = raw_body.split(b"--" + boundary.encode())
+                pdf_data = None
+                for p in parts:
+                    if b"filename=" in p:
+                        idx = p.find(b"\r\n\r\n")
+                        if idx > 0: pdf_data = p[idx+4:]; break
+                if not pdf_data or len(pdf_data) < 50:
+                    self._json_response({"error":"Keine PDF-Datei gefunden"},400); return
+                if pdf_data.endswith(b"\r\n"): pdf_data = pdf_data[:-2]
+                run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+                tmp = TEMP_DIR / ("_debug_" + run_id + ".pdf")
+                tmp.write_bytes(pdf_data)
+                progress_file = TEMP_DIR / ("_debug_" + run_id + "_progress.json")
+                progress_file.write_text(json.dumps({"status":"running","steps":[],"done":False}))
+            except Exception as e:
+                self._json_response({"error":"Upload: "+str(e)},400); return
+            # Pipeline im Hintergrund starten
+            import threading as _thr
+            def _run_bg():
+                steps = []; errors = []
+                try:
+                    t0=time.monotonic(); md=convert_to_markdown(tmp)
+                    ocr_chars=len(md.strip()) if md else 0
+                    steps.append({"id":"ocr","label":"Docling OCR","status":"ok" if md else "error","chars":ocr_chars,"duration_ms":round((time.monotonic()-t0)*1000),"gate":"passed" if ocr_chars>=150 else "failed","preview":(md or "")})
+                    _write_json(progress_file, "running", steps)
+                    if not md: _write_json(progress_file, "done", steps, ["OCR fehlgeschlagen"]); tmp.unlink(missing_ok=True); return
+                    t0=time.monotonic(); hdr=extract_document_header(md)
+                    steps.append({"id":"header","label":"Header-Extraktion","status":"ok","duration_ms":round((time.monotonic()-t0)*1000),"absender":hdr.get("absender",{}),"empfaenger":hdr.get("empfaenger",{})})
+                    _write_json(progress_file, "running", steps)
+                    t0=time.monotonic(); idents=extract_identifiers(md); adm=resolve_adressat(idents,md); abm=resolve_absender(idents,hdr)
+                    steps.append({"id":"identifiers","label":"Identifier & Aufloesung","status":"ok","duration_ms":round((time.monotonic()-t0)*1000),"identifiers":idents,"adressat_match":{"person_key":adm["person_key"]} if adm else None,"absender_match":{"id":abm["id"],"kategorie_hint":abm.get("kategorie_hint"),"typ_hint":abm.get("typ_hint"),"adressat_default":abm.get("adressat_default")} if abm else None})
+                    _write_json(progress_file, "running", steps)
+                    t0=time.monotonic(); dti=extract_document_type(md)
+                    steps.append({"id":"doctype","label":"Dokumenttyp-Erkennung","status":"ok","duration_ms":round((time.monotonic()-t0)*1000),"typ":dti.get("erkannter_typ"),"keyword":dti.get("quell_keyword"),"kategorie_hint":dti.get("kategorie_hint")})
+                    _write_json(progress_file, "running", steps)
+                    t0=time.monotonic(); lang,lang_prob=detect_document_language(md)
+                    steps.append({"id":"lang","label":"Spracherkennung","status":"ok","duration_ms":round((time.monotonic()-t0)*1000),"lang":lang,"prob":round(lang_prob,3)})
+                    _write_json(progress_file, "running", steps)
+                    cats=load_categories()
+                    t0=time.monotonic(); llm=classify_with_ollama(md,cats,header=hdr,identifiers=idents,adressat_match=adm,absender_match=abm,doc_type_info=dti,_debug=True)
+                    llm_ok=bool(llm and llm.get("category_id"))
+                    steps.append({"id":"llm","label":"LLM-Klassifikation","status":"ok" if llm_ok else ("retry" if llm else "error"),"duration_ms":round((time.monotonic()-t0)*1000),"raw":llm})
+                    _write_json(progress_file, "running", steps)
+                    if not llm_ok and llm is not None:
+                        t0=time.monotonic(); llm2=classify_with_ollama(md[:4000],cats,header=hdr,identifiers=idents,adressat_match=adm,absender_match=abm,doc_type_info=dti,_debug=True)
+                        ok2=bool(llm2 and llm2.get("category_id"))
+                        steps.append({"id":"llm-retry","label":"LLM-Retry (4k Zeichen)","status":"ok" if ok2 else "failed","duration_ms":round((time.monotonic()-t0)*1000),"raw":llm2 if ok2 else None})
+                        if ok2: llm=llm2
+                        _write_json(progress_file, "running", steps)
+                    result, ov = apply_overrides(dict(llm or {}), md, cats, hdr, idents, adm, abm, dti, lang, tmp.stem, log_overrides=True)
+                    result, ov2 = apply_post_overrides(result, md, cats, tmp.stem, log_overrides=True)
+                    ov.extend(ov2)
+                    steps.append({"id":"overrides","label":"Override-Kaskade (Live-Code)","status":"ok","overrides":ov})
+                    _write_json(progress_file, "running", steps)
+                    cat_id=result.get("category_id") or ""; typ_id=result.get("type_id") or ""
+                    fm=_build_frontmatter(result, tmp.name, cat_id, typ_id)
+                    adr=result.get("adressat") or ""; dat=result.get("rechnungsdatum") or ""
+                    year=dat[-4:] if len(dat)>=4 else datetime.now().strftime("%Y")
+                    vp=build_vault_path(cat_id, typ_id, adr, year, "SIMULIERT.md") if cat_id else "00 Inbox/SIMULIERT.md"
+                    steps.append({"id":"output","label":"Simuliertes Ergebnis","status":"ok","frontmatter":fm,"vault_path":vp,"category_id":cat_id,"type_id":typ_id})
+                    _write_json(progress_file, "done", steps, errors)
+                except Exception as e:
+                    errors.append(str(e))
+                    _write_json(progress_file, "done", steps, errors)
+                try: tmp.unlink(missing_ok=True)
+                except: pass
+            _thr.Thread(target=_run_bg, daemon=True).start()
+            self._json_response({"run_id": run_id, "status": "started"})
+            return
+
         else:
             self._json_response({"error": "Unbekannter Endpunkt"}, 404)
     def do_DELETE(self):
         path = urlparse(self.path).path
-        # DELETE /api/enex/doc/<id> — Vault-Datei + DB-Eintrag löschen
-        if path.startswith("/api/enex/doc/"):
-            try:
-                doc_id = int(path.split("/")[-1])
-            except ValueError:
-                self._json_response({"error": "Ungültige ID"}, 400); return
-            with get_db() as con:
-                row = con.execute(
-                    "SELECT dateiname, vault_pfad FROM dokumente WHERE id=? AND import_source='enex'",
-                    (doc_id,)
-                ).fetchone()
-                if not row:
-                    self._json_response({"error": "Dokument nicht gefunden"}, 404); return
-                if row["vault_pfad"] and VAULT_ROOT:
-                    md_file = VAULT_ROOT / row["vault_pfad"]
-                    if md_file.exists():
-                        md_file.unlink()
-                        log.info(f"Vault-Datei gelöscht: {row['vault_pfad']}")
-                con.execute("DELETE FROM dokumente WHERE id=?", (doc_id,))
-            log.info(f"ENEX-Dokument #{doc_id} ({row['dateiname']}) gelöscht")
-            self._json_response({"status": "deleted", "id": doc_id, "dateiname": row["dateiname"]})
-            return
         if path.startswith("/api/lernregeln/"):
             try:
                 rule_id = int(path.split("/")[-1])
@@ -13693,8 +14142,6 @@ def detect_document_language(md_content: str) -> tuple[str, float]:
         return ("de", 0.0)
 
 
-
-
 def _build_person_names_pattern() -> re.Pattern | None:
     """Baut einen Regex für alle Namen aus personen.yaml (Nachname + Vornamen)."""
     personen = load_personen()
@@ -13833,7 +14280,16 @@ _IT_FIRMA_NUM_RE  = re.compile(
 )
 _DE_USTID_RE      = re.compile(r"\b(DE\d{9})\b")
 _IBAN_RE          = re.compile(r"\b([A-Z]{2}\d{2}[A-Z0-9]{10,30})\b")
-
+# KFZ-Kennzeichen: DE (1-3 Buchstaben, 1-2 Buchstaben, 1-4 Ziffern) + IT (2 Buchstaben, 3 Ziffern, 2 Buchstaben)
+# Erfasst: "GY 243 ZF", "XB FS L4", "XA328YK", "BD837H", "GY-964-ZF", "TS MY 8888", "MB 930145"
+_KFZ_KENNZEICHEN_RE = re.compile(
+    r"\b([A-Z]{1,3}\s?[A-Z]{1,2}\s?\d{1,4}(?:\s?[A-Z]{1,2})?)\b"
+    r"|"
+    r"\b(Targa\s*:?\s*[A-Z0-9]{4,10})\b",
+    re.IGNORECASE,
+)
+# VIN/Fahrgestellnummer: 17 Zeichen (keine I,O,Q), alphanumerisch
+_VIN_RE = re.compile(r"\b([A-HJ-NPR-Z0-9]{17})\b")
 
 def extract_identifiers(md_content: str) -> dict:
     """Regex-basierte Extraktion strukturierter Identifier aus dem Dokumententext.
@@ -13843,6 +14299,8 @@ def extract_identifiers(md_content: str) -> dict:
     Nähe eines passenden Kürzels steht — 11 blanke Ziffern kommen in vielen Dokumenten vor).
     USt-IdNr (DE): `DE` + 9 Ziffern.
     IBAN: 2 Buchstaben + 2 Ziffern + 10–30 alphanumerisch.
+    KFZ-Kennzeichen: DE (1-3 Buchstaben, 1-2 Buchstaben, 1-4 Ziffern) + IT (2 Buchstaben, 3 Ziffern, 2 Buchstaben).
+    Firmen-Namen: Bekannte Firmen aus absender.yaml im Text gefunden.
 
     Rückgabe: Dict mit Listen. Ohne Duplikate, Reihenfolge stabil.
     """
@@ -13862,17 +14320,117 @@ def extract_identifiers(md_content: str) -> dict:
         part_iva    = _uniq(_IT_FIRMA_NUM_RE.findall(md_content))
         ust_id      = _uniq(_DE_USTID_RE.findall(md_content))
         iban        = _uniq(_IBAN_RE.findall(md_content))
-        # Eine 16-stellige Cod. Fiscale darf nicht versehentlich als IBAN auftauchen
         iban = [x for x in iban if x not in cod_fiscale]
+
+        # KFZ-Kennzeichen erkennen (DE + IT)
+        kfz = _uniq(_KFZ_KENNZEICHEN_RE.findall(md_content))
+        # normalisieren: Whitespace entfernen
+        kfz = [re.sub(r'\s+', '', k).upper() for k in kfz]
+        # VIN/Fahrgestellnummer
+        vin = _uniq(_VIN_RE.findall(md_content))
+
+        # Firmen-Namen aus absender.yaml im Text finden
+        firmen = []
+        try:
+            absender_list = _load_absender_list()
+            for entry in absender_list:
+                for alias in entry.get("aliases", []):
+                    if len(alias) > 5 and alias.lower() in md_content.lower():
+                        firmen.append({"name": alias, "absender_id": entry["id"],
+                                       "kategorie_hint": entry.get("kategorie_hint")})
+                        break  # nur erster Match pro Absender
+        except Exception:
+            pass
+
         return {
             "cod_fiscale_person": cod_fiscale,
             "part_iva_firma":     part_iva,
             "ust_id_de":          ust_id,
             "iban":               iban,
+            "kfz_kennzeichen":    kfz,
+            "vin":                vin,
+            "firmen_namen":       firmen,
         }
     except Exception as e:
         log.warning(f"Identifier-Extraktion fehlgeschlagen: {e}")
-        return {"cod_fiscale_person": [], "part_iva_firma": [], "ust_id_de": [], "iban": []}
+        return {"cod_fiscale_person": [], "part_iva_firma": [], "ust_id_de": [], "iban": [],
+                "kfz_kennzeichen": [], "vin": [], "firmen_namen": []}
+
+
+def _load_absender_list() -> list:
+    """Lädt Absender-Liste aus absender.yaml (nur die Rohdaten)."""
+    try:
+        import yaml as _yaml
+        if ABSENDER_FILE.exists():
+            with open(ABSENDER_FILE, encoding="utf-8") as f:
+                data = _yaml.safe_load(f) or {}
+            return data.get("absender", [])
+    except Exception:
+        pass
+    return []
+
+
+_IMMOBILIEN_ADRESSEN_CACHE = None
+
+
+def _load_immobilien_addresses() -> list:
+    """Lädt Objekt-Adressen aus immobilien.db (gecacht)."""
+    global _IMMOBILIEN_ADRESSEN_CACHE
+    if _IMMOBILIEN_ADRESSEN_CACHE is not None:
+        return _IMMOBILIEN_ADRESSEN_CACHE
+    result = []
+    immo_db = os.environ.get("IMMO_DB_PATH", "")
+    if immo_db:
+        try:
+            import sqlite3 as _sql
+            con = _sql.connect(immo_db)
+            for r in con.execute(
+                "SELECT id, bezeichnung, strasse, ort, land, typ FROM objekte WHERE aktiv_bis IS NULL"
+            ).fetchall():
+                if r["strasse"] and r["ort"]:
+                    result.append({
+                        "objekt_id": r["id"], "bezeichnung": r["bezeichnung"],
+                        "strasse": str(r["strasse"] or ""), "ort": str(r["ort"] or ""),
+                        "land": r["land"], "typ": r["typ"],
+                    })
+            con.close()
+        except Exception as e:
+            log.debug(f"Immobilien-Adressen nicht geladen: {e}")
+    _IMMOBILIEN_ADRESSEN_CACHE = result
+    return result
+
+
+_AUSSTELLER_ADRESSEN_CACHE = None
+
+
+def _load_aussteller_addresses() -> list:
+    """Lädt Absender-Adressen aus der aussteller-Tabelle + Aliase (gecacht)."""
+    global _AUSSTELLER_ADRESSEN_CACHE
+    if _AUSSTELLER_ADRESSEN_CACHE is not None:
+        return _AUSSTELLER_ADRESSEN_CACHE
+    result = []
+    try:
+        with get_db() as con:
+            for r in con.execute(
+                "SELECT id, name, strasse, plz, ort FROM aussteller WHERE strasse IS NOT NULL AND strasse != ''"
+            ).fetchall():
+                aliases = [str(r["name"] or "")]
+                try:
+                    for ar in con.execute(
+                        "SELECT alias FROM aussteller_aliases WHERE aussteller_id=?", (r["id"],)
+                    ).fetchall():
+                        aliases.append(str(ar["alias"] or ""))
+                except Exception:
+                    pass
+                result.append({
+                    "aussteller_id": r["id"], "name": str(r["name"] or ""),
+                    "strasse": str(r["strasse"] or ""), "plz": str(r["plz"] or ""),
+                    "ort": str(r["ort"] or ""), "aliases": aliases,
+                })
+    except Exception as e:
+        log.debug(f"Aussteller-Adressen nicht geladen: {e}")
+    _AUSSTELLER_ADRESSEN_CACHE = result
+    return result
 
 
 _personen_cache: dict | None = None
@@ -13935,7 +14493,8 @@ def resolve_adressat(identifiers: dict, md_content: str = "") -> dict | None:
 
     Reihenfolge:
     1. Cod. Fiscale / Steuer-ID (Primär)
-    2. Tier-Name im Text → besitzer (Sekundär, nur wenn kein CF-Treffer)
+    2. Adress-Match gegen immobilien.db — Eigentümer ableiten
+    3. Tier-Name im Text → besitzer (Sekundär, nur wenn kein CF-Treffer)
 
     Rückgabe: {"person_key", "name", "via", "tier"?} oder None.
     """
@@ -13947,9 +14506,33 @@ def resolve_adressat(identifiers: dict, md_content: str = "") -> dict | None:
         for key, info in personen.items():
             cf_list = [str(x).upper() for x in (info.get("cod_fiscale") or [])]
             if cf_upper in cf_list:
-                return {"person_key": key, "name": info.get("name"), "via": f"cod_fiscale:{cf}"}
+                return {"person_key": key, "name": info.get("name"), "via": f"cod_fiscale:{cf}",
+                        "confidence": "hoch"}
 
     if md_content:
+        md_lower = md_content.lower()
+        # 2. Adress-Match: Immobilien-Adressen → Eigentümer ableiten (WEICH — muss bestätigt werden)
+        for immo in _load_immobilien_addresses():
+            strasse_lower = immo["strasse"].lower()
+            ort_lower = immo["ort"].lower()
+            if strasse_lower in md_lower and ort_lower in md_lower:
+                return {"person_key": "reinhard", "name": "Reinhard",
+                        "via": f"adresse:{immo['strasse']} ({immo['bezeichnung']})",
+                        "confidence": "mittel", "needs_review": True,
+                        "review_info": f"Immobilie: {immo['bezeichnung']} ({immo['strasse']}, {immo['ort']})"}
+
+        # 2.5: Adress-Match gegen personen.yaml (WEICH — muss bestätigt werden)
+        for key, info in personen.items():
+            for addr in info.get("adressen") or []:
+                str_lower = (addr.get("strasse") or "").lower()
+                ort_lower = (addr.get("ort") or "").lower()
+                if str_lower and ort_lower and str_lower in md_lower and ort_lower in md_lower:
+                    return {"person_key": key, "name": info.get("name"),
+                            "via": f"person_adresse:{addr.get('strasse')}",
+                            "confidence": "mittel", "needs_review": True,
+                            "review_info": f"Adresse: {addr.get('strasse')}, {addr.get('ort')}"}
+
+        # 3. Tier-Match (wie bisher)
         md_upper = md_content.upper()
         for tier in load_tiere():
             for alias in tier.get("aliases") or [tier.get("name", "")]:
@@ -14017,6 +14600,65 @@ def resolve_absender(identifiers: dict, header: dict | None) -> dict | None:
             for alias in entry.get("aliases") or []:
                 if alias and alias.upper() in firma_upper:
                     return _mk_result(entry, f"alias:{alias}")
+
+    # 2.5: Adress-Match gegen aussteller-Tabelle (PLZ+Ort oder Strassen-Substring)
+    abs_header = (header or {}).get("absender") or {}
+    abs_strasse = abs_header.get("strasse") or ""
+    abs_plz = abs_header.get("plz") or ""
+    abs_ort = abs_header.get("ort") or ""
+    if abs_strasse or (abs_plz and abs_ort):
+        for aentry in _load_aussteller_addresses():
+            # Match: gleiche PLZ + Ort, oder Strassenname als Substring
+            str_match = abs_strasse and aentry["strasse"] and (
+                abs_strasse.lower() in aentry["strasse"].lower() or
+                aentry["strasse"].lower() in abs_strasse.lower()
+            )
+            plz_match = abs_plz and aentry["plz"] and abs_plz == aentry["plz"] and abs_ort and aentry["ort"] and abs_ort.lower() == aentry["ort"].lower()
+            alias_match = any(
+                alias.lower() in (firma or "").lower()
+                for alias in aentry.get("aliases", [])
+            ) if firma else False
+            if str_match or plz_match or alias_match:
+                # Prüfen ob dieser Aussteller in absender.yaml konfiguriert ist
+                a_name = aentry["name"].lower()
+                for entry in absender_list:
+                    for alias in entry.get("aliases") or []:
+                        if alias and alias.lower() in a_name:
+                            return _mk_result(entry, f"aussteller_adresse:{aentry['name']}")
+                # Auch ohne absender.yaml-Eintrag: Aussteller ist bekannt
+                return {
+                    "id": f"aussteller_{aentry['aussteller_id']}",
+                    "name": aentry["name"],
+                    "kategorie_hint": None, "typ_hint": None,
+                    "adressat_default": None, "land": None,
+                    "via": f"aussteller_adresse:{aentry['plz']} {aentry['ort']}",
+                }
+
+    # 3. KFZ-Kennzeichen → immer fahrzeuge
+    if identifiers.get("kfz_kennzeichen"):
+        return {
+            "id": "kfz_kennzeichen", "name": "KFZ-Kennzeichen",
+            "kategorie_hint": "fahrzeuge", "typ_hint": None,
+            "adressat_default": None, "land": None,
+            "via": f"kennzeichen:{identifiers['kfz_kennzeichen'][0]}",
+        }
+
+    # 4. VIN/Fahrgestellnummer → immer fahrzeuge
+    if identifiers.get("vin"):
+        return {
+            "id": "vin", "name": "Fahrgestellnummer",
+            "kategorie_hint": "fahrzeuge", "typ_hint": None,
+            "adressat_default": None, "land": None,
+            "via": f"vin:{identifiers['vin'][0][:4]}...",
+        }
+
+    # 5. Firmen-Namen aus Volltext-Match
+    for fmatch in identifiers.get("firmen_namen", []):
+        kat = fmatch.get("kategorie_hint")
+        if kat:
+            for entry in absender_list:
+                if entry.get("id") == fmatch.get("absender_id"):
+                    return _mk_result(entry, f"firma_text:{fmatch['name']}")
 
     return None
 
@@ -14361,6 +15003,7 @@ def classify_with_ollama(
     adressat_match: dict | None = None,
     absender_match: dict | None = None,
     doc_type_info: dict | None = None,
+    _debug: bool = False,
 ) -> dict | None:
     cat_desc = build_category_description(categories)
     md_content = sanitize_for_ollama(md_content)
@@ -14576,6 +15219,11 @@ Dokument:
             return None
         parsed["_raw_response"] = raw[:4000]  # auf 4000 Zeichen begrenzen
         parsed["_duration_ms"] = duration_ms
+        if _debug:
+            parsed["_prompt"] = prompt
+            parsed["_model"] = OLLAMA_MODEL
+            parsed["_context"] = OLLAMA_NUM_CTX
+            parsed["_endpoint"] = OLLAMA_URL
         return parsed
     except Exception as e:
         log.warning(f"Ollama Klassifizierung fehlgeschlagen: {e}")
@@ -14584,6 +15232,146 @@ Dokument:
 _KONFIDENZ_RANK = {"hoch": 2, "mittel": 1, "niedrig": 0}
 _KONFIDENZ_FROM_RANK = {2: "hoch", 1: "mittel", 0: "niedrig"}
 
+
+
+def apply_overrides(result: dict, md_content: str, categories: dict,
+                    hdr: dict | None, idents: dict | None,
+                    adm: dict | None, abm: dict | None,
+                    dti: dict | None, lang: str, file_stem: str,
+                    log_overrides: bool = False) -> dict:
+    """Wendet die komplette Override-Kaskade (13 Schritte) auf das LLM-Ergebnis an.
+    Wird von process_file() UND vom Pipeline-Debugger verwendet.
+    Identisch mit dem Code in process_file() — bei Änderungen hier werden
+    beide Pfade aktualisiert."""
+    r = result or {}
+    r["_lang"] = lang
+    
+    # Override-Tracking (nur für Debugger)
+    ov = [] if log_overrides else None
+    def _add(step, field, before, after, source):
+        if ov is not None:
+            ba = str(before) if before is not None else "-"
+            aa = str(after) if after is not None else "-"
+            ov.append({"step":step,"field":field,"before":ba,"after":aa,"changed":ba!=aa,"source":source})
+    
+    # 1: Adressat via Cod.Fiscale / Adresse
+    b1 = r.get("adressat")
+    if adm and adm.get("person_key"):
+        forced = adm["person_key"].capitalize()
+        if adm.get("needs_review"):
+            # Weicher Match (Adresse) — nicht forcieren, nur Review-Flag setzen
+            r["_adressat_suggestion"] = forced
+            r["_adressat_review_info"] = adm.get("review_info", "")
+            _add(1,"adressat",b1,r.get("adressat"),f"Adresse (Review): {adm.get('review_info','')}" if adm.get("needs_review") else "Cod.Fiscale")
+        else:
+            # Harter Match (Cod.Fiscale) — direkt setzen
+            if r.get("adressat") != forced:
+                r["adressat"] = forced
+            r["konfidenz_adressat"] = "hoch"
+            _add(1,"adressat",b1,r.get("adressat"),"Cod.Fiscale" if adm else "-")
+    else:
+        _add(1,"adressat",b1,r.get("adressat"),"Cod.Fiscale" if adm else "-")
+    
+    # 2: Adressat via Absender-Default
+    b2 = r.get("adressat")
+    if not adm and abm and abm.get("adressat_default"):
+        if r.get("adressat") != abm["adressat_default"]:
+            r["adressat"] = abm["adressat_default"]
+        r["konfidenz_adressat"] = "hoch"
+    _add(2,"adressat",b2,r.get("adressat"),"Absender-DB" if (abm and abm.get("adressat_default")) else "-")
+    
+    # 3: Absender-Fallback
+    b3 = r.get("absender")
+    if abm and abm.get("name") and not r.get("absender"):
+        r["absender"] = abm["name"]
+        r["konfidenz_absender"] = "hoch"
+    _add(3,"absender",b3,r.get("absender"),"Absender-DB-Fallback" if (abm and abm.get("name")) else "-")
+    
+    # 4: Datum-Konfidenz LA
+    from dispatcher import LEISTUNGSABRECHNUNG_TYPES
+    if abm and r.get("type_id") in LEISTUNGSABRECHNUNG_TYPES and r.get("rechnungsdatum") and r.get("konfidenz_datum") == "mittel":
+        r["konfidenz_datum"] = "hoch"
+    _add(4,"konfidenz_datum","-",r.get("konfidenz_datum"),"LA-Datum" if (r.get("type_id") in LEISTUNGSABRECHNUNG_TYPES and abm) else "-")
+    
+    # 5: Taxonomie — halluzinierte Kategorie
+    b5 = r.get("category_id")
+    if b5 and b5 not in categories:
+        r["category_id"] = None
+        r["type_id"] = None
+    _add(5,"category_id",b5,r.get("category_id"),"Taxonomie")
+    
+    # 6: Taxonomie — halluzinierter Typ
+    b6 = r.get("type_id")
+    if r.get("category_id") and b6 and r["category_id"] in categories:
+        valid_types = {t["id"] for t in categories[r["category_id"]].get("types", [])}
+        if valid_types and b6 not in valid_types:
+            r["type_id"] = None
+    _add(6,"type_id",b6,r.get("type_id"),"Type-Validierung")
+    
+    # 7: Absender-Hint Kategorie
+    b7 = r.get("category_id")
+    if abm and abm.get("kategorie_hint") and abm["kategorie_hint"] in categories:
+        if r.get("category_id") != abm["kategorie_hint"]:
+            r["category_id"] = abm["kategorie_hint"]
+            r["category_label"] = categories[abm["kategorie_hint"]].get("label")
+            if abm.get("typ_hint"):
+                r["type_id"] = abm["typ_hint"]
+    _add(7,"category_id",b7,r.get("category_id"),"Absender-Hint" if (abm and abm.get("kategorie_hint")) else "-")
+    
+    # 8: Dokumenttyp-Hint (schwächster Override)
+    b8 = r.get("category_id")
+    if not b8 and dti and dti.get("kategorie_hint") and dti["kategorie_hint"] in categories:
+        r["category_id"] = dti["kategorie_hint"]
+        r["category_label"] = categories[dti["kategorie_hint"]].get("label")
+    _add(8,"category_id",b8,r.get("category_id"),"DocType-Hint" if (dti and dti.get("kategorie_hint")) else "-")
+    
+    return r, ov
+
+
+def apply_post_overrides(result: dict, md_content: str, categories: dict,
+                          file_stem: str, log_overrides: bool = False) -> dict:
+    """Wendet Post-Override-Schritte 9-13 an (Keyword-Rules, Lernregeln, Konfidenz, Datum, Gate).
+    Muss NACH apply_overrides() aufgerufen werden."""
+    r = result
+    ov = [] if log_overrides else None
+    def _add(step, field, before, after, source):
+        if ov is not None:
+            ba = str(before) if before is not None else "-"
+            aa = str(after) if after is not None else "-"
+            ov.append({"step":step,"field":field,"before":ba,"after":aa,"changed":ba!=aa,"source":source})
+    
+    # 9: Keyword-Rules
+    bc = r.get("category_id")
+    r = apply_keyword_rules(r, md_content, categories)
+    _add(9,"category_id",bc,r.get("category_id"),"Keyword-Rules")
+    
+    # 10: Lernregeln
+    bc = r.get("category_id")
+    r = apply_lernregeln_from_db(r, md_content, r.get("absender"), categories)
+    _add(10,"category_id",bc,r.get("category_id"),"Lernregeln")
+    
+    # 11: Konfidenz-Aggregation
+    r["konfidenz"] = aggregate_konfidenz(r)
+    _add(11,"konfidenz","-",r.get("konfidenz"),"Aggregation")
+    
+    # 12: Datums-Fallback
+    b12 = r.get("rechnungsdatum")
+    if not b12:
+        from dispatcher import _date_from_filename_prefix
+        ymd = _date_from_filename_prefix(file_stem)
+        if ymd and len(ymd) == 8:
+            r["rechnungsdatum"] = f"{ymd[6:]}.{ymd[4:6]}.{ymd[:4]}"
+            r.setdefault("konfidenz_datum", "mittel")
+    _add(12,"rechnungsdatum",b12,r.get("rechnungsdatum"),"Dateiname-Fallback" if not b12 else "LLM")
+    
+    # 13: Konfidenz-Gate
+    b13 = r.get("category_id")
+    if r.get("konfidenz_category") == "niedrig" or (not r.get("konfidenz_category") and r.get("konfidenz") == "niedrig"):
+        r["category_id"] = None
+        r["type_id"] = None
+    _add(13,"category_id",b13,r.get("category_id"),"Konfidenz-Gate")
+    
+    return r, ov
 
 def aggregate_konfidenz(result: dict) -> str:
     """Berechnet Gesamtkonfidenz als Minimum der Per-Feld-Konfidenz-Werte.
@@ -14754,10 +15542,8 @@ def _build_frontmatter(result: dict, pdf_filename: str, category_id: str, type_i
     # Datum_original aus PDF-Dateiname (laut VAULT_FRONTMATTER_SPEC.md)
     datum_original = _derive_datum_original(pdf_filename)
 
-    # Tags ableiten
+    # Tags ableiten (Option B: nur type_id — category_id ist redundant mit kategorie:-Feld)
     tags: list[str] = []
-    if category_id:
-        tags.append(category_id.replace("_", "-"))
     if type_id:
         tags.append(type_id.replace("_", "-"))
     # Immobilien: Objekt-Tag (immo-{objekt}) aus vorbereitetem Feld
@@ -15033,6 +15819,26 @@ def apply_keyword_rules(result: dict, text: str, categories: dict) -> dict:
         f"Keyword-Rule greift: '{best_rule.get('beschreibung', cat_id)}' → {cat_id}"
         f" (matched={best_score[0]}/{best_score[1]}, alle={best_score[2]})"
     )
+    return result
+
+
+def apply_adress_lernregeln(result: dict, absender: str | None) -> dict:
+    """Wendet gespeicherte Adressat-Lernregeln an (Absender → Adressat).
+    Wird VOR resolve_adressat() aufgerufen, damit gelernte Regeln Vorrang haben."""
+    if not absender:
+        return result
+    try:
+        with get_db() as con:
+            row = con.execute(
+                "SELECT category_id FROM lernregeln WHERE typ = 'adressat' AND muster = ? LIMIT 1",
+                (absender.strip(),)
+            ).fetchone()
+            if row and row["category_id"]:
+                result["adressat"] = row["category_id"]
+                result["konfidenz_adressat"] = "hoch"
+                log.info(f"Adress-Lernregel: Absender '{absender[:50]}' → {row['category_id']}")
+    except Exception as e:
+        log.debug(f"Adress-Lernregel Lookup: {e}")
     return result
 
 
@@ -15479,52 +16285,6 @@ def rescan_archived_pdf(pdf_path: Path, language_filter: str | None = None):
 
     _rescan_advance()
     log.info(f"Rescan abgeschlossen: {pdf_path.name} → {category_id}/{type_id}")
-
-
-def process_enex_file(enex_path: Path):
-    """Verarbeitet eine Evernote-ENEX-Datei via enex_processor (Phase 1)."""
-    try:
-        from enex_processor import process_enex_file as _process
-    except ImportError as e:
-        log.error(f"enex_processor nicht verfügbar: {e}")
-        return
-
-    # Warten bis der Syncthing-Transfer vollständig ist (ENEX-Dateien können sehr groß sein)
-    if not wait_for_file_stable(enex_path, timeout=120):
-        log.warning(f"ENEX nicht stabil nach 120 s — Transfer noch aktiv?: {enex_path.name}")
-        return
-
-    done_dir = TEMP_DIR / "enex_done"
-    done_dir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        stats = _process(enex_path)
-        imported   = stats.get('imported', 0)
-        duplicates = stats.get('duplicate', 0)
-        errors     = stats.get('error', 0)
-        pdf_pending = stats.get('pdf_pending', 0)
-        log.info(
-            f"ENEX abgeschlossen: {enex_path.name} — "
-            f"{imported} importiert | {duplicates} Duplikate | "
-            f"{errors} Fehler | {pdf_pending} PDFs → OCR"
-        )
-        msg = (
-            f"🐘 ENEX-Import abgeschlossen\n"
-            f"📄 {enex_path.name}\n"
-            f"✅ {imported} importiert"
-            + (f" · 🔀 {duplicates} Duplikate" if duplicates else "")
-            + (f" · 🌙 {pdf_pending} PDFs → OCR" if pdf_pending else "")
-            + (f" · ❌ {errors} Fehler" if errors else "")
-        )
-        tg_send(msg)
-    except Exception as e:
-        log.error(f"ENEX-Verarbeitung fehlgeschlagen: {enex_path.name}: {e}", exc_info=True)
-        tg_send(f"❌ ENEX-Import fehlgeschlagen\n📄 {enex_path.name}\n{e}")
-
-    try:
-        shutil.move(str(enex_path), str(done_dir / enex_path.name))
-    except Exception as e:
-        log.warning(f"ENEX verschieben nach done/ fehlgeschlagen: {e}")
 
 
 def _process_email_md(file_path: Path):
@@ -16143,7 +16903,13 @@ def process_file(file_path: Path):
             result["adressat"] = forced
         # Cod.Fiscale-Match ist ein harter Fakt → Konfidenz ist nicht geraten sondern belegt.
         result["konfidenz_adressat"] = "hoch"
-    elif result and absender_match and absender_match.get("adressat_default"):
+    elif result and result.get("absender"):
+        # Kein Cod.Fiscale → Lernregeln prüfen (Absender → Adressat)
+        old_adr = result.get("adressat")
+        result = apply_adress_lernregeln(result, result.get("absender"))
+        if result.get("adressat") != old_adr:
+            log.info(f"Adressat via Lernregel gesetzt: '{old_adr}' → '{result['adressat']}' (Absender: {result.get('absender', '?')[:50]})")
+    if result and not adressat_match and absender_match and absender_match.get("adressat_default"):
         # adressat_default ist ein harter Fakt (z. B. Gothaer → Reinhard, HUK → Marion).
         # Überschreibt auch LLM-Werte wie "Reinhard & Marion", da der Absender eindeutig
         # einem Adressaten zugeordnet ist.
@@ -16276,6 +17042,27 @@ def process_file(file_path: Path):
     if tier:
         result["tier"] = tier
         log.info(f"Tier zugeordnet: {tier} (Adressat={result.get('adressat')})")
+
+    # Adress-Match Review: nur wenn weicher Treffer UND keine Lernregel bereits gesetzt hat
+    if (adressat_match and adressat_match.get("needs_review")
+            and result.get("konfidenz_adressat") != "hoch"):
+        suggested = adressat_match.get("person_key", "").capitalize()
+        review_info = adressat_match.get("review_info", "Adresse erkannt")
+        current = result.get("adressat") or "unbekannt"
+        if current.lower() != suggested.lower():
+            log.info(f"Adress-Review nötig: {review_info} → {suggested} (LLM sagt: {current})")
+            # Inline-Keyboard: [Ja, stimmt] [Nein, LLM hat recht]
+            kb = {"inline_keyboard": [[
+                {"text": f"✅ Ja, {suggested}", "callback_data": f"adr_yes:{_fn}:{suggested}"},
+                {"text": f"❌ Nein, {current}", "callback_data": f"adr_no:{_fn}:{suggested}"}
+            ]]}
+            tg_send(
+                f"🏠 <b>Adress-Match</b> — Adressat prüfen\n"
+                f"📄 <code>{_fn}</code>\n"
+                f"📍 {review_info}\n"
+                f"👤 Vorschlag: <b>{suggested}</b> | 🤖 LLM: {current}",
+                reply_markup=kb
+            )
 
     # 5. Datenbank
     categories = load_categories()
@@ -16488,8 +17275,6 @@ def queue_worker():
                 rescan_archived_pdf(item[1])
             elif isinstance(item, tuple) and item[0] == "rescan_dated_de":
                 rescan_archived_pdf(item[1], language_filter="de")
-            elif isinstance(item, tuple) and item[0] == "enex":
-                process_enex_file(item[1])
             else:
                 process_file(item)
         except FileNotFoundError as e:
@@ -16504,7 +17289,7 @@ def queue_worker():
 # ── Watchdog ───────────────────────────────────────────────────────────────────
 
 class DocumentHandler(FileSystemEventHandler):
-    """Watchdog-Handler für WATCH_DIR: verarbeitet .pdf und .enex Dateien."""
+    """Watchdog-Handler für WATCH_DIR: verarbeitet .pdf und Email-MDs."""
     def _enqueue(self, path: Path):
         suffix = path.suffix.lower()
         if path.name.startswith("."):
@@ -16538,9 +17323,6 @@ class DocumentHandler(FileSystemEventHandler):
                         file_queue.put(md_path)
                 except Exception:
                     pass
-        elif suffix == ".enex":
-            log.info(f"In Queue (ENEX): {path.name}")
-            file_queue.put(("enex", path))
 
     def on_created(self, event):
         if not event.is_directory:
@@ -16553,29 +17335,6 @@ class DocumentHandler(FileSystemEventHandler):
 
 # Rückwärtskompatibilität
 PdfHandler = DocumentHandler
-
-
-class EnexHandler(FileSystemEventHandler):
-    """Watchdog-Handler für WATCH_DIR/enex/: verarbeitet ausschließlich .enex-Dateien."""
-
-    def _enqueue(self, path: Path):
-        if path.suffix.lower() != ".enex":
-            return
-        if path.name.startswith("."):  # macOS-Ressource-Forks und SMB-Temp-Dateien
-            return
-        if ".sync-conflict-" in path.name:  # Syncthing-Konfliktdateien nie verarbeiten
-            log.debug(f"Syncthing-Konfliktdatei ignoriert: {path.name}")
-            return
-        log.info(f"In Queue (ENEX/enex-Ordner): {path.name}")
-        file_queue.put(("enex", path))
-
-    def on_created(self, event):
-        if not event.is_directory:
-            self._enqueue(Path(event.src_path))
-
-    def on_moved(self, event):
-        if not event.is_directory:
-            self._enqueue(Path(event.dest_path))
 
 
 # ── Batch-Modus ────────────────────────────────────────────────────────────────
@@ -17621,7 +18380,7 @@ def main():
                 except Exception:
                     pass
 
-    # Vorhandene PDFs, Email-MDs und ENEX in WATCH_DIR (Root) verarbeiten
+    # Vorhandene PDFs und Email-MDs in WATCH_DIR (Root) verarbeiten
     for f in WATCH_DIR.glob("*.pdf"):
         file_queue.put(f)
     for f in WATCH_DIR.glob("*.md"):
@@ -17633,29 +18392,13 @@ def main():
                         file_queue.put(f)
                 except Exception:
                     pass
-    for f in WATCH_DIR.glob("*.enex"):
-        if not f.name.startswith(".") and ".sync-conflict-" not in f.name:
-            file_queue.put(("enex", f))
-
-    # Vorhandene ENEX-Dateien im dedizierten enex/-Unterordner verarbeiten
-    enex_dir = WATCH_DIR / "enex"
-    enex_dir.mkdir(parents=True, exist_ok=True)
-    enex_files = sorted(enex_dir.glob("*.enex"))
-    if enex_files:
-        log.info(f"Startup-Scan enex/: {len(enex_files)} Datei(en) gefunden")
-        for f in enex_files:
-            if not f.name.startswith(".") and ".sync-conflict-" not in f.name:
-                file_queue.put(("enex", f))
-
     # Auto-Batch-Rescan entfernt 2026-04-19 (flache Archiv-Architektur):
     # Bestandsdokumente werden nicht mehr beim Start rescanniert.
     # On-Demand-Auswertung stattdessen über CLI `--batch` + Dashboard `/batch`.
 
     observer = Observer()
     observer.schedule(DocumentHandler(), str(WATCH_DIR), recursive=False)
-    observer.schedule(EnexHandler(), str(enex_dir), recursive=False)
     observer.start()
-    log.info(f"Dispatcher aktiv — warte auf Dokumente (ENEX-Ordner: {enex_dir})")
 
     _last_sidecar_cleanup = time.monotonic()
     try:

@@ -106,6 +106,115 @@ def _fmt(state: dict) -> str:
     return "—" if val == "unavailable" else (f"{val} {unit}".strip())
 
 
+def ha_get_confirmed() -> list[str]:
+    """Bestätigte Unavailable-Geräte aus HA input_text lesen."""
+    try:
+        r = requests.get(
+            f"{HA_URL}/api/states/input_text.laermbaer_confirmed_unavailable",
+            headers=_ha_headers(), timeout=8,
+        )
+        if r.status_code == 200:
+            state = r.json().get("state", "[]")
+            return json.loads(state) if state else []
+    except Exception as e:
+        log.warning(f"HA confirmed read: {e}")
+    return []
+
+
+def ha_add_confirmed(eids: list[str]) -> bool:
+    """Entity-IDs zur Bestätigungsliste in HA hinzufügen (via States API)."""
+    current = ha_get_confirmed()
+    updated = list(set(current + eids))
+    try:
+        r = requests.post(
+            f"{HA_URL}/api/states/input_text.laermbaer_confirmed_unavailable",
+            headers={**_ha_headers(), "Content-Type": "application/json"},
+            json={"state": json.dumps(updated)},
+            timeout=10,
+        )
+        return r.status_code in (200, 201)
+    except Exception as e:
+        log.warning(f"HA confirmed write: {e}")
+        return False
+
+
+def ha_confirm_all_unavailable() -> int:
+    """Alle AKTUELL unavailable Geräte bestätigen. Gibt Anzahl zurück."""
+    try:
+        r = requests.get(
+            f"{HA_URL}/api/states",
+            headers=_ha_headers(), timeout=15,
+        )
+        if r.status_code != 200:
+            return 0
+        states = r.json()
+        unavailable_eids = [
+            s["entity_id"] for s in states
+            if s["state"] == "unavailable"
+            and not s["entity_id"].startswith(("sensor.ipad_home_", "sensor.iphone_",
+                                                 "button.", "climate.warmwasserbereiter_",
+                                                 "climate.infrarotheizung_", "climate.piscina_",
+                                                 "sensor.hp_laserjet_", "automation.neue_automation",
+                                                 "update.", "media_player.android_tv",
+                                                 "media_player.mac_mini", "media_player.soggiorno",
+                                                 "media_player.wohnzimmer", "media_player.bose"))
+        ]
+        if unavailable_eids:
+            ha_add_confirmed(unavailable_eids)
+        return len(unavailable_eids)
+    except Exception as e:
+        log.warning(f"HA confirm_all: {e}")
+        return 0
+
+
+def handle_callback(cb: dict) -> None:
+    """Inline-Keyboard Callback verarbeiten."""
+    data = cb.get("data", "")
+    msg = cb.get("message", {})
+    chat_id = msg.get("chat", {}).get("id", 0)
+    message_id = msg.get("message_id", 0)
+    cb_id = cb.get("id", "")
+
+    if chat_id != CHAT_ID:
+        tg_post("answerCallbackQuery", {"callback_query_id": cb_id, "text": "Nicht authorisiert"})
+        return
+
+    if data.startswith("confirm_all"):
+        count = ha_confirm_all_unavailable()
+        new_text = msg.get("text", "") + f"\n\n✅ <b>{count} Gerät(e) bestätigt</b>"
+        tg_post("editMessageText", {
+            "chat_id": chat_id, "message_id": message_id,
+            "text": new_text, "parse_mode": "HTML",
+        })
+        tg_post("answerCallbackQuery", {
+            "callback_query_id": cb_id,
+            "text": f"{count} Gerät(e) bestätigt ✓",
+        })
+        log.info(f"Callback confirm_all: {count} Geräte bestätigt")
+
+    elif data.startswith("confirm|"):
+        eid = data.split("|", 1)[1]
+        ok = ha_add_confirmed([eid])
+        # Kurzbestätigung im Originaltext ergänzen
+        orig_text = msg.get("text", "")
+        if "✅ Bestätigt:" not in orig_text:
+            orig_text += "\n\n✅ <b>Bestätigt:</b>"
+        # entity_id als Referenz anfügen
+        new_text = orig_text + f"\n  • {eid}"
+        tg_post("editMessageText", {
+            "chat_id": chat_id, "message_id": message_id,
+            "text": new_text, "parse_mode": "HTML",
+        })
+        tg_post("answerCallbackQuery", {
+            "callback_query_id": cb_id,
+            "text": f"{eid} bestätigt ✓" if ok else "Fehler beim Speichern",
+        })
+        log.info(f"Callback confirm: {eid}")
+
+    else:
+        tg_post("answerCallbackQuery", {"callback_query_id": cb_id, "text": "Unbekannte Aktion"})
+
+
 # ── Commands ────────────────────────────────────────────────────────────────
 
 def cmd_sensoren() -> str:
@@ -186,6 +295,7 @@ def cmd_hilfe() -> str:
         "/kamera &lt;name&gt; — Kamera-Snapshot\n"
         "/kameras — Alle Kameras auflisten\n"
         "/schalten &lt;entity&gt; &lt;an|aus&gt; — Gerät schalten\n"
+        "/bestaetigt — Bestätigte Unavailable-Geräte\n"
         "/hilfe — Diese Hilfe\n\n"
         "<i>Beispiele:</i>\n"
         "  /kamera cancello\n"
@@ -230,6 +340,19 @@ def tg_send_photo(path: str, caption: str = "") -> None:
         log.error(f"TG sendPhoto: {e}")
         tg_send(f"❌ Foto-Fehler: {e}")
 
+
+def tg_post(method: str, payload: dict) -> dict:
+    """Telegram API POST mit JSON-Body (für editMessageText, answerCallbackQuery etc.)."""
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
+            json=payload, timeout=15,
+        )
+        return r.json()
+    except Exception as e:
+        log.error(f"TG {method}: {e}")
+        return {}
+
 def tg_set_commands() -> None:
     cmds = [
         {"command": "sensoren",  "description": "Alle Hauptsensoren"},
@@ -237,6 +360,7 @@ def tg_set_commands() -> None:
         {"command": "kamera",    "description": "Kamera-Snapshot"},
         {"command": "kameras",   "description": "Alle Kameras auflisten"},
         {"command": "schalten",  "description": "Gerät ein-/ausschalten"},
+        {"command": "bestaetigt","description": "Bestätigte Unavailable-Geräte"},
         {"command": "hilfe",     "description": "Hilfe anzeigen"},
     ]
     tg_api("setMyCommands", commands=json.dumps(cmds))
@@ -281,6 +405,16 @@ def handle(msg: dict) -> None:
         else:
             tg_send(cmd_schalten(args[0], args[1]))
 
+    elif cmd == "bestaetigt":
+        confirmed = ha_get_confirmed()
+        if confirmed:
+            lines = [f"📋 <b>Bestätigte Unavailable-Geräte ({len(confirmed)}):</b>"]
+            for eid in confirmed:
+                lines.append(f"  • <code>{eid}</code>")
+            tg_send("\n".join(lines))
+        else:
+            tg_send("✅ Keine bestätigten Geräte.")
+
     elif cmd in ("hilfe", "help", "start"):
         tg_send(cmd_hilfe())
 
@@ -306,6 +440,11 @@ def main() -> None:
             updates = data.get("result", [])
             for upd in updates:
                 offset = upd["update_id"] + 1
+                # Callback Queries (Inline-Keyboard Buttons)
+                cb = upd.get("callback_query")
+                if cb:
+                    handle_callback(cb)
+                    continue
                 msg = upd.get("message") or upd.get("edited_message")
                 if msg:
                     handle(msg)

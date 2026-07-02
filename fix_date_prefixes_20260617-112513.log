@@ -1,0 +1,50 @@
+2026-06-17 11:25:13,339 [INFO] ============================================================
+2026-06-17 11:25:13,339 [INFO] fix_date_prefixes.py — Start: 20260617-112513
+2026-06-17 11:25:13,339 [INFO] Vault:  /home/reinhard/docker/RYZEN - docling-workflow/syncthing/data/reinhards-vault
+2026-06-17 11:25:13,339 [INFO] Modus:  Dateien=DRY-RUN, Frontmatter=DRY-RUN
+2026-06-17 11:25:13,339 [INFO] Phase:  P7
+2026-06-17 11:25:13,339 [INFO] Limit:  3 pro Phase
+2026-06-17 11:25:13,339 [INFO] ============================================================
+2026-06-17 11:25:13,339 [INFO] 
+🔍 Scanne Vault nach Datumspräfix-Problemen ...
+2026-06-17 11:25:13,640 [INFO] 
+📊 Datumspräfix-Probleme (DRY-RUN):
+
+2026-06-17 11:25:13,640 [INFO]   P1:     7 Dateien — 00000000_ Präfix (Wilson-Fallback ohne Datum)
+2026-06-17 11:25:13,640 [INFO]          (limitiert auf 3)
+2026-06-17 11:25:13,640 [INFO]   P2:    19 Dateien — Unmögliches Datum (Monat=00, Tag>31, Jahr<1950)
+2026-06-17 11:25:13,640 [INFO]          (limitiert auf 3)
+2026-06-17 11:25:13,640 [INFO]   P3:    33 Dateien — DDMMYYYY-Präfix (Scanner-Format, Tag>12 verrät es)
+2026-06-17 11:25:13,640 [INFO]          (limitiert auf 3)
+2026-06-17 11:25:13,640 [INFO]   P4:   574 Dateien — Doppeltes Datum (YYYYMMDD_SOURCE_YYYYMMDD_)
+2026-06-17 11:25:13,640 [INFO]          (limitiert auf 3)
+2026-06-17 11:25:13,640 [INFO]   P5:   242 Dateien — Bindestrich nach Datum (YYYYMMDD- statt YYYYMMDD_)
+2026-06-17 11:25:13,640 [INFO]          (limitiert auf 3)
+2026-06-17 11:25:13,640 [INFO]   P6:   277 Dateien — Kein Datumspräfix (UUID, Freitext, NODATE)
+2026-06-17 11:25:13,640 [INFO]          (limitiert auf 3)
+2026-06-17 11:25:13,640 [INFO]   ─────────────────────
+2026-06-17 11:25:13,640 [INFO]   Gesamt: 18 problematische Dateien
+2026-06-17 11:25:13,640 [INFO] 
+2026-06-17 11:25:13,640 [INFO] 
+────────────────────────────────────────
+2026-06-17 11:25:13,640 [INFO] Dateinamen-Fixes: DRY-RUN (keine Änderungen)
+2026-06-17 11:25:13,640 [INFO]   Behohen:    0
+2026-06-17 11:25:13,640 [INFO]   Üersprungen: 0
+2026-06-17 11:25:17,057 [INFO] 
+📊 Frontmatter-Probleme (DRY-RUN):
+
+2026-06-17 11:25:17,057 [INFO]   P7:     8 Dateien — Datum_original: 0000-00-00
+2026-06-17 11:25:17,057 [INFO]   P8:    36 Dateien — Datum_original: unbekannt
+2026-06-17 11:25:17,057 [INFO] 
+─ P7: Frontmatter-Fix ─
+2026-06-17 11:25:17,057 [INFO]   49 Krankenversicherung/0000/00000000_Zurich-Insurance-Europe-AG_Zurich-Datenschutzinformation-Italien.md
+2026-06-17 11:25:17,057 [INFO]     Datum_original → unbekannt
+2026-06-17 11:25:17,057 [INFO]   49 Krankenversicherung/0000/08121962_I_NURNBERGER_VERSICHERUNG_Bezu_geabrechnung---092a1065-5b8f-4701-98c4-fbc4c5515f67.md
+2026-06-17 11:25:17,057 [INFO]     Datum_original → 1962-12-08
+2026-06-17 11:25:17,058 [INFO]   49 Krankenversicherung/0000/2.md
+2026-06-17 11:25:17,058 [INFO]     Datum_original → unbekannt
+2026-06-17 11:25:17,058 [INFO] 
+  Frontmatter: 3 behoben, 0 übersprungen
+2026-06-17 11:25:17,058 [INFO] 
+✅ Fertig. Log: /home/reinhard/docker/RYZEN - docling-workflow/fix_date_prefixes_20260617-112513.log
+2026-06-17 11:25:17,058 [INFO] 💡 DRY-RUN — keine Änderungen. Nutze --apply / --apply-fm zum Ausführen.

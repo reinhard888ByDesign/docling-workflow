@@ -60,9 +60,6 @@ services:
       - VAULT_ROOT=/data/reinhards-vault
       - VAULT_PATH=/data/reinhards-vault
       - DB_PATH=/data/dispatcher-temp/dispatcher.db
-      - ENEX_TAGS_CONFIG=/config/enex-tags.yaml
-      - ENEX_DEFAULT_TIMEZONE=Europe/Rome
-      - ENEX_OCR_DOCLING_TIMEOUT=600
       - API_PORT=8765
       - SIDECAR_GRACE_SEC=30
       - HOST_IP=${HOST_IP:-192.168.86.195}
@@ -96,6 +93,8 @@ services:
     networks:
       - docling-net
       - ollama-net
+    extra_hosts:
+      - "ollama:host-gateway"
     depends_on:
       - docling-serve
 

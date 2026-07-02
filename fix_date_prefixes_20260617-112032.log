@@ -1,0 +1,159 @@
+2026-06-17 11:20:32,514 [INFO] ============================================================
+2026-06-17 11:20:32,514 [INFO] fix_date_prefixes.py — Start: 20260617-112032
+2026-06-17 11:20:32,514 [INFO] Vault:  /home/reinhard/docker/RYZEN - docling-workflow/syncthing/data/reinhards-vault
+2026-06-17 11:20:32,514 [INFO] Modus:  Dateien=DRY-RUN, Frontmatter=DRY-RUN
+2026-06-17 11:20:32,514 [INFO] Limit:  5 pro Phase
+2026-06-17 11:20:32,514 [INFO] ============================================================
+2026-06-17 11:20:32,514 [INFO] 
+🔍 Scanne Vault nach Datumspräfix-Problemen ...
+2026-06-17 11:20:32,798 [INFO] 
+📊 Datumspräfix-Probleme (DRY-RUN):
+
+2026-06-17 11:20:32,798 [INFO]   P1:     7 Dateien — 00000000_ Präfix (Wilson-Fallback ohne Datum)
+2026-06-17 11:20:32,798 [INFO]          (limitiert auf 5)
+2026-06-17 11:20:32,798 [INFO]   P2:    37 Dateien — Unmögliches Datum (Monat=00, Tag>31, Jahr<1990)
+2026-06-17 11:20:32,798 [INFO]          (limitiert auf 5)
+2026-06-17 11:20:32,798 [INFO]   P3:    32 Dateien — DDMMYYYY-Präfix (Scanner-Format, Tag>12 verrät es)
+2026-06-17 11:20:32,798 [INFO]          (limitiert auf 5)
+2026-06-17 11:20:32,798 [INFO]   P4:   574 Dateien — Doppeltes Datum (YYYYMMDD_SOURCE_YYYYMMDD_)
+2026-06-17 11:20:32,798 [INFO]          (limitiert auf 5)
+2026-06-17 11:20:32,798 [INFO]   P5:   243 Dateien — Bindestrich nach Datum (YYYYMMDD- statt YYYYMMDD_)
+2026-06-17 11:20:32,798 [INFO]          (limitiert auf 5)
+2026-06-17 11:20:32,798 [INFO]   P6:   279 Dateien — Kein Datumspräfix (UUID, Freitext, NODATE)
+2026-06-17 11:20:32,798 [INFO]          (limitiert auf 5)
+2026-06-17 11:20:32,798 [INFO]   ─────────────────────
+2026-06-17 11:20:32,798 [INFO]   Gesamt: 30 problematische Dateien
+2026-06-17 11:20:32,798 [INFO] 
+2026-06-17 11:20:32,798 [INFO] 
+─ P1: 00000000_ Präfix (Wilson-Fallback ohne Datum) ─
+2026-06-17 11:20:32,798 [INFO]   40 Finanzen/0000/00000000_Allianz_Allianz-ULTRA-Regelwerk.md
+2026-06-17 11:20:32,799 [INFO]   [INBOX] 40 Finanzen/0000/00000000_Allianz_Allianz-ULTRA-Regelwerk.md
+2026-06-17 11:20:32,799 [INFO]        →  00 Inbox/NODATE_Allianz_Allianz-ULTRA-Regelwerk.md
+2026-06-17 11:20:32,799 [INFO]   49 Krankenversicherung/0000/00000000_Zurich-Insurance-Europe-AG_Zurich-Datenschutzinformation-Italien.md
+2026-06-17 11:20:32,799 [INFO]   [INBOX] 49 Krankenversicherung/0000/00000000_Zurich-Insurance-Europe-AG_Zurich-Datenschutzinformation-Italien.md
+2026-06-17 11:20:32,799 [INFO]        →  00 Inbox/NODATE_Zurich-Insurance-Europe-AG_Zurich-Datenschutzinformation-Ita.md
+2026-06-17 11:20:32,800 [INFO]   50 Immobilien/unbekannt/00000000_Mietpreisberechnung_Ortsuebliche-Miete-Berechnung.md
+2026-06-17 11:20:32,800 [INFO]   [INBOX] 50 Immobilien/unbekannt/00000000_Mietpreisberechnung_Ortsuebliche-Miete-Berechnung.md
+2026-06-17 11:20:32,800 [INFO]        →  00 Inbox/NODATE_Mietpreisberechnung_Ortsuebliche-Miete-Berechnung.md
+2026-06-17 11:20:32,800 [INFO]   55 Garten/0000/00000000_Unbekannt_Garten-Pflanzplan-Tabelle.md
+2026-06-17 11:20:32,801 [INFO]   [INBOX] 55 Garten/0000/00000000_Unbekannt_Garten-Pflanzplan-Tabelle.md
+2026-06-17 11:20:32,801 [INFO]        →  00 Inbox/NODATE_Unbekannt_Garten-Pflanzplan-Tabelle.md
+2026-06-17 11:20:32,801 [INFO]   99 Archiv/0000/00000000_Unbekannt_OCR-Text-nicht-lesbar.md
+2026-06-17 11:20:32,801 [INFO]   [INBOX] 99 Archiv/0000/00000000_Unbekannt_OCR-Text-nicht-lesbar.md
+2026-06-17 11:20:32,801 [INFO]        →  00 Inbox/NODATE_Unbekannt_OCR-Text-nicht-lesbar.md
+2026-06-17 11:20:32,801 [INFO]   → 5 behoben, 0 übersprungen
+2026-06-17 11:20:32,801 [INFO] 
+─ P2: Unmögliches Datum (Monat=00, Tag>31, Jahr<1990) ─
+2026-06-17 11:20:32,801 [INFO]   00 Inbox/20190100_Reale_Mutua_Versicherungsbedingungen_Katastrophenschutz.md
+2026-06-17 11:20:32,802 [INFO]   [INBOX] 00 Inbox/20190100_Reale_Mutua_Versicherungsbedingungen_Katastrophenschutz.md
+2026-06-17 11:20:32,802 [INFO]        →  00 Inbox/NODATE_Reale_Mutua_Versicherungsbedingungen_Katastrophenschutz.md
+2026-06-17 11:20:32,802 [INFO]   00 Inbox/20190700_Reale_Mutua_Versicherungsinformationen_Katastrophenrisiken.md
+2026-06-17 11:20:32,803 [INFO]   [INBOX] 00 Inbox/20190700_Reale_Mutua_Versicherungsinformationen_Katastrophenrisiken.md
+2026-06-17 11:20:32,803 [INFO]        →  00 Inbox/NODATE_Reale_Mutua_Versicherungsinformationen_Katastrophenrisiken.md
+2026-06-17 11:20:32,803 [INFO]   00 Inbox/2023/202300414_Nürnberger_Versicherung_Pensionskasse.md
+2026-06-17 11:20:32,804 [INFO]   [INBOX] 00 Inbox/2023/202300414_Nürnberger_Versicherung_Pensionskasse.md
+2026-06-17 11:20:32,804 [INFO]        →  00 Inbox/NODATE_4_Nürnberger_Versicherung_Pensionskasse.md
+2026-06-17 11:20:32,804 [INFO]   10 Persönlich/1962/19621208_Geburtsurkunde_Reinhard_Janning.md
+2026-06-17 11:20:32,805 [INFO]   [INBOX] 10 Persönlich/1962/19621208_Geburtsurkunde_Reinhard_Janning.md
+2026-06-17 11:20:32,805 [INFO]        →  00 Inbox/NODATE_Geburtsurkunde_Reinhard_Janning.md
+2026-06-17 11:20:32,805 [INFO]   10 Persönlich/2018/19611211_Marion_Medizinisches_Labor.md
+2026-06-17 11:20:32,805 [INFO]   [INBOX] 10 Persönlich/2018/19611211_Marion_Medizinisches_Labor.md
+2026-06-17 11:20:32,806 [INFO]        →  00 Inbox/NODATE_Marion_Medizinisches_Labor.md
+2026-06-17 11:20:32,806 [INFO]   → 5 behoben, 0 übersprungen
+2026-06-17 11:20:32,806 [INFO] 
+─ P3: DDMMYYYY-Präfix (Scanner-Format, Tag>12 verrät es) ─
+2026-06-17 11:20:32,806 [INFO]   00 Inbox/10062026.md
+2026-06-17 11:20:32,806 [INFO]   [REN] 00 Inbox/10062026.md
+2026-06-17 11:20:32,806 [INFO]      →  00 Inbox/20260610.md
+2026-06-17 11:20:32,806 [INFO]     PDF: 10062026.pdf  →  20260610.pdf
+2026-06-17 11:20:32,806 [INFO]   00 Inbox/15062026.md
+2026-06-17 11:20:32,806 [INFO]   [REN] 00 Inbox/15062026.md
+2026-06-17 11:20:32,806 [INFO]      →  00 Inbox/20260615.md
+2026-06-17 11:20:32,806 [INFO]     PDF: 15062026.pdf  →  20260615.pdf
+2026-06-17 11:20:32,806 [INFO]   00 Inbox/2025/28022025_Telekom_Kündigung_Markus_Hutterer.md
+2026-06-17 11:20:32,816 [INFO]   [REN] 00 Inbox/2025/28022025_Telekom_Kündigung_Markus_Hutterer.md
+2026-06-17 11:20:32,816 [INFO]      →  00 Inbox/2025/20250228_Telekom_Kündigung_Markus_Hutterer.md
+2026-06-17 11:20:32,817 [INFO]     PDF: 28022025_Ihre_Kündigungsbestätigung.pdf  →  20250228_Telekom_Kündigung_Markus_Hutterer.pdf
+2026-06-17 11:20:32,817 [INFO]   00 Inbox/26052026_DKB_Deutsche_Kreditbonk_AG---e0c8bc13-64f5-46b5-bf59-2aca246afd8d.md
+2026-06-17 11:20:32,817 [INFO]   [REN] 00 Inbox/26052026_DKB_Deutsche_Kreditbonk_AG---e0c8bc13-64f5-46b5-bf59-2aca246afd8d.md
+2026-06-17 11:20:32,817 [INFO]      →  00 Inbox/20260526_DKB_Deutsche_Kreditbonk_AG---e0c8bc13-64f5-46b5-bf59-2aca246afd8d.md
+2026-06-17 11:20:32,817 [INFO]     PDF: 26052026_DKB_Deutsche_Kreditbonk_AG---e0c8bc13-64f5-46b5-bf59-2aca246afd8d.pdf  →  20260526_DKB_Deutsche_Kreditbonk_AG---e0c8bc13-64f5-46b5-bf59-2aca246afd8d.pdf
+2026-06-17 11:20:32,817 [INFO]   20 Familie/Max & Berta Hutterer/2025/27082025 Versicherungskammer Bayern.md
+2026-06-17 11:20:32,817 [INFO]   [REN] 20 Familie/Max & Berta Hutterer/2025/27082025 Versicherungskammer Bayern.md
+2026-06-17 11:20:32,817 [INFO]      →  20 Familie/Max & Berta Hutterer/2025/20250827_Versicherungskammer Bayern.md
+2026-06-17 11:20:32,817 [INFO]     PDF: 27082025_SICHER_KAMM.pdf  →  20250827_Versicherungskammer Bayern.pdf
+2026-06-17 11:20:32,817 [INFO]   → 5 behoben, 0 übersprungen
+2026-06-17 11:20:32,817 [INFO] 
+─ P4: Doppeltes Datum (YYYYMMDD_SOURCE_YYYYMMDD_) ─
+2026-06-17 11:20:32,818 [INFO]   00 Inbox/2017/20170702_Rechnung_Google_WiFi_20170702_001.md
+2026-06-17 11:20:32,818 [INFO]   [REN] 00 Inbox/2017/20170702_Rechnung_Google_WiFi_20170702_001.md
+2026-06-17 11:20:32,818 [INFO]      →  00 Inbox/2017/20170702_Rechnung_Google_WiFi_001.md
+2026-06-17 11:20:32,818 [INFO]   00 Inbox/2020/20190621_NÜRNBERGER_Reinhard_808735361452_Leistungsmitteilung.md
+2026-06-17 11:20:32,818 [INFO]   00 Inbox/2021/20210528_ERGO_Reiseversicherung_Nr._190551793_Versicherungspolice.md
+2026-06-17 11:20:32,818 [INFO]   00 Inbox/2021/20211012_F20211012_ETA_Wartungsvertrag_-_120951-261.md
+2026-06-17 11:20:32,818 [INFO]   00 Inbox/2023/20230414_Fwd_Referenz-Nr._393028890_Ihre_Bestellung_von_CyberGhost_VP.md
+2026-06-17 11:20:32,818 [INFO]   → 1 behoben, 4 übersprungen
+2026-06-17 11:20:32,818 [INFO] 
+─ P5: Bindestrich nach Datum (YYYYMMDD- statt YYYYMMDD_) ─
+2026-06-17 11:20:32,818 [INFO]   00 Inbox/20250814-Wonderz-Slide-4-Market-Opportunity_1_2.md
+2026-06-17 11:20:32,819 [INFO]   [REN] 00 Inbox/20250814-Wonderz-Slide-4-Market-Opportunity_1_2.md
+2026-06-17 11:20:32,819 [INFO]      →  00 Inbox/20250814_Wonderz-Slide-4-Market-Opportunity_1_2.md
+2026-06-17 11:20:32,819 [INFO]     PDF: 20250814-Wonderz-Slide-4-Market-Opportunity_1_2.pdf  →  20250814_Wonderz-Slide-4-Market-Opportunity_1_2.pdf
+2026-06-17 11:20:32,819 [INFO]   10 Persönlich/20260308-PLATINUM-Auftragsbestätigung.md
+2026-06-17 11:20:32,819 [INFO]   [REN] 10 Persönlich/20260308-PLATINUM-Auftragsbestätigung.md
+2026-06-17 11:20:32,819 [INFO]      →  10 Persönlich/20260308_PLATINUM-Auftragsbestätigung.md
+2026-06-17 11:20:32,819 [INFO]   10 Persönlich/20260325-DIE_ZEIT-Kündigungsbestätigung_Abonnement.md
+2026-06-17 11:20:32,820 [INFO]   [REN] 10 Persönlich/20260325-DIE_ZEIT-Kündigungsbestätigung_Abonnement.md
+2026-06-17 11:20:32,820 [INFO]      →  10 Persönlich/20260325_DIE_ZEIT-Kündigungsbestätigung_Abonnement.md
+2026-06-17 11:20:32,820 [INFO]     PDF: Mein_ZEIT_Abo_ku_ndigen.pdf  →  20260325_DIE_ZEIT-Kündigungsbestätigung_Abonnement.pdf
+2026-06-17 11:20:32,820 [INFO]   20 Familie/2016/20160909-Bedienungsanleitung_Staubroboter-6f6385ae.md
+2026-06-17 11:20:32,820 [INFO]   [REN] 20 Familie/2016/20160909-Bedienungsanleitung_Staubroboter-6f6385ae.md
+2026-06-17 11:20:32,820 [INFO]      →  20 Familie/2016/20160909_Bedienungsanleitung_Staubroboter-6f6385ae.md
+2026-06-17 11:20:32,820 [INFO]     PDF: 20160909-Bedienungsanleitung_Staubroboter-6f6385ae.pdf  →  20160909_Bedienungsanleitung_Staubroboter-6f6385ae.pdf
+2026-06-17 11:20:32,820 [INFO]   20 Familie/2017/20171117-Fwd_Angebot_-_Hochwasserschutz-02673a0d.md
+2026-06-17 11:20:32,820 [INFO]   [REN] 20 Familie/2017/20171117-Fwd_Angebot_-_Hochwasserschutz-02673a0d.md
+2026-06-17 11:20:32,820 [INFO]      →  20 Familie/2017/20171117_Fwd_Angebot_-_Hochwasserschutz-02673a0d.md
+2026-06-17 11:20:32,820 [INFO]     PDF: 20200518_WHU_Dokument.pdf  →  20171117_Fwd_Angebot_-_Hochwasserschutz-02673a0d.pdf
+2026-06-17 11:20:32,820 [INFO]   → 5 behoben, 0 übersprungen
+2026-06-17 11:20:32,820 [INFO] 
+─ P6: Kein Datumspräfix (UUID, Freitext, NODATE) ─
+2026-06-17 11:20:32,820 [INFO]   .claude/agents/work-progress-logger.md
+2026-06-17 11:20:32,821 [INFO]   [INBOX] .claude/agents/work-progress-logger.md
+2026-06-17 11:20:32,821 [INFO]        →  00 Inbox/NODATE_work-progress-logger.md
+2026-06-17 11:20:32,822 [INFO]   00 Inbox/Circolazione_XA328YK---2c41fab2-76cb-4899-9fca-a84879bca9d4.md
+2026-06-17 11:20:32,822 [INFO]   [INBOX] 00 Inbox/Circolazione_XA328YK---2c41fab2-76cb-4899-9fca-a84879bca9d4.md
+2026-06-17 11:20:32,822 [INFO]        →  00 Inbox/NODATE_Circolazione_XA328YK---2c41fab2-76cb-4899-9fca-a84879bca9d4.md
+2026-06-17 11:20:32,823 [INFO]   00 Inbox/Grundriss_DG.md
+2026-06-17 11:20:32,823 [INFO]   [REN] 00 Inbox/Grundriss_DG.md
+2026-06-17 11:20:32,823 [INFO]      →  00 Inbox/20250502_Grundriss_DG.md
+2026-06-17 11:20:32,823 [INFO]     PDF: Grundriss DG.pdf  →  20250502_Grundriss_DG.pdf
+2026-06-17 11:20:32,823 [INFO]   00 Inbox/KFZ_Versicherungsschein_V90102253221---c556c252-173d-41c5-b3b2-da0957a274d9.md
+2026-06-17 11:20:32,823 [INFO]   [INBOX] 00 Inbox/KFZ_Versicherungsschein_V90102253221---c556c252-173d-41c5-b3b2-da0957a274d9.md
+2026-06-17 11:20:32,823 [INFO]        →  00 Inbox/NODATE_KFZ_Versicherungsschein_V90102253221---c556c252-173d-41c5-b3.md
+2026-06-17 11:20:32,824 [INFO]   00 Inbox/Lageplan.md
+2026-06-17 11:20:32,824 [INFO]   [REN] 00 Inbox/Lageplan.md
+2026-06-17 11:20:32,824 [INFO]      →  00 Inbox/20250501_Lageplan.md
+2026-06-17 11:20:32,824 [INFO]     PDF: Lageplan.pdf  →  20250501_Lageplan.pdf
+2026-06-17 11:20:32,824 [INFO]   → 5 behoben, 0 übersprungen
+2026-06-17 11:20:32,824 [INFO] 
+────────────────────────────────────────
+2026-06-17 11:20:32,824 [INFO] Dateinamen-Fixes: DRY-RUN (keine Änderungen)
+2026-06-17 11:20:32,824 [INFO]   Behohen:    26
+2026-06-17 11:20:32,824 [INFO]   Üersprungen: 4
+2026-06-17 11:20:36,063 [INFO] 
+📊 Frontmatter-Probleme (DRY-RUN):
+
+2026-06-17 11:20:36,063 [INFO]   P7:     0 Dateien — Datum_original: 0000-00-00
+2026-06-17 11:20:36,063 [INFO]   P8:    36 Dateien — Datum_original: unbekannt
+2026-06-17 11:20:36,063 [INFO] 
+─ P8: Frontmatter-Fix ─
+2026-06-17 11:20:36,063 [INFO]   10 Persönlich/Biografie_Reinhard_Janning.md
+2026-06-17 11:20:36,063 [INFO]   40 Finanzen/26-B001-104854068-98248236---a9c5f53a-fdd6-485f-9cf3-e1403b5e2e53.md
+2026-06-17 11:20:36,063 [INFO]   40 Finanzen/Bescheid Reduzierung.md
+2026-06-17 11:20:36,064 [INFO]   40 Finanzen/Kontoauszug_ING-DiBa_2018_September.resources/Kontoauszug ING-DiBa 2018 September.md
+2026-06-17 11:20:36,064 [INFO]   49 Krankenversicherung/GOTHAER AGB.md
+2026-06-17 11:20:36,064 [INFO] 
+  Frontmatter: 0 behoben, 5 übersprungen
+2026-06-17 11:20:36,064 [INFO] 
+✅ Fertig. Log: /home/reinhard/docker/RYZEN - docling-workflow/fix_date_prefixes_20260617-112032.log
+2026-06-17 11:20:36,064 [INFO] 💡 DRY-RUN — keine Änderungen. Nutze --apply / --apply-fm zum Ausführen.

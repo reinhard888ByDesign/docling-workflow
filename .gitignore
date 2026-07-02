@@ -31,3 +31,9 @@ dispatcher-temp/
 
 # Cache-Reader-Laufzeitdaten (FTS5-Index etc.)
 cache-reader/data/
+backups/
+watcher/
+*.log
+dispatcher.bak-*
+dispatcher-config/dispatcher.db
+dispatcher/dispatcher.db

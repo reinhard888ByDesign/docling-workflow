@@ -1,7 +1,7 @@
-# Personen-DB für Empfänger-Identifikation (Iter. 3.7.2)
+# Personen-DB für Empfänger-Identifikation (Iter. 3.8)
 #
-# Zweck: Der Identifier-Extraktor sucht im OCR-Text nach Cod. Fiscale (IT, 16 Zeichen)
-# und Steuer-ID (DE, 11 Ziffern). Bei einem Match in dieser Liste wird der
+# Zweck: Der Identifier-Extraktor sucht im OCR-Text nach Cod. Fiscale (IT, 16 Zeichen),
+# Steuer-ID (DE, 11 Ziffern) und Adressen. Bei einem Match wird der
 # Adressat *deterministisch* gesetzt — kein LLM-Raten mehr.
 #
 # Hinweis zu cod_fiscale-Listen:
@@ -9,6 +9,13 @@
 #   (z. B. 6 → G, 0 → O). Jede bestätigte OCR-Variante wird als zusätzlicher
 #   String aufgenommen, um robuste Matches zu erhalten.
 # - Exakter String-Vergleich (case-insensitive), keine Decodierung.
+#
+# adressen:
+# - strasse: Strasse und Hausnummer (ohne PLZ/Ort, für Substring-Match im OCR-Text)
+# - plz:     Postleitzahl
+# - ort:     Ortsname
+# - land:    DE | IT
+# - aktiv_von / aktiv_bis: Jahr (optional) — für historische Dokumente
 
 persons:
   reinhard:
@@ -18,6 +25,24 @@ persons:
       - "JNNRHRG2T08Z112E"   # OCR-Variante (0 statt O)
       - "JNNRHR62T08Z112E"   # OCR-Variante (G → 6, Docling aus Consorzio-Bonifica-Docs)
     steuer_id_de: []         # vom User zu ergänzen
+    adressen:
+      - strasse: "Grassauer Straße 64"
+        plz: "83236"
+        ort: "Übersee"
+        land: "DE"
+        aktiv_von: "2000"
+        aktiv_bis: "2022"      # Haus verkauft
+      - strasse: "Podere dei venti"
+        plz: "58038"
+        ort: "Seggiano"
+        land: "IT"
+        aktiv_von: "2022"
+      - strasse: "Grassauer Strasse 64"  # OCR-Variante (ß → ss)
+        plz: "83236"
+        ort: "Übersee"
+        land: "DE"
+        aktiv_von: "2000"
+        aktiv_bis: "2022"
 
   marion:
     name: "Marion Micaela Janning"
@@ -26,11 +51,24 @@ persons:
       - "JNNMNM61T51Z112I"   # OCR-Variante (G → 6, I statt L, Docling aus Consorzio-Bonifica-Docs)
       - "JNNMNM61T51Z112L"   # OCR-Variante (G → 6, L statt I)
     steuer_id_de: []
-
-  linoa:
-    name: "Linoa Janning"
-    cod_fiscale: []          # vom User zu ergänzen
-    steuer_id_de: []
+    adressen:
+      - strasse: "Grassauer Straße 64"
+        plz: "83236"
+        ort: "Übersee"
+        land: "DE"
+        aktiv_von: "2000"
+        aktiv_bis: "2022"
+      - strasse: "Podere dei venti"
+        plz: "58038"
+        ort: "Seggiano"
+        land: "IT"
+        aktiv_von: "2022"
+      - strasse: "Grassauer Strasse 64"  # OCR-Variante
+        plz: "83236"
+        ort: "Übersee"
+        land: "DE"
+        aktiv_von: "2000"
+        aktiv_bis: "2022"
 
 # ── Haustiere ──────────────────────────────────────────────────────────────
 # Tier→Besitzer-Mapping für familie/haustier-Dokumente.
@@ -41,7 +79,21 @@ persons:
 tiere:
   - name: Linoa
     besitzer: reinhard
-    aliases: ["Linoa"]
+    rasse: "Appenzeller Sennenhund"
+    aliases:
+      - "Linoa"
+      - "Linoa Janning"
+      - "Appenzeller"
+      - "Appenzeller Sennenhund"
+      - "Sennenhund"
+      - "Sennenhündin"
   - name: Molly
     besitzer: marion
-    aliases: ["Molly"]
+    rasse: "Labrador"
+    aliases:
+      - "Molly"
+      - "Molly Janning"
+      - "Labrador"
+      - "Labrador Molly"
+      - "Labrador Hündin"
+      - "Labrador Hündin Molly"
