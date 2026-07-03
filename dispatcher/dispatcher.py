@@ -332,6 +332,9 @@ def init_db():
         if "summary_de" not in cols_dok:
             con.execute("ALTER TABLE dokumente ADD COLUMN summary_de TEXT")
             log.info("Migration: Spalte summary_de in dokumente hinzugefügt")
+        if "source" not in cols_dok:
+            con.execute("ALTER TABLE dokumente ADD COLUMN source TEXT DEFAULT ''")
+            log.info("Migration: Spalte source in dokumente hinzugefügt")
         # lernregeln-Tabelle
         con.execute("""
             CREATE TABLE IF NOT EXISTS lernregeln (
@@ -558,14 +561,37 @@ def save_to_db(file_path: Path, result: dict) -> list[dict]:
                 result["_dok_id"] = existing["id"]
                 result["_batch_updated"] = True
             else:
-                log.info(
-                    f"Bereits in DB ({match_type or 'dateiname'}):"
-                    f" {file_path.name} = {existing['dateiname']} — überspringe DB-Insert"
-                )
-                result["_dok_id"] = existing["id"]
-                if match_type == "pdf_hash":
-                    result["_is_hash_duplicate"] = True
-            return []
+                # Crash-Recovery: existierender Record ohne vault_pfad?
+                # → UPDATE der Klassifikationsdaten und Pipeline fortsetzen lassen
+                existing_row = con.execute(
+                    "SELECT vault_pfad FROM dokumente WHERE id=?", (existing["id"],)
+                ).fetchone()
+                if existing_row and not existing_row["vault_pfad"]:
+                    log.info(
+                        f"Crash-Recovery: {file_path.name} (id={existing['id']}) "
+                        f"hat keinen vault_pfad — Update + Weiterleitung"
+                    )
+                    con.execute(
+                        """UPDATE dokumente SET kategorie=?, typ=?, absender=?, adressat=?,
+                           konfidenz=?, konfidenz_source=?, beschreibung=?, summary_de=?,
+                           vault_kategorie=?, vault_typ=?
+                           WHERE id=?""",
+                        (category_id, type_id, result.get("absender"),
+                         result.get("adressat"), result.get("konfidenz"),
+                         result.get("konfidenz_source"), result.get("beschreibung"),
+                         result.get("summary_de"), category_id, type_id, existing["id"])
+                    )
+                    result["_dok_id"] = existing["id"]
+                    # NICHT return — move_to_vault soll ausgeführt werden
+                else:
+                    log.info(
+                        f"Bereits in DB ({match_type or 'dateiname'}):"
+                        f" {file_path.name} = {existing['dateiname']} — überspringe DB-Insert"
+                    )
+                    result["_dok_id"] = existing["id"]
+                    if match_type == "pdf_hash":
+                        result["_is_hash_duplicate"] = True
+                    return []
 
         # Im Batch classify-only/structured: keine neuen Dokumente einfügen.
         # Nur bestehende Einträge werden aktualisiert (siehe oben).
@@ -579,8 +605,8 @@ def save_to_db(file_path: Path, result: dict) -> list[dict]:
         # 1. Dokument speichern
         cur = con.execute(
             """INSERT INTO dokumente
-               (dateiname, pdf_hash, rechnungsdatum, kategorie, typ, absender, adressat, konfidenz, konfidenz_source, beschreibung, summary_de)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (dateiname, pdf_hash, rechnungsdatum, kategorie, typ, absender, adressat, konfidenz, konfidenz_source, beschreibung, summary_de, vault_kategorie, vault_typ, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 file_path.name,
                 pdf_hash,
@@ -593,6 +619,9 @@ def save_to_db(file_path: Path, result: dict) -> list[dict]:
                 result.get("konfidenz_source"),
                 result.get("beschreibung"),
                 result.get("summary_de"),
+                category_id,
+                type_id,
+                result.get("source", ""),
             )
         )
         dok_id = cur.lastrowid
@@ -1974,6 +2003,7 @@ def build_category_description(categories: dict) -> str:
 # ── Queue ──────────────────────────────────────────────────────────────────────
 
 file_queue: queue.Queue = queue.Queue()
+_watchdog_processing: set[str] = set()  # Dedup: Dateinamen, die gerade in der Queue sind
 
 # ── Rescan-Fortschritt ─────────────────────────────────────────────────────────
 _rescan_state: dict = {"active": False, "total": 0, "done": 0, "errors": 0, "current": ""}
@@ -4537,7 +4567,7 @@ function prependDoc(d) {
   row.innerHTML=`
     <td class="editable-date">${d.rechnungsdatum||'—'}</td>
     <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-      <a href="/api/pdf/${encodeURIComponent(pdfName)}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:500">${pdfName||'—'}</a>
+      <a href="/api/doc-pdf/${d.id||''}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:500">${pdfName||'—'}</a>
     </td>
     <td class="editable-cat"><span class="cat-tag">${catLabel||'—'}</span></td>
     <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(d.absender||'—').slice(0,30)}</td>
@@ -6906,7 +6936,7 @@ async function selectDoc(doc) {
   document.getElementById('right-content').style.display = 'flex';
   document.getElementById('dh-name').textContent = doc.dateiname;
   const pdfName = doc.anlagen_dateiname || doc.dateiname;
-  document.getElementById('dh-pdf-link').href = '/api/pdf/' + encodeURIComponent(pdfName);
+  document.getElementById('dh-pdf-link').href = '/api/doc-pdf/' + doc.id;
   document.getElementById('dm-datum').textContent = doc.rechnungsdatum || '—';
   document.getElementById('dm-absender').textContent = doc.absender || '—';
   document.getElementById('dm-kategorie').textContent = doc.kategorie || 'Inbox';
@@ -10388,8 +10418,8 @@ async function loadDocs(){
       const dateCell = d.rechnungsdatum
         ? `<span class="editable-date" onclick="editDate(event,${d.id},'${esc(d.rechnungsdatum||'')}')" title="Klick: Datum ändern">${date}</span>`
         : '<span style="color:var(--muted);cursor:pointer" onclick="editDate(event,'+d.id+',\'\')" title="Datum setzen">–</span>';
-      const pdfLink = d.vault_pfad
-        ? `<a class="pdf-link" href="/api/vault-pdf?md=${encodeURIComponent(d.vault_pfad)}" target="_blank" rel="noopener">📄</a>`
+      const pdfLink = d.id
+        ? `<a class="pdf-link" href="/api/doc-pdf/${d.id}" target="_blank" rel="noopener">📄</a>`
         : '–';
       const detailBtn = `<button class="btn-detail" onclick='showDetail(${JSON.stringify(d).replace(/'/g,"&#39;")})' title="Details als JSON">🔍</button>`;
       return `<tr>
@@ -10850,8 +10880,8 @@ async function loadDocs(){
       const dateCell = d.rechnungsdatum
         ? `<span class="editable-date" onclick="editDate(event,${d.id},'${esc(d.rechnungsdatum||'')}')" title="Klick: Datum ändern">${date}</span>`
         : '<span style="color:var(--muted);cursor:pointer" onclick="editDate(event,'+d.id+',\'\')" title="Datum setzen">–</span>';
-      const pdfLink = d.vault_pfad
-        ? `<a class="pdf-link" href="/api/vault-pdf?md=${encodeURIComponent(d.vault_pfad)}" target="_blank" rel="noopener">📄</a>`
+      const pdfLink = d.id
+        ? `<a class="pdf-link" href="/api/doc-pdf/${d.id}" target="_blank" rel="noopener">📄</a>`
         : '–';
       const detailBtn = `<button class="btn-detail" onclick='showDetail(${JSON.stringify(d).replace(/'/g,"&#39;")})' title="Details als JSON">🔍</button>`;
       return `<tr>
@@ -14283,9 +14313,9 @@ _IBAN_RE          = re.compile(r"\b([A-Z]{2}\d{2}[A-Z0-9]{10,30})\b")
 # KFZ-Kennzeichen: DE (1-3 Buchstaben, 1-2 Buchstaben, 1-4 Ziffern) + IT (2 Buchstaben, 3 Ziffern, 2 Buchstaben)
 # Erfasst: "GY 243 ZF", "XB FS L4", "XA328YK", "BD837H", "GY-964-ZF", "TS MY 8888", "MB 930145"
 _KFZ_KENNZEICHEN_RE = re.compile(
-    r"\b([A-Z]{1,3}\s?[A-Z]{1,2}\s?\d{1,4}(?:\s?[A-Z]{1,2})?)\b"
+    r"\b(?:[A-Z]{1,3}\s?[A-Z]{1,2}\s?\d{1,4}(?:\s?[A-Z]{1,2})?)\b"
     r"|"
-    r"\b(Targa\s*:?\s*[A-Z0-9]{4,10})\b",
+    r"\b(?:Targa\s*:?\s*[A-Z0-9]{4,10})\b",
     re.IGNORECASE,
 )
 # VIN/Fahrgestellnummer: 17 Zeichen (keine I,O,Q), alphanumerisch
@@ -15439,6 +15469,10 @@ def _date_from_filename_prefix(stem: str) -> str | None:
     dd2, mm2, yyyy2 = s[:2], s[2:4], s[4:]
     if _valid_ymd(yyyy2, mm2, dd2):
         return f"{yyyy2}{mm2}{dd2}"  # umdrehen → YYYYMMDD
+    # Fallback: erste 4 Ziffern als Jahr verwenden
+    y4 = s[:4]
+    if 1990 <= int(y4) <= 2035:
+        return f"{y4}0101"  # Jahr + 1. Januar als Fallback
     return None
 
 
@@ -15459,6 +15493,8 @@ def build_clean_filename(result: dict, original_stem: str) -> str:
     Der Aufrufer (move_to_vault / process_file) erkennt dies und routed in die Inbox.
     Datums-Priorität: 1. LLM (rechnungsdatum) → 2. Dateiname-Prefix → 3. _NODATE_
     """
+    # Sicherheit: .pdf-Extension vom Stem entfernen (falls versehentlich voller Dateiname)
+    original_stem = re.sub(r'\.pdf$', '', original_stem, flags=re.IGNORECASE)
     datum = result.get("rechnungsdatum")  # "DD.MM.YYYY"
     absender = result.get("absender")
     type_label = result.get("type_label") or result.get("type_id") or ""
@@ -16271,7 +16307,7 @@ def rescan_archived_pdf(pdf_path: Path, language_filter: str | None = None):
                extracted={"vault_pfad": vault_pfad})
 
     sse_broadcast("doc_processed", {
-        "id":        None,
+        "id":        result.get("_dok_id"),
         "dateiname": pdf_path.name,
         "pdf_name":  pdf_path.name,
         "kategorie": category_id,
@@ -16413,6 +16449,25 @@ def _process_email_md(file_path: Path):
         counter += 1
 
     dest_md.write_text(full_content, encoding="utf-8")
+
+    # Email-Dokument in DB registrieren (damit es im Dashboard erscheint)
+    try:
+        vault_pfad = str(dest_md.relative_to(VAULT_ROOT))
+    except Exception:
+        vault_pfad = str(dest_md)
+    try:
+        with get_db() as con:
+            con.execute(
+                """INSERT OR IGNORE INTO dokumente
+                   (dateiname, rechnungsdatum, kategorie, absender, adressat,
+                    vault_pfad, konfidenz, beschreibung, source)
+                   VALUES (?, ?, ?, ?, ?, ?, 'hoch', ?, 'email')""",
+                (dest_md.name, datum_fmt, kategorie_id, absender, adressat,
+                 vault_pfad, beschreibung)
+            )
+    except Exception as e:
+        log.warning(f"Email-DB-Registrierung fehlgeschlagen: {e}")
+
     file_path.unlink()
     sidecar_path.unlink(missing_ok=True)
 
@@ -16453,6 +16508,13 @@ def process_file(file_path: Path):
         return
 
     _fn = file_path.name
+
+    # Crash-Recovery: Wenn die Datei nicht mehr existiert, wurde sie bereits
+    # von einem früheren Queue-Eintrag verarbeitet (Watchdog-Doppelevent).
+    if not file_path.exists():
+        log.info(f"Datei nicht mehr vorhanden (bereits verarbeitet): {_fn} — überspringe")
+        return
+
     log.info(f"Neue Datei: {_fn}")
     _step_emit(_fn, "started", "Verarbeitung gestartet", "done")
 
@@ -16466,9 +16528,13 @@ def process_file(file_path: Path):
 
     # Stabilitäts-Check nur für Watch-Mode (neu eintreffende Dateien).
     if not _batch_active() and not wait_for_file_stable(file_path):
-        log.warning(f"Datei nicht stabil: {_fn}")
-        tg_send(f"⚠️ Datei nicht stabil (Transfer abgebrochen?)\n<code>{_fn}</code>")
-        return
+        log.warning(f"Datei nicht stabil: {_fn} — erneuter Versuch in 30s")
+        time.sleep(30)
+        if not wait_for_file_stable(file_path):
+            log.error(f"Datei auch nach Retry nicht stabil: {_fn} — überspringe")
+            tg_send(f"⚠️ Datei nicht stabil (Transfer abgebrochen?)\n<code>{_fn}</code>")
+            return
+        log.info(f"Datei jetzt stabil: {_fn}")
 
     # ── Wilson-Sidecar-Bypass ──────────────────────────────────────────────────
     # Wenn Wilson das Dokument vorverarbeitet hat, liegt eine .meta.json neben dem PDF.
@@ -16886,6 +16952,19 @@ def process_file(file_path: Path):
         if result and result.get("category_id"):
             log.info(f"LLM-Retry erfolgreich fuer: {_fn}")
 
+    # Fallback: wenn LLM komplett ausgefallen ist (result=None), Default-Dict setzen
+    # Verhindert AttributeError in den Override-Checks und routet in Inbox
+    if not result:
+        result = {
+            "category_id": None, "type_id": None,
+            "absender": None, "adressat": None, "rechnungsdatum": None,
+            "konfidenz": "niedrig", "konfidenz_category": "niedrig",
+            "konfidenz_type": "niedrig", "konfidenz_absender": "niedrig",
+            "konfidenz_adressat": "niedrig", "konfidenz_datum": "niedrig",
+            "konfidenz_source": "llm_failed",
+        }
+        log.warning(f"LLM komplett ausgefallen fuer {_fn} — Fallback-Result (Inbox)")
+
     # Sprache im Result speichern (für Telegram-Ausgabe)
     if result:
         result["_lang"] = lang
@@ -17014,6 +17093,14 @@ def process_file(file_path: Path):
             f"Datei: <code>{_fn}</code>"
         )
         log.info(f"Klassifizierung fehlgeschlagen für: {_fn} — verschiebe in Inbox")
+
+        # save_to_db VOR move_to_vault (damit pdf_hash berechnet werden kann)
+        if not _batch_active():
+            try:
+                save_to_db(file_path, {"konfidenz": "niedrig"})
+            except Exception as e:
+                log.warning(f"Inbox-DB-Eintrag fehlgeschlagen für {_fn}: {e}")
+
         move_to_vault(file_path, temp_md, "", "", {})
 
         if _batch_active():
@@ -17021,13 +17108,6 @@ def process_file(file_path: Path):
             batch_result["_ocr_meta"] = _batch_ocr_meta
             batch_result["error"] = "Klassifizierung fehlgeschlagen"
             setattr(_batch_ctx, "last_result", batch_result)
-        else:
-            # Minimaler DB-Eintrag, damit Inbox-Docs im Review-Dashboard auftauchen.
-            # kategorie=NULL → vom /review-Filter als Inbox erkannt.
-            try:
-                save_to_db(file_path, {"konfidenz": "niedrig"})
-            except Exception as e:
-                log.warning(f"Inbox-DB-Eintrag fehlgeschlagen für {_fn}: {e}")
         return
 
     # Tier-Ableitung für Haustier-Dokumente (bidirektional):
@@ -17247,6 +17327,7 @@ def process_file(file_path: Path):
         _safe_pdf_name_from_vault_pfad(_vault_pfad, file_path.name) if _vault_pfad else file_path.name
     )
     sse_broadcast("doc_processed", {
+        "id":             result.get("_dok_id"),
         "dateiname":      file_path.name,
         "pdf_name":       _pdf_name,
         "rechnungsdatum": rechnungsdatum,
@@ -17283,6 +17364,9 @@ def queue_worker():
             import traceback
             log.error(f"Unerwarteter Fehler bei {item}: {e}\n{traceback.format_exc()}")
         finally:
+            # Dedup: Datei aus In-Progress-Set entfernen (Watchdog-Dedup)
+            if isinstance(item, Path):
+                _watchdog_processing.discard(item.name)
             file_queue.task_done()
 
 
@@ -17297,9 +17381,17 @@ class DocumentHandler(FileSystemEventHandler):
         if ".sync-conflict-" in path.name:
             log.debug(f"Syncthing-Konfliktdatei ignoriert: {path.name}")
             return
+
+        # Dedup: gleiche Datei nicht zweimal einreihen (Syncthing feuert
+        # on_created + on_moved für denselben Transfer)
+        key = path.name
+        if key in _watchdog_processing:
+            log.debug(f"Bereits in Queue: {path.name} — ignoriere Duplikat")
+            return
+        _watchdog_processing.add(key)
+
         if suffix == ".pdf":
             log.info(f"In Queue (PDF): {path.name}")
-            _step_emit(path.name, "started", "Verarbeitung gestartet", "done")
             file_queue.put(path)
         elif suffix == ".md":
             # Nur Email-MDs mit Sidecar (source=email) einreihen
@@ -18379,6 +18471,18 @@ def main():
                     log.info(f"Stale Sidecar gelöscht: {sc.name}")
                 except Exception:
                     pass
+
+    # GPU/LLM vorwärmen: erster Ollama-Call crasht oft auf iGPU (ROCm error).
+    # Ein Dummy-Request lädt das Modell stabil in den GPU-Speicher.
+    log.info("GPU/LLM Pre-Warm: Modell wird geladen...")
+    try:
+        requests.post(f"{OLLAMA_URL}/api/generate", json={
+            "model": OLLAMA_MODEL, "prompt": ".", "stream": False,
+            "options": {"num_predict": 1, "keep_alive": -1},
+        }, timeout=120)
+        log.info("GPU/LLM Pre-Warm: Modell bereit.")
+    except Exception as e:
+        log.warning(f"GPU/LLM Pre-Warm fehlgeschlagen (nicht kritisch): {e}")
 
     # Vorhandene PDFs und Email-MDs in WATCH_DIR (Root) verarbeiten
     for f in WATCH_DIR.glob("*.pdf"):

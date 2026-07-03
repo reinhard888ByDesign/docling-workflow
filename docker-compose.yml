@@ -79,6 +79,7 @@ services:
     ports:
       - "8765:8765"
     volumes:
+      - ./dispatcher/dispatcher.py:/app/dispatcher.py:ro  # Volume-Mount: kein Rebuild nötig
       - ./syncthing/data/input-dispatcher:/data/input-dispatcher
       - ./dispatcher-temp:/data/dispatcher-temp
       - ./dispatcher-config:/config
