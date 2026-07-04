@@ -90,6 +90,9 @@ VAULT_ROOT = Path(_vault_root) if _vault_root else None
 # LEISTUNGSABRECHNUNG_TYPES: type_ids die das LA-Telegram-Template (Rechnungsmatching) bekommen.
 # VERSICHERUNG_TYPES: type_ids die das Standard-Versicherungs-Template bekommen.
 LEISTUNGSABRECHNUNG_TYPES: set[str] = {"leistungsabrechnung"}
+_categories_cache: dict | None = None  # load_categories() Cache
+_categories_ts: float = 0
+
 VERSICHERUNG_TYPES: set[str] = {
     "versicherungsschein", "beitragsanpassung", "beitragsbescheinigung",
     "kostenuebernahme", "versicherungsbedingungen", "versicherungskorrespondenz",
@@ -460,6 +463,8 @@ def init_db():
                 reviewed_at         TEXT
             )
         """)
+    # WAL-Mode: erlaubt parallele Lese-/Schreibzugriffe (kein "database is locked")
+    con.execute("PRAGMA journal_mode=WAL")
     log.info(f"Datenbank initialisiert: {DB_FILE}")
 
 
@@ -1916,10 +1921,16 @@ def _normalize_category_id(category_id: str) -> str:
 
 
 def load_categories() -> dict:
-    global LEISTUNGSABRECHNUNG_TYPES, VERSICHERUNG_TYPES, BRANCHEN_REGELN
+    global LEISTUNGSABRECHNUNG_TYPES, VERSICHERUNG_TYPES, BRANCHEN_REGELN, _categories_cache, _categories_ts
     if not CONFIG_FILE.exists():
         log.warning(f"Config nicht gefunden: {CONFIG_FILE}")
         return {}
+    try:
+        mtime = CONFIG_FILE.stat().st_mtime
+    except OSError:
+        mtime = 0
+    if _categories_cache is not None and _categories_ts == mtime:
+        return _categories_cache  # Cache-Hit — kein Log
     with open(CONFIG_FILE, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     cats = data.get("categories", {})
@@ -1980,6 +1991,9 @@ def load_categories() -> dict:
         if missing:
             log.warning(f"Vault-Ordner fehlen: {missing} — betroffene Dokumente landen in 00 Inbox")
 
+    # Cache speichern (nur Log beim ersten Laden, nicht bei Cache-Hits)
+    _categories_cache = cats
+    _categories_ts = mtime
     return cats
 
 
@@ -2010,76 +2024,6 @@ _rescan_state: dict = {"active": False, "total": 0, "done": 0, "errors": 0, "cur
 _rescan_stop_requested: bool = False
 
 # ── Vault-Summarizer Steuerung ─────────────────────────────────────────────────
-_SUMMARIZER_PROGRESS = Path("/data/dispatcher-temp/vault_summarizer_progress.json")
-_SUMMARIZER_LOG      = Path("/data/dispatcher-temp/vault_summarizer.log")
-_SUMMARIZER_MODEL    = "qwen3:4b-instruct"
-_summarizer_proc: "subprocess.Popen | None" = None
-
-def _summarizer_pid() -> int | None:
-    """Gibt PID des laufenden vault_summarizer zurück, sonst None."""
-    global _summarizer_proc
-    if _summarizer_proc is not None and _summarizer_proc.poll() is None:
-        return _summarizer_proc.pid
-    _summarizer_proc = None
-    # Fallback: Prozess suchen der unabhängig gestartet wurde.
-    # Container-Minimal-Image hat kein pgrep/ps → /proc-Direktscan.
-    try:
-        for pid_str in os.listdir("/proc"):
-            if not pid_str.isdigit():
-                continue
-            try:
-                cmdline = open(f"/proc/{pid_str}/cmdline", "rb").read()
-                if b"vault_summarizer.py" in cmdline:
-                    return int(pid_str)
-            except (FileNotFoundError, ProcessLookupError, PermissionError):
-                continue
-        return None
-    except Exception:
-        return None
-
-def _summarizer_stop() -> None:
-    global _summarizer_proc
-    pid = _summarizer_pid()
-    if pid is not None:
-        try:
-            subprocess.run(["kill", str(pid)], check=True)
-        except Exception:
-            pass
-    _summarizer_proc = None
-    log.info(f"Vault-Summarizer gestoppt (PID {pid})")
-
-def _summarizer_status() -> dict:
-    """Liest Fortschritt + Prozessstatus des vault_summarizers."""
-    pid = _summarizer_pid()
-    running = pid is not None
-    result: dict = {
-        "label": "Vault Summarizer",
-        "status": "ok",  # idle = ok, kein Warn-Status
-        "running": running,
-        "pid": pid,
-    }
-    try:
-        if _SUMMARIZER_PROGRESS.exists():
-            data = json.loads(_SUMMARIZER_PROGRESS.read_text())
-            total = len(list(VAULT_ROOT.rglob("*.md"))) if VAULT_ROOT and VAULT_ROOT.exists() else len(data)
-            counts: dict[str, int] = {}
-            for v in data.values():
-                s = v.get("status", "unknown") if isinstance(v, dict) else str(v)
-                counts[s] = counts.get(s, 0) + 1
-            scanned = len(data)
-            result.update({
-                "scanned": scanned,
-                "total": total,
-                "done": counts.get("done", 0),
-                "errors": counts.get("error", 0),
-                "skipped": counts.get("skipped_short", 0) + counts.get("skipped_lang_uncertain", 0),
-                "pct": round(result["done"] * 100 / max(total, result["done"])) if max(total, result["done"]) > 0 else 0,
-            })
-            if result.get("errors", 0) > 0:
-                result["status"] = "warn"
-    except Exception:
-        pass
-    return result
 # ── Anlagen-Processor Steuerung ───────────────────────────────────────────────
 _ANLAGEN_PROGRESS = Path("/data/dispatcher-temp/anlagen_processor_progress.json")
 _ANLAGEN_LOG      = Path("/data/dispatcher-temp/anlagen_processor.log")
@@ -3305,14 +3249,6 @@ def _collect_health() -> dict:
     except Exception as e:
         services["syncthing_mac"] = {"label": "Mac Sync", "status": "error", "error": str(e)}
 
-    # 5 — Open WebUI
-    try:
-        r = requests.get("http://open-webui:8080/health", timeout=4)
-        services["open_webui"] = {
-            "label": "Open WebUI", "status": "ok" if r.status_code == 200 else "warn"
-        }
-    except Exception as e:
-        services["open_webui"] = {"label": "Open WebUI", "status": "error", "error": str(e)}
 
 
     # 7 — mcpo / enzyme-Bridge (Host-Port 11180)
@@ -3375,26 +3311,6 @@ def _collect_health() -> dict:
     except Exception as e:
         services["wilson_pi"] = {"label": f"Wilson / OpenClaw (Pi)", "status": "error", "error": str(e)}
 
-    # 9 — Molly Medikationsplan (Host-Port 8080)
-    _molly_hosts = ["host.docker.internal", "172.17.0.1", "192.168.86.195"]
-    for _h in _molly_hosts:
-        try:
-            r = requests.get(f"http://{_h}:8080/health", timeout=4)
-            if r.status_code == 200:
-                md = r.json()
-                services["molly"] = {
-                    "label": "Molly Medikation",
-                    "status": md.get("status", "ok"),
-                    "uptime_str": md.get("uptime_str", ""),
-                    "pid": md.get("pid", 0),
-                    "port": md.get("port", 8080),
-                }
-                break
-        except Exception:
-            continue
-    else:
-        services["molly"] = {"label": "Molly Medikation", "status": "error", "error": "Port 8080 nicht erreichbar"}
-
     # 9b — KV Dashboard (Port 8090)
     _kv_hosts = ["host.docker.internal", "172.17.0.1", "192.168.86.195"]
     _kv_ok = False
@@ -3417,8 +3333,6 @@ def _collect_health() -> dict:
         "stats": _kv_stats,
     }
 
-    # 10 — Vault Summarizer
-    services["vault_summarizer"] = _summarizer_status()
 
     # 11 — Anlagen-Processor
     services["anlagen_processor"] = _anlagen_status()
@@ -3944,12 +3858,6 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
     </a>
     <span class="farr">→</span>
 
-    <span class="fgroup-label">Suche via</span>
-    <a class="fstep" id="fstep-openwebui" href="#">
-      <span class="fdot" id="fdot-open_webui"></span>
-      <span class="fi">💬</span><span class="fl">Open WebUI</span><span class="fs">Chat + Suche</span>
-    </a>
-    <span class="farr">/</span>
     <span class="fstep" title="Claude Code CLI — nutzt enzyme MCP für Vault-Suche">
       <span class="fi">🤖</span><span class="fl">Claude Code</span><span class="fs">MCP CLI</span>
     </span>
@@ -4030,20 +3938,16 @@ const SVC = {
     desc: 'Herzstück der Pipeline. Überwacht den Eingangsordner, koordiniert OCR und Klassifikation, schreibt Ergebnis-MD in den Obsidian Vault und benachrichtigt via Telegram. Verwaltet Dokumenten-Datenbank und Konfidenz-Historie.' },
   enzyme:       { icon:'🧪', label:'enzyme MCP',        urlFn: ip => `enzyme`,
     desc: 'Semantische Suchschicht über den Obsidian Vault. Indexiert alle Vault-MD-Dateien als Katalysatoren und Entitäten, stellt Vault-Inhalte als MCP-Tools für Claude Code (CLI) und Open WebUI bereit. Ermöglicht natürlichsprachliche Suche über 1.000+ Dokumente.' },
-  open_webui:   { icon:'💬', label:'Open WebUI',        urlFn: ip => `http://${ip}:3000/`,
-    desc: 'Browser-Interface für Gespräche mit den lokalen Ollama-Modellen und dem Vault-Assistenten. Ermöglicht natürlichsprachliche Vault-Suche über den enzyme-MCP-Server.' },
-  molly:        { icon:'🐾', label:'Molly Medikation',  urlFn: ip => `http://${ip}:8080/`,
-    desc: 'Medikationsplan für Molly (Labrador, 11 J.). Zeigt Tagesdosen für Altadol, Deltacortene, Gabapentin und Tobradex. Mit Abhaken-Funktion und Erledigt-Tracking.' },
+
     kv_dashboard: { icon:'🏥', label:'KV Dashboard',      urlFn: ip => `http://${ip}:8090/`,
       desc: 'Dashboard für KV-Leistungsabrechnungen und Arztrechnungen (Gothaer/HUK). Extraktion, Matching und Auswertung aller medizinischen Belege.' },
-  vault_summarizer: { icon:'📝', label:'Vault Summarizer', urlFn: _ => null,
-    desc: 'Liest .md-Dateien im Vault, kürzt/fasst lange Notizen per Ollama zusammen, schreibt sie zurück.' },
+
   anlagen_processor: { icon:'📂', label:'Anlagen-Processor', urlFn: _ => null,
     desc: 'Scannt Anlagen/*.pdf auf PDFs ohne .md-Sidecar (oder mit „Anlagen/Unverarbeitet"-Markierung), führt OCR via Docling durch, klassifiziert per Ollama und verschiebt das PDF in den richtigen Vault-Ordner. Schreibt verarbeitete Dokumente in die Dispatcher-DB (Duplikat-Schutz).' },
 };
 
 // Card render order = same as flow
-const CARD_ORDER = ['wilson_pi','syncthing','syncthing_mac','docling_serve','ollama','dispatcher','enzyme','open_webui','molly','vault_summarizer','anlagen_processor'];
+const CARD_ORDER = ['wilson_pi','syncthing','syncthing_mac','docling_serve','ollama','dispatcher','enzyme','anlagen_processor'];
 
 let _hostIp = 'localhost';
 
@@ -4112,33 +4016,6 @@ function renderCard(key, svc) {
         <a href="${enzymeUrl}" target="_blank" style="font-size:12px;color:var(--accent);text-decoration:none;border:1px solid var(--border);padding:4px 10px;border-radius:6px">API-Docs ↗</a>
         <span id="enzyme-refresh-status" style="font-size:12px;color:var(--muted)"></span>
       </div>`;
-  } else if (key === 'vault_summarizer') {
-    const pct  = svc.pct ?? 0;
-    const done = svc.done ?? 0;
-    const sc   = svc.scanned ?? 0;
-    const tot  = svc.total ?? 0;
-    const err  = svc.errors ?? 0;
-    const running = svc.running ?? false;
-    body = `
-      <div style="margin-bottom:6px">
-        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:3px">
-          <span>${sc} / ${tot} gescannt</span><span>${pct}%</span>
-        </div>
-        <div style="background:var(--border);border-radius:4px;height:6px;overflow:hidden">
-          <div style="background:var(--accent);height:100%;width:${pct}%;transition:width .4s"></div>
-        </div>
-      </div>
-      <div style="display:flex;gap:16px;font-size:12px;margin-bottom:8px">
-        <span style="color:var(--ok)">✓ ${done} Summaries</span>
-        ${err > 0 ? `<span style="color:var(--err)">✗ ${err} Fehler</span>` : ''}
-        <span style="color:var(--muted)">PID: ${svc.pid ?? '—'}</span>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button onclick="summarizerAction('start')" ${running?'disabled':''} style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--ok);background:transparent;color:var(--ok);cursor:pointer;font-weight:600;opacity:${running?0.4:1}">▶ Start</button>
-        <button onclick="summarizerAction('stop')" ${!running?'disabled':''} style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--err);background:transparent;color:var(--err);cursor:pointer;font-weight:600;opacity:${!running?0.4:1}">■ Stop</button>
-      </div>
-      <div id="summarizer-action-status" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
-      <div style="font-size:11px;color:var(--muted);margin-top:10px;padding-top:8px;border-top:1px solid var(--border);line-height:1.5">Liest .md-Dateien im Vault, kürzt/fasst lange Notizen per Ollama zusammen, schreibt sie zurück.</div>`;
   } else if (key === 'anlagen_processor') {
     const pct     = svc.pct ?? 0;
     const done    = svc.done ?? 0;
@@ -4167,17 +4044,6 @@ function renderCard(key, svc) {
       </div>
       <div id="anlagen-action-status" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
       <div style="font-size:11px;color:var(--muted);margin-top:10px;padding-top:8px;border-top:1px solid var(--border);line-height:1.5">Scannt Anlagen/*.pdf auf PDFs ohne .md-Sidecar (oder mit „Anlagen/Unverarbeitet"-Markierung), führt OCR via Docling durch, klassifiziert per Ollama und verschiebt das PDF in den richtigen Vault-Ordner. Schreibt verarbeitete Dokumente in die Dispatcher-DB (Duplikat-Schutz).</div>`;
-  } else if (key === 'molly') {
-    const mollyUrl = SVC.molly.urlFn(_hostIp);
-    body = `
-      <div class="metric"><span class="metric-label">Uptime</span><span class="metric-value">${svc.uptime_str||'—'}</span></div>
-      <div class="metric"><span class="metric-label">PID</span><span class="metric-value" style="font-size:11px">${svc.pid||'—'}</span></div>
-      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
-        <a href="${mollyUrl}" target="_blank" style="font-size:12px;color:var(--accent);text-decoration:none;border:1px solid var(--border);padding:4px 10px;border-radius:6px">Öffnen ↗</a>
-        <button onclick="mollyAction('restart')" style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid #e8b830;background:transparent;color:#b08830;cursor:pointer;font-weight:600">⟳ Neustart</button>
-        <button onclick="mollyAction('kill')" style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--err);background:transparent;color:var(--err);cursor:pointer;font-weight:600">■ Stop</button>
-      </div>
-      <div id="molly-action-status" style="font-size:11px;color:var(--muted);margin-top:4px"></div>`;
   } else if (key === 'kv_dashboard') {
     const st = svc.stats || {};
     const kvUrl = SVC.kv_dashboard.urlFn(_hostIp);
@@ -4236,7 +4102,7 @@ async function loadData() {
     const svcs = data.services || {};
 
     // Update flow dots + dynamic links
-    ['dispatcher','docling_serve','ollama','syncthing','wilson_pi','enzyme','open_webui'].forEach(k => {
+    ['dispatcher','docling_serve','ollama','syncthing','wilson_pi','enzyme'].forEach(k => {
       const dot = document.getElementById('fdot-'+k);
       if (dot && svcs[k]) dot.className = 'fdot ' + (svcs[k].status||'');
     });
@@ -4244,8 +4110,6 @@ async function loadData() {
     setHref('fstep-syncthing',  SVC.syncthing.urlFn(_hostIp));
     setHref('fstep-ollama',     SVC.ollama.urlFn(_hostIp));
     setHref('fstep-enzyme',     'enzyme');
-    setHref('fstep-openwebui',  SVC.open_webui.urlFn(_hostIp));
-
     // KPI strip
     const disp = svcs.dispatcher || {};
     const enzy = svcs.enzyme || {};
@@ -4295,32 +4159,6 @@ async function triggerEnzymeRefresh() {
     if (st) st.textContent='Fehler';
     if (btn){btn.disabled=false;btn.textContent='⟳ Aktualisieren';}
   }
-}
-
-async function mollyAction(action) {
-  const st = document.getElementById('molly-action-status');
-  if (st) st.textContent = action==='restart' ? 'Neustart …' : 'Beenden …';
-  try {
-    const r = await fetch('/api/molly/' + action, {method:'POST'});
-    const d = await r.json();
-    if (st) st.textContent = d.msg || d.error || '';
-  } catch(e) {
-    if (st) st.textContent = 'Fehler: nicht erreichbar';
-  }
-  setTimeout(() => loadAll(), 3000);
-}
-
-async function summarizerAction(action) {
-  const st = document.getElementById('summarizer-action-status');
-  if (st) st.textContent = action==='start' ? 'Wird gestartet …' : 'Wird gestoppt …';
-  try {
-    const r = await fetch('/api/summarizer/' + action, {method:'POST'});
-    const d = await r.json();
-    if (st) st.textContent = d.ok ? (d.msg || (action==='start' ? `Gestartet (PID ${d.pid})` : 'Gestoppt')) : (d.error || 'Fehler');
-  } catch(e) {
-    if (st) st.textContent = 'Fehler: nicht erreichbar';
-  }
-  setTimeout(() => loadAll(), 2000);
 }
 
 async function anlagenAction(action) {
@@ -11919,24 +11757,6 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._json_response(_collect_health())
             return
 
-        # POST /api/molly/restart — Molly Medikationsplan neu starten
-        elif path == "/api/molly/restart":
-            try:
-                r = requests.post("http://host.docker.internal:8080/restart", timeout=5)
-                self._json_response({"ok": True, "msg": r.json().get("msg", "Neustart …")})
-            except Exception as e:
-                self._json_response({"ok": False, "error": str(e)}, status=500)
-            return
-
-        # POST /api/molly/kill   — Molly Medikationsplan beenden
-        elif path == "/api/molly/kill":
-            try:
-                r = requests.post("http://host.docker.internal:8080/kill", timeout=5)
-                self._json_response({"ok": True, "msg": r.json().get("msg", "Beendet …")})
-            except Exception as e:
-                self._json_response({"ok": False, "error": str(e)}, status=500)
-            return
-
         # GET /api/events — Server-Sent Events stream
         elif path == "/api/events":
             self.send_response(200)
@@ -13780,27 +13600,6 @@ class _ApiHandler(BaseHTTPRequestHandler):
             else:
                 threading.Thread(target=_run_wilson_update, daemon=True).start()
                 self._json_response({"ok": True, "msg": "Update gestartet."})
-            return
-
-        # POST /api/summarizer/start — Vault-Summarizer starten
-        elif path == "/api/summarizer/start":
-            global _summarizer_proc
-            import subprocess as _sp_sum
-            if _summarizer_pid() is not None:
-                self._json_response({"ok": False, "error": "Läuft bereits"}); return
-            log_fh = open(_SUMMARIZER_LOG, "a")
-            _summarizer_proc = _sp_sum.Popen(
-                ["python3", "-u", "/data/dispatcher-temp/vault_summarizer.py",
-                 "--run", "--model", _SUMMARIZER_MODEL],
-                stdout=log_fh, stderr=log_fh, start_new_session=True,
-            )
-            log.info(f"Vault-Summarizer gestartet (PID {_summarizer_proc.pid})")
-            self._json_response({"ok": True, "pid": _summarizer_proc.pid})
-            return
-
-        # POST /api/summarizer/stop — Vault-Summarizer beenden
-        elif path == "/api/summarizer/stop":
-            _summarizer_stop(); self._json_response({"ok": True, "msg": "Gestoppt"})
             return
 
         # POST /api/anlagen/start — Anlagen-Processor starten
@@ -15705,25 +15504,6 @@ def move_to_vault(file_path: Path, temp_md: Path, category_id: str, type_id: str
 
     _write_vault_md(dest_pdf, dest_md, vault_pfad, temp_md, result, category_id, type_id, file_path.name)
 
-    # Summarizer Auto-Trigger: startet vault_summarizer.py für das neue MD im Hintergrund
-    _trigger_summarizer(dest_md)
-
-
-def _trigger_summarizer(md_path: Path):
-    """Startet den Vault Summarizer für eine einzelne .md-Datei im Hintergrund."""
-    summarizer_script = Path(__file__).parent / "vault_summarizer.py"
-    if not summarizer_script.exists():
-        log.debug(f"Summarizer-Script nicht gefunden: {summarizer_script}")
-        return
-    try:
-        subprocess.Popen(
-            [sys.executable, str(summarizer_script), "--test", str(md_path)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        log.info(f"Summarizer Auto-Trigger: {md_path.name}")
-    except Exception as e:
-        log.warning(f"Summarizer Auto-Trigger fehlgeschlagen: {e}")
 
 
 def _write_vault_md(pdf_dest: Path, dest_md: Path, vault_pfad: str,
@@ -15756,19 +15536,11 @@ def _write_vault_md(pdf_dest: Path, dest_md: Path, vault_pfad: str,
         else:
             body_content = ocr_content
 
-        # Summarizer-Placeholder für automatische Nachbearbeitung
-        # (entfaellt, wenn bereits eine Pipeline-Summary vorhanden ist)
-        if pipeline_summary.get("title") or pipeline_summary.get("summary"):
-            summarizer_placeholder = ""
-        else:
-            summarizer_placeholder = "\n<!-- SUMMARIZER_PLACEHOLDER -->\n"
-
         full_body = (
             frontmatter
             + pdf_link_line
             + summary_block
             + body_content
-            + summarizer_placeholder
         )
         temp_md.write_text(full_body, encoding="utf-8")
     except Exception as e:
