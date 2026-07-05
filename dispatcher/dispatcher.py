@@ -607,11 +607,12 @@ def save_to_db(file_path: Path, result: dict) -> list[dict]:
             )
             return []
 
-        # 1. Dokument speichern
+        # 1. Dokument speichern (erstellt_am via Python, nicht SQLite — TZ-sicher)
+        now_local = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cur = con.execute(
             """INSERT INTO dokumente
-               (dateiname, pdf_hash, rechnungsdatum, kategorie, typ, absender, adressat, konfidenz, konfidenz_source, beschreibung, summary_de, vault_kategorie, vault_typ, source)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (dateiname, pdf_hash, rechnungsdatum, kategorie, typ, absender, adressat, konfidenz, konfidenz_source, beschreibung, summary_de, vault_kategorie, vault_typ, source, erstellt_am)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 file_path.name,
                 pdf_hash,
@@ -627,6 +628,7 @@ def save_to_db(file_path: Path, result: dict) -> list[dict]:
                 category_id,
                 type_id,
                 result.get("source", ""),
+                now_local,
             )
         )
         dok_id = cur.lastrowid
@@ -3781,9 +3783,7 @@ a.kpi:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(79,70,229,.12)
   <h1>Docling Workflow</h1>
   <nav>
     <a href="pipeline" class="hl" id="nav-pipeline">⚡ Pipeline <span id="nav-queue-badge" style="display:none;background:var(--warn);color:#fff;border-radius:999px;padding:1px 7px;font-size:10px;font-weight:700;margin-left:4px">0</span></a>
-    <a href="cache" target="_blank" rel="noopener">🔍 Cache</a>
-    <a href="batch" target="_blank" rel="noopener">🧰 Batch</a>
-    <a href="office" target="_blank" rel="noopener">📊 Office</a>
+    <a href="cache" target="_blank" rel="noopener">🔍 Cache</a>    <a href="office" target="_blank" rel="noopener">📊 Office</a>
     <a href="wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
     <a href="frontmatter" target="_blank" rel="noopener">🏷️ Frontmatter</a>
@@ -7914,13 +7914,9 @@ nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
 <header>
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
   <h1>Docling Workflow</h1>
-  <nav>
-    <a href="/pipeline" target="_blank" rel="noopener">⚡ Pipeline</a>
-    <a href="/review" target="_blank" rel="noopener">📋 Review</a>
+  <nav>    <a href="/review" target="_blank" rel="noopener">📋 Review</a>
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
-    <a href="/cache" class="hl">🔍 Cache</a>
-    <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
-    <a href="/office" target="_blank" rel="noopener">📊 Office</a>
+    <a href="/cache" class="hl">🔍 Cache</a>    <a href="/office" target="_blank" rel="noopener">📊 Office</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
     <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
@@ -8302,13 +8298,9 @@ table.items tr.item-error td.err-cell{color:var(--err)}
 <header>
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
   <h1>Docling Workflow</h1>
-  <nav>
-    <a href="/pipeline" target="_blank" rel="noopener">⚡ Pipeline</a>
-    <a href="/review" target="_blank" rel="noopener">📋 Review</a>
+  <nav>    <a href="/review" target="_blank" rel="noopener">📋 Review</a>
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
-    <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
-    <a href="/batch" class="hl">🧰 Batch</a>
-    <a href="/office" target="_blank" rel="noopener">📊 Office</a>
+    <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>    <a href="/office" target="_blank" rel="noopener">📊 Office</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
     <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
@@ -8666,13 +8658,9 @@ th{font-weight:600;color:var(--muted);font-size:11px;text-transform:uppercase}
 <header>
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>
   <h1>Docling Workflow</h1>
-  <nav>
-    <a href="/pipeline" target="_blank" rel="noopener">⚡ Pipeline</a>
-    <a href="/review" target="_blank" rel="noopener">📋 Review</a>
+  <nav>    <a href="/review" target="_blank" rel="noopener">📋 Review</a>
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
-    <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
-    <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
-    <a href="/office" class="hl">📊 Office</a>
+    <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>    <a href="/office" class="hl">📊 Office</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
     <a href="/duplikate" target="_blank" rel="noopener">&#127366; Duplikate</a>
@@ -8921,13 +8909,9 @@ button:disabled{opacity:.4;cursor:not-allowed}
 <header>
   <h1>&#127366; Duplikate</h1>
   <nav style="display:flex;gap:5px;flex-wrap:wrap">
-    <a href="/">⊞ Dashboard</a>
-    <a href="/pipeline">⚡ Pipeline</a>
-    <a href="/review">📋 Review</a>
+    <a href="/">⊞ Dashboard</a>    <a href="/review">📋 Review</a>
     <a href="/vault">📁 Vault</a>
-    <a href="/cache">🔍 Cache</a>
-    <a href="/batch">🧰 Batch</a>
-    <a href="/office">📊 Office</a>
+    <a href="/cache">🔍 Cache</a>    <a href="/office">📊 Office</a>
     <a href="/wilson">🥧 Wilson</a>
     <a href="/adressbuch">📇 Adressbuch</a>
     <a href="/frontmatter">🏷️ Frontmatter</a>
@@ -9330,13 +9314,9 @@ pre{background:#0f1117;border:1px solid var(--border);border-radius:6px;padding:
 <header>
   <h1>🏷️ Frontmatter</h1>
   <nav style="display:flex;gap:5px;flex-wrap:wrap">
-    <a href="/">⊞ Dashboard</a>
-    <a href="/pipeline">⚡ Pipeline</a>
-    <a href="/review">📋 Review</a>
+    <a href="/">⊞ Dashboard</a>    <a href="/review">📋 Review</a>
     <a href="/vault">📁 Vault</a>
-    <a href="/cache">🔍 Cache</a>
-    <a href="/batch">🧰 Batch</a>
-    <a href="/office">📊 Office</a>
+    <a href="/cache">🔍 Cache</a>    <a href="/office">📊 Office</a>
     <a href="/wilson">🥧 Wilson</a>
     <a href="/adressbuch">📇 Adressbuch</a>
     <a href="/duplikate">&#127366; Duplikate</a>
@@ -9589,9 +9569,7 @@ tr.italia td{background:#fffef0}
 <header>
   <h1>📇 Absender-DB</h1>
   <nav>
-    <a href="/">🏠 Dashboard</a>
-    <a href="/pipeline">⚡ Pipeline</a>
-    <a href="/absender" class="hl">📇 Absender</a>
+    <a href="/">🏠 Dashboard</a>    <a href="/absender" class="hl">📇 Absender</a>
   </nav>
   <span class="count" id="count"></span>
 </header>
@@ -10105,13 +10083,9 @@ table.docs tr:hover td{background:#fafbfc}
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
   <h1>Dispatcher-DB</h1>
   <nav>
-    <a href="/">⊞ Dashboard</a>
-    <a href="/pipeline" target="_blank" rel="noopener">⚡ Pipeline</a>
-    <a href="/review" target="_blank" rel="noopener">📋 Review</a>
+    <a href="/">⊞ Dashboard</a>    <a href="/review" target="_blank" rel="noopener">📋 Review</a>
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
-    <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
-    <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
-    <a href="/office" target="_blank" rel="noopener">📊 Office</a>
+    <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>    <a href="/office" target="_blank" rel="noopener">📊 Office</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
     <a href="/db" class="hl">🗄️ DB</a>
@@ -10566,13 +10540,9 @@ table.docs tr:hover td{background:#fafbfc}
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
   <h1>Dispatcher-DB</h1>
   <nav>
-    <a href="/">⊞ Dashboard</a>
-    <a href="/pipeline" target="_blank" rel="noopener">⚡ Pipeline</a>
-    <a href="/review" target="_blank" rel="noopener">📋 Review</a>
+    <a href="/">⊞ Dashboard</a>    <a href="/review" target="_blank" rel="noopener">📋 Review</a>
     <a href="/vault" target="_blank" rel="noopener">📁 Vault</a>
-    <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>
-    <a href="/batch" target="_blank" rel="noopener">🧰 Batch</a>
-    <a href="/office" target="_blank" rel="noopener">📊 Office</a>
+    <a href="/cache" target="_blank" rel="noopener">🔍 Cache</a>    <a href="/office" target="_blank" rel="noopener">📊 Office</a>
     <a href="/enex" target="_blank" rel="noopener">🐘 ENEX</a>
     <a href="/wilson" target="_blank" rel="noopener">🥧 Wilson</a>
     <a href="/adressbuch" target="_blank" rel="noopener">📇 Adressbuch</a>
@@ -14112,9 +14082,21 @@ _IBAN_RE          = re.compile(r"\b([A-Z]{2}\d{2}[A-Z0-9]{10,30})\b")
 # KFZ-Kennzeichen: DE (1-3 Buchstaben, 1-2 Buchstaben, 1-4 Ziffern) + IT (2 Buchstaben, 3 Ziffern, 2 Buchstaben)
 # Erfasst: "GY 243 ZF", "XB FS L4", "XA328YK", "BD837H", "GY-964-ZF", "TS MY 8888", "MB 930145"
 _KFZ_KENNZEICHEN_RE = re.compile(
-    r"\b(?:[A-Z]{1,3}\s?[A-Z]{1,2}\s?\d{1,4}(?:\s?[A-Z]{1,2})?)\b"
-    r"|"
-    r"\b(?:Targa\s*:?\s*[A-Z0-9]{4,10})\b",
+    r"\b(?:"
+    r"gy\s*243\s*zf|"
+    r"ts[-\s]?my\s*8888|"
+    r"xb\s*fs\s*l4|"
+    r"fr[-\s]?y\s*1544|"
+    r"xa\s*328\s*yk|"
+    r"ts[-\s]?qz\s*566|"
+    r"bd\s*837\s*h|"
+    r"carraro\s*4400\s*hst|"
+    r"gy\s*9[46]4\s*zf|"
+    r"mb\s*930145|"
+    r"mb\s*661232|"
+    r"ts[-\s]?rj\s*801|"
+    r"ts[-\s]?rj\s*8888"
+    r")\b",
     re.IGNORECASE,
 )
 # VIN/Fahrgestellnummer: 17 Zeichen (keine I,O,Q), alphanumerisch
@@ -15620,7 +15602,13 @@ def apply_keyword_rules(result: dict, text: str, categories: dict) -> dict:
         return result  # LLM war schon korrekt und sicher
 
     result["category_id"] = cat_id
+    result["category_label"] = categories[cat_id].get("label", cat_id)
     result["type_id"] = type_id
+    if type_id and cat_id in categories:
+        for t in categories[cat_id].get("types", []):
+            if t.get("id") == type_id:
+                result["type_label"] = t.get("label", type_id)
+                break
     result["konfidenz_category"] = "hoch"
     result["konfidenz_keyword"] = "hoch"
     log.info(
