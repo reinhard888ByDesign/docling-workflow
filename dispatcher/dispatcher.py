@@ -463,6 +463,21 @@ def init_db():
                 reviewed_at         TEXT
             )
         """)
+        # Skill-Extraktion: Trackt Start/Ende/Status jedes Skill-Analyze-Laufs
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS skill_extractions (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill           TEXT NOT NULL,
+                dok_id          INTEGER REFERENCES dokumente(id),
+                dateiname       TEXT,
+                status          TEXT DEFAULT 'running',
+                started_at      TEXT DEFAULT (datetime('now','localtime')),
+                finished_at     TEXT,
+                duration_ms     INTEGER,
+                result_json     TEXT,
+                error           TEXT
+            )
+        """)
     # WAL-Mode: erlaubt parallele Lese-/Schreibzugriffe (kein "database is locked")
     con.execute("PRAGMA journal_mode=WAL")
     log.info(f"Datenbank initialisiert: {DB_FILE}")
@@ -1602,8 +1617,21 @@ def _call_skill_analyze(skill_name: str, file_path: Path, beschreibung: str = ""
     ]
 
     def _run_and_update() -> None:
+        t0 = time.monotonic()
+        tracking_id = None
+        try:
+            # Tracking: INSERT vor Start
+            with get_db() as con:
+                cur = con.execute(
+                    "INSERT INTO skill_extractions (skill, dateiname, status) VALUES (?, ?, 'running')",
+                    (skill_name, file_path.name)
+                )
+                tracking_id = cur.lastrowid
+        except Exception as e:
+            log.debug(f"Skill-Tracking INSERT: {e}")
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            dur_ms = int((time.monotonic() - t0) * 1000)
             if result.returncode == 0:
                 # Skill erfolgreich → dispatcher.db updaten
                 _update_dispatcher_after_skill(
@@ -1623,6 +1651,16 @@ def _call_skill_analyze(skill_name: str, file_path: Path, beschreibung: str = ""
             log.warning(f"Skill {skill_name} Timeout: {file_path.name}")
         except Exception as e:
             log.warning(f"Skill {skill_name} fehlgeschlagen: {e}")
+        dur_ms = int((time.monotonic() - t0) * 1000)
+        if tracking_id:
+            try:
+                with get_db() as con:
+                    con.execute(
+                        "UPDATE skill_extractions SET status=?, finished_at=datetime('now','localtime'), duration_ms=? WHERE id=?",
+                        ("done", dur_ms, tracking_id)
+                    )
+            except Exception:
+                pass
 
     try:
         threading.Thread(
@@ -9977,6 +10015,69 @@ function j(v){return v?JSON.stringify(v):'—'}
 </html>
 """
 
+_PIPELINE_HISTORY_HTML = r"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pipeline History</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--border:#dde1ea;--text:#1a1d2e;--muted:#6b7280;--accent:#4f46e5;--ok:#059669;--warn:#d97706;--err:#dc2626}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:13px}
+header{display:flex;align-items:center;gap:12px;padding:10px 18px;border-bottom:1px solid var(--border);background:var(--card);position:sticky;top:0;z-index:10}
+header h1{font-size:15px;font-weight:700;color:var(--accent)}
+nav a{font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:5px;text-decoration:none;color:var(--muted);font-weight:600;margin-left:4px}
+nav a:hover,nav a.hl{border-color:var(--accent);color:var(--accent)}
+.main{max-width:100%;padding:12px 16px}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:11px}
+th{text-align:left;padding:6px 8px;font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;background:#fafbfc;border-bottom:2px solid var(--border);white-space:nowrap}
+td{padding:5px 8px;border-bottom:1px solid #f0f1f5;white-space:nowrap}
+tr:hover td{background:#f8f9ff}
+td.fn{max-width:250px;overflow:hidden;text-overflow:ellipsis}
+.badge{font-size:9px;padding:1px 6px;border-radius:999px;font-weight:600}
+.badge-ok{background:#dcfce7;color:var(--ok)}.badge-warn{background:#fef3c7;color:var(--warn)}.badge-err{background:#fee2e2;color:var(--err)}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.empty{text-align:center;padding:28px;font-size:12px;color:var(--muted)}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:s .6s linear infinite}@keyframes s{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>📋 Pipeline History</h1>
+  <span style="font-size:10px;color:var(--muted)">Letzte 50 Verarbeitungen</span>
+</header>
+<div class="main">
+  <table>
+    <thead><tr>
+      <th>Zeit</th><th>Dateiname</th><th>Kategorie</th><th>Typ</th><th>Absender</th><th>Adressat</th><th>Konfidenz</th><th>Vault-Pfad</th>
+    </tr></thead>
+    <tbody id="tbody"><tr><td colspan="8" class="empty"><span class="spin"></span> Laden…</td></tr></tbody>
+  </table>
+</div>
+<script>
+async function load(){
+  try{
+    const r=await fetch('/api/pipeline/history');
+    const d=await r.json();
+    if(!Array.isArray(d.history)||!d.history.length){
+      document.getElementById('tbody').innerHTML='<tr><td colspan="8" class="empty">Keine Einträge</td></tr>';return}
+    document.getElementById('tbody').innerHTML=d.history.map(r=>{
+      const ts=(r.erstellt_am||'').replace('T',' ').slice(0,16);
+      const kat=r.kategorie||'';const typ=r.typ||'';const konf=r.konfidenz||'';
+      const cls=konf==='hoch'?'ok':konf==='niedrig'?'err':'warn';
+      const pf=r.vault_pfad||'';
+      return '<tr><td>'+esc(ts)+'</td><td class="fn" title="'+esc(r.dateiname||'')+'">'+esc((r.dateiname||'').slice(0,50))+'</td><td>'+esc(kat)+'</td><td>'+esc(typ)+'</td><td>'+esc((r.absender||'').slice(0,50))+'</td><td>'+esc(r.adressat||'')+'</td><td><span class="badge badge-'+cls+'">'+esc(konf)+'</span></td><td>'+(pf?'<a href=\"/api/vault-pdf?md='+encodeURIComponent(pf)+'\" target=\"_blank\" rel=\"noopener\">📄</a> '+esc(pf.slice(0,40)):'—')+'</td></tr>';
+    }).join('');
+  }catch(e){document.getElementById('tbody').innerHTML='<tr><td colspan="8" class="empty" style="color:var(--err)">'+esc(e.message)+'</td></tr>'}
+}
+function esc(s){return String(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'})[c])}
+load();
+</script>
+</body>
+</html>
+"""
+
+
 _DB_HTML = r"""<!DOCTYPE html>
 <html lang="de">
 <head>
@@ -11385,6 +11486,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._html_response(_ENZYME_HTML)
             return
 
+        elif path == "/pipeline/history":
+            self._html_response(_PIPELINE_HISTORY_HTML)
+            return
+
         elif path == "/absender":
             self._html_response(_ABSENDER_HTML)
             return
@@ -11875,6 +11980,21 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 self._json_response({"error": str(e)}, 500)
             return
 
+
+        # GET /api/pipeline/history — letzte Verarbeitungen (Pipeline-History)
+        elif path == "/api/pipeline/history":
+            try:
+                with get_db() as con:
+                    rows = con.execute("""
+                        SELECT dateiname, kategorie, typ, absender, adressat, konfidenz,
+                               vault_pfad, anlagen_dateiname, erstellt_am
+                        FROM dokumente WHERE dateiname IS NOT NULL
+                        ORDER BY id DESC LIMIT 50
+                    """).fetchall()
+                self._json_response({"history": [dict(r) for r in rows]})
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
 
         # GET /api/recent — letzte Dokumente (mit optionalen Filtern)
         elif path == "/api/recent":
@@ -14137,8 +14257,21 @@ def extract_identifiers(md_content: str) -> dict:
         kfz = _uniq(_KFZ_KENNZEICHEN_RE.findall(md_content))
         # normalisieren: Whitespace entfernen
         kfz = [re.sub(r'\s+', '', k).upper() for k in kfz]
-        # VIN/Fahrgestellnummer
-        vin = _uniq(_VIN_RE.findall(md_content))
+        # VIN/Fahrgestellnummer — nur bei KFZ-Kontext (verhindert False Positives)
+        vin_raw = _uniq(_VIN_RE.findall(md_content))
+        vin = []
+        if vin_raw:
+            _kfz_context = re.search(
+                r'\b(?:fahrzeug|kfz|auto|automobil|targa|polizza|assicurazione|'
+                r'fahrgestell|chassis|vin\s*nummer|motorizzazione|immatricolazione|'
+                r'carta di circolazione|libretto|kennzeichen|zulassung|werkstatt|'
+                r'reifen|inspektion|tüv|tuv|bremsen|abgase)\b',
+                md_content, re.IGNORECASE
+            )
+            if _kfz_context:
+                vin = vin_raw
+            else:
+                log.debug(f"VIN ignoriert (kein KFZ-Kontext): {vin_raw}")
 
         # Firmen-Namen aus absender.yaml im Text finden
         firmen = []
