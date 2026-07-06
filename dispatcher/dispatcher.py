@@ -14221,6 +14221,12 @@ _KFZ_KENNZEICHEN_RE = re.compile(
 )
 # VIN/Fahrgestellnummer: 17 Zeichen (keine I,O,Q), alphanumerisch
 _VIN_RE = re.compile(r"\b([A-HJ-NPR-Z0-9]{17})\b")
+# E-Mail-Adressen
+_EMAIL_RE = re.compile(r"\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b")
+# Domain aus E-Mail extrahieren
+_DOMAIN_FROM_EMAIL_RE = re.compile(r"@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b")
+# Telefonnummern (DE/IT Format)
+_TEL_RE = re.compile(r"\b(?:\+\d{1,3}[-\s]?)?\(?\d{2,4}\)?[-\s]?\d{2,4}[-\s]?\d{2,8}\b")
 
 def extract_identifiers(md_content: str) -> dict:
     """Regex-basierte Extraktion strukturierter Identifier aus dem Dokumententext.
@@ -14286,6 +14292,11 @@ def extract_identifiers(md_content: str) -> dict:
         except Exception:
             pass
 
+        # E-Mail-Adressen + Domains + Telefonnummern
+        emails = _uniq(_EMAIL_RE.findall(md_content))
+        domains = _uniq(_DOMAIN_FROM_EMAIL_RE.findall(md_content))
+        telefon = _uniq(_TEL_RE.findall(md_content))
+
         return {
             "cod_fiscale_person": cod_fiscale,
             "part_iva_firma":     part_iva,
@@ -14294,11 +14305,15 @@ def extract_identifiers(md_content: str) -> dict:
             "kfz_kennzeichen":    kfz,
             "vin":                vin,
             "firmen_namen":       firmen,
+            "emails":             emails,
+            "domains":            domains,
+            "telefon":            telefon,
         }
     except Exception as e:
         log.warning(f"Identifier-Extraktion fehlgeschlagen: {e}")
         return {"cod_fiscale_person": [], "part_iva_firma": [], "ust_id_de": [], "iban": [],
-                "kfz_kennzeichen": [], "vin": [], "firmen_namen": []}
+                "kfz_kennzeichen": [], "vin": [], "firmen_namen": [],
+                "emails": [], "domains": [], "telefon": []}
 
 
 def _load_absender_list() -> list:
@@ -14603,6 +14618,37 @@ def resolve_absender(identifiers: dict, header: dict | None) -> dict | None:
             for entry in absender_list:
                 if entry.get("id") == fmatch.get("absender_id"):
                     return _mk_result(entry, f"firma_text:{fmatch['name']}")
+
+    # 6. Domain-Matching: E-Mail-Domain → Absender erkennen
+    for domain in identifiers.get("domains", []):
+        domain_lower = domain.lower()
+        # Bekannte Domains → Kategorie-Hint
+        domain_hints = {
+            "888bydesign.com": ("business_888bydesign", "888 by Design GmbH"),
+            "comdirect.de": ("finanzen", "comdirect"),
+            "ing.de": ("finanzen", "ING DiBa"),
+            "onvista.de": ("finanzen", "onvista bank"),
+            "allianz.de": ("fahrzeuge", "Allianz"),
+            "zurich.it": ("fahrzeuge", "Zurich Insurance"),
+            "huk-coburg.de": ("krankenversicherung", "HUK-Coburg"),
+            "huk.de": ("krankenversicherung", "HUK-Coburg"),
+            "gothaer.de": ("krankenversicherung", "Gothaer"),
+            "barmenia.de": ("krankenversicherung", "Barmenia"),
+            "eisentle.it": ("fahrzeuge", "Eisendle"),
+            "realemutua.it": ("fahrzeuge", "Reale Mutua"),
+        }
+        hint = domain_hints.get(domain_lower)
+        if hint:
+            return {"id": f"domain_{domain.replace('.','_')}", "name": hint[1],
+                    "kategorie_hint": hint[0], "typ_hint": None,
+                    "adressat_default": None, "land": None,
+                    "via": f"domain:{domain}"}
+        # Auch gegen absender.yaml Aliase prüfen
+        for entry in absender_list:
+            for alias in entry.get("aliases") or []:
+                alias_lower = alias.lower().replace(" ", "")
+                if domain_lower.replace(".com", "").replace(".de", "").replace(".it", "") in alias_lower:
+                    return _mk_result(entry, f"domain:{domain}")
 
     return None
 
@@ -16460,7 +16506,7 @@ def process_file(file_path: Path):
             log.warning(f"Sidecar parse-Fehler: {e} — falle auf normale Pipeline zurück")
             sidecar_data = None
 
-        if sidecar_data and sidecar_data.get("version") == "2.0":
+        if sidecar_data and sidecar_data.get("version") in ("2.0", "3.0"):
             dok = sidecar_data.get("dokument", {})
             verarb = sidecar_data.get("verarbeitung", {})
 
@@ -16480,14 +16526,27 @@ def process_file(file_path: Path):
             # Dateiname aus Sidecar als autoritativer Stem (ohne .pdf)
             force_stem = Path(dok.get("dateiname", file_path.name)).stem or file_path.stem
 
+            # Neue v3.0 Felder
+            type_id = dok.get("type_id") or None
+            type_label = None
+            if type_id and categories and kategorie_id in categories:
+                for t in categories[kategorie_id].get("types", []):
+                    if t.get("id") == type_id:
+                        type_label = t.get("label", type_id)
+                        break
+
             result_bypass = {
                 "absender":           absender,
                 "adressat":           adressat,
                 "rechnungsdatum":     rechnungsdatum,
                 "category_id":        kategorie_id,
                 "category_label":     category_label,
-                "type_id":            None,
-                "type_label":         None,
+                "rechnungsbetrag":    dok.get("rechnungsbetrag") or "",
+                "faelligkeitsdatum":  dok.get("faelligkeitsdatum") or "",
+                "category_id":        kategorie_id,
+                "category_label":     category_label,
+                "type_id":            type_id,
+                "type_label":         type_label,
                 "beschreibung":       beschreibung,
                 "konfidenz":          "hoch",
                 "konfidenz_category": "hoch",
