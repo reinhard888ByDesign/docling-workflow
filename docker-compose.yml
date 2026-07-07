@@ -50,6 +50,8 @@ services:
       - DOCLING_URL=http://docling-serve:5001
       - OLLAMA_URL=http://ollama:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3:4b-instruct}
+      - FALLBACK_MODEL=${FALLBACK_MODEL:-gemma4:e4b}
+      - FALLBACK_TIMEOUT=${FALLBACK_TIMEOUT:-600}
       - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-8192}
       - SUMMARIZE_MODEL=${SUMMARIZE_MODEL:-qwen3:4b-instruct}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}

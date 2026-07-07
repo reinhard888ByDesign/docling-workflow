@@ -62,7 +62,9 @@ DOCLING_URL    = os.environ.get("DOCLING_URL",          "http://docling-serve:50
 OLLAMA_URL     = os.environ.get("OLLAMA_URL",           "http://ollama:11434")
 OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL",         "qwen2.5:7b")
 OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX",   "8192"))
-OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT",   "300"))
+OLLAMA_TIMEOUT  = int(os.environ.get("OLLAMA_TIMEOUT",    "300"))
+FALLBACK_MODEL  = os.environ.get("FALLBACK_MODEL",  "gemma4:e4b")
+FALLBACK_TIMEOUT = int(os.environ.get("FALLBACK_TIMEOUT", "600"))
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT_ID",    "")
 API_PORT       = int(os.environ.get("API_PORT", "8765"))
@@ -15280,7 +15282,74 @@ Dokument:
         return parsed
     except Exception as e:
         log.warning(f"Ollama Klassifizierung fehlgeschlagen: {e}")
-        return None
+
+    # ── Fallback-Modell ──
+    if FALLBACK_MODEL and FALLBACK_MODEL != OLLAMA_MODEL:
+        log.info(
+            f"Fallback: versuche {FALLBACK_MODEL} "
+            f"(timeout={FALLBACK_TIMEOUT}s, Grund: {OLLAMA_MODEL} fehlgeschlagen)"
+        )
+        try:
+            t0 = time.time()
+            payload = {
+                "model": FALLBACK_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "keep_alive": "2h",
+                "options": {"temperature": 0.1, "num_ctx": OLLAMA_NUM_CTX},
+            }
+            r = requests.post(
+                f"{OLLAMA_URL}/api/generate", json=payload,
+                timeout=FALLBACK_TIMEOUT,
+            )
+            # GPU-Hang auch beim Fallback-Modell abfangen
+            if r.status_code == 500 and ("model runner" in r.text or "unexpected EOF" in r.text):
+                log.warning(f"Fallback {FALLBACK_MODEL} GPU-Crash — retry in 5s")
+                time.sleep(5)
+                r = requests.post(
+                    f"{OLLAMA_URL}/api/generate", json=payload,
+                    timeout=FALLBACK_TIMEOUT,
+                )
+            duration_ms = int((time.time() - t0) * 1000)
+            if not r.ok:
+                log.warning(f"Fallback {FALLBACK_MODEL} Fehler {r.status_code}: {r.text[:300]}")
+                return None
+            raw = r.json().get("response", "")
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if not match:
+                log.warning(f"Fallback {FALLBACK_MODEL}: Kein JSON in Antwort: {raw[:200]}")
+                return None
+            json_str = match.group()
+            json_str = _fix_llm_json(json_str)
+            parsed = None
+            try:
+                parsed = json.loads(json_str)
+            except json.JSONDecodeError:
+                try:
+                    repaired = repair_json(json_str, return_objects=True)
+                    if isinstance(repaired, dict):
+                        parsed = repaired
+                except Exception:
+                    pass
+            if parsed is None:
+                log.warning(f"Fallback {FALLBACK_MODEL}: JSON-Parse fehlgeschlagen: {repr(json_str[:200])}")
+                return None
+            parsed["_raw_response"] = raw[:4000]
+            parsed["_duration_ms"] = duration_ms
+            parsed["_model"] = FALLBACK_MODEL
+            if _debug:
+                parsed["_prompt"] = prompt
+                parsed["_context"] = OLLAMA_NUM_CTX
+                parsed["_endpoint"] = OLLAMA_URL
+            log.info(
+                f"Fallback {FALLBACK_MODEL} erfolgreich "
+                f"(duration={duration_ms}ms)"
+            )
+            return parsed
+        except Exception as e:
+            log.warning(f"Fallback {FALLBACK_MODEL} fehlgeschlagen: {e}")
+
+    return None
 
 _KONFIDENZ_RANK = {"hoch": 2, "mittel": 1, "niedrig": 0}
 _KONFIDENZ_FROM_RANK = {2: "hoch", 1: "mittel", 0: "niedrig"}
