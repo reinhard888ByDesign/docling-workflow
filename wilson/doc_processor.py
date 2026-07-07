@@ -819,6 +819,31 @@ def transfer_document(doc_id: int):
 
 # ── Telegram-Callback-Handler ──────────────────────────────────────────────────
 
+def _forward_to_dispatcher(query: dict):
+    """Leitet unbekannte Callbacks an den Ryzen-Dispatcher weiter (rvok:, cat:, etc.)."""
+    cb_id   = query["id"]
+    cb_data = query.get("data", "")
+    cb_msg  = query.get("message", {})
+    payload = {
+        "callback_id": cb_id,
+        "data":        cb_data,
+        "chat_id":     str(cb_msg.get("chat", {}).get("id", "")),
+        "msg_id":      cb_msg.get("message_id"),
+        "msg_text":    cb_msg.get("text", ""),
+    }
+    try:
+        r = requests.post(
+            f"{DISPATCHER_URL}/api/tg/callback",
+            json=payload, timeout=10,
+        )
+        if not r.ok:
+            log.warning(f"Dispatcher-Forward fehlgeschlagen ({r.status_code}): {cb_data[:80]}")
+        else:
+            log.info(f"Callback an Dispatcher forwarded: {cb_data[:80]}")
+    except Exception as e:
+        log.warning(f"Dispatcher-Forward Fehler: {e}")
+
+
 def handle_callback(query: dict):
     """Verarbeitet Inline-Keyboard-Callback-Queries."""
     cb_id = query["id"]
@@ -1260,6 +1285,11 @@ def handle_callback(query: dict):
             with get_db() as con:
                 con.execute("DELETE FROM email_senders WHERE id=?", (sender_id,))
             tg_answer_callback(cb_id, f"🗑️ {address} entfernt")
+
+        else:
+            # Unbekannte Callbacks an den Dispatcher forwarden (rvok:, rvcat:, rvadr:,
+            # rvskip:, ok:, cat:, sc:, st:, cancel:, adr_yes:, adr_no:)
+            _forward_to_dispatcher(query)
 
 
 def _update_sidecar_field(doc_id: int, field: str, value: str):

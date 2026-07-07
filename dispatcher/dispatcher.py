@@ -2627,80 +2627,84 @@ def tg_poll():
                                 tg_answer_callback(cb_id, f"❌ {e}")
 
                         elif cb_data.startswith("rvok:"):
-                            # Review bestätigen
+                            # Review bestätigen — SOFORT antworten, dann async verarbeiten
                             review_id = int(cb_data.split(":")[1])
-                            try:
-                                with get_db() as con:
-                                    row = con.execute(
-                                        "SELECT * FROM review_queue WHERE id = ? AND status = 'pending'",
-                                        (review_id,)
-                                    ).fetchone()
-                                if row:
-                                    final_cat = row["final_category"] or row["suggested_category"] or "archiv"
-                                    final_adr = row["final_adressat"] or row["suggested_adressat"] or "Reinhard"
-                                    tg_answer_callback(cb_id, "⏳ Verarbeite...")
-                                    success = _confirm_review(review_id, final_cat, final_adr)
-                                    if success:
-                                        tg_edit_message(
-                                            cb_chat, cb_msg_id,
-                                            cb_msg.get("text", "") + "\n\n✅ Bestätigt — in Vault verschoben",
-                                            reply_markup={"inline_keyboard": []}
-                                        )
-                                    else:
-                                        tg_edit_message(
-                                            cb_chat, cb_msg_id,
-                                            cb_msg.get("text", "") + "\n\n❌ Fehler bei Verarbeitung",
-                                            reply_markup={"inline_keyboard": []}
-                                        )
-                            except Exception as e:
-                                log.error(f"Review rvok Fehler: {e}")
-                                tg_answer_callback(cb_id, f"❌ {e}")
+                            tg_answer_callback(cb_id, "⏳ Verarbeite...")
+                            _cb_chat, _cb_msg_id, _cb_text = cb_chat, cb_msg_id, cb_msg.get("text", "")
+                            def _async_confirm():
+                                try:
+                                    with get_db() as con:
+                                        row = con.execute(
+                                            "SELECT * FROM review_queue WHERE id = ? AND status = 'pending'",
+                                            (review_id,)
+                                        ).fetchone()
+                                    if row:
+                                        final_cat = row["final_category"] or row["suggested_category"] or "archiv"
+                                        final_adr = row["final_adressat"] or row["suggested_adressat"] or "Reinhard"
+                                        success = _confirm_review(review_id, final_cat, final_adr)
+                                        if success:
+                                            tg_edit_message(
+                                                _cb_chat, _cb_msg_id,
+                                                _cb_text + "\n\n✅ Bestätigt — in Vault verschoben",
+                                                reply_markup={"inline_keyboard": []}
+                                            )
+                                        else:
+                                            tg_edit_message(
+                                                _cb_chat, _cb_msg_id,
+                                                _cb_text + "\n\n❌ Fehler bei Verarbeitung",
+                                                reply_markup={"inline_keyboard": []}
+                                            )
+                                except Exception as e:
+                                    log.error(f"Review rvok Fehler: {e}")
+                            threading.Thread(target=_async_confirm, daemon=True,
+                                             name=f"review-confirm-{review_id}").start()
 
                         elif cb_data.startswith("rvskip:"):
-                            # Review überspringen
+                            # Review überspringen — SOFORT antworten
                             review_id = int(cb_data.split(":")[1])
                             tg_answer_callback(cb_id, "⏭️ Übersprungen")
-                            _skip_review(review_id)
                             tg_edit_message(
                                 cb_chat, cb_msg_id,
                                 cb_msg.get("text", "") + "\n\n⏭️ Übersprungen — nicht archiviert",
                                 reply_markup={"inline_keyboard": []}
                             )
+                            threading.Thread(target=_skip_review, args=(review_id,),
+                                             daemon=True, name=f"review-skip-{review_id}").start()
 
                         elif cb_data.startswith("adr_yes:"):
-                            # Adress-Review bestätigt → Adressat setzen + Lernregel speichern
+                            # Adress-Review bestätigt — SOFORT antworten, dann async verarbeiten
                             parts = cb_data.split(":")
                             fname = parts[1]; person = parts[2] if len(parts) > 2 else "?"
-                            try:
-                                with get_db() as con:
-                                    # 1. Adressat in DB updaten
-                                    con.execute(
-                                        "UPDATE dokumente SET adressat = ? WHERE dateiname = ?",
-                                        (person, fname)
-                                    )
-                                    # 2. Absender dieses Dokuments ermitteln
-                                    doc = con.execute(
-                                        "SELECT absender FROM dokumente WHERE dateiname = ?",
-                                        (fname,)
-                                    ).fetchone()
-                                    absender = doc["absender"] if doc and doc["absender"] else None
-                                    # 3. Lernregel: Absender → Adressat (für zukünftige Dokumente)
-                                    if absender:
+                            tg_answer_callback(cb_id, "⏳ Speichere...")
+                            _cb_chat2, _cb_msg_id2, _cb_text2 = cb_chat, cb_msg_id, cb_msg.get("text", "")
+                            def _async_adr_yes():
+                                try:
+                                    with get_db() as con:
                                         con.execute(
-                                            "INSERT OR IGNORE INTO lernregeln (typ, muster, category_id, beschreibung) VALUES (?, ?, ?, ?)",
-                                            ("adressat", absender.strip(), person,
-                                             f"Auto: Absender '{absender[:60]}' → Adressat {person}")
+                                            "UPDATE dokumente SET adressat = ? WHERE dateiname = ?",
+                                            (person, fname)
                                         )
-                                        log.info(f"Lernregel gespeichert: Absender '{absender}' → {person}")
-                                log.info(f"Adress-Review bestätigt: {fname} → {person}")
-                                tg_answer_callback(cb_id, f"✅ Adressat = {person}")
-                                extra = f"\n📌 Lernregel: Absender → {person}" if absender else ""
-                                tg_edit_message(cb_chat, cb_msg_id,
-                                    cb_msg.get("text","") + f"\n\n✅ Bestätigt: Adressat = {person}{extra}",
-                                    reply_markup={"inline_keyboard": []})
-                            except Exception as e:
-                                log.warning(f"adr_yes Fehler: {e}")
-                                tg_answer_callback(cb_id, "❌ Fehler")
+                                        doc = con.execute(
+                                            "SELECT absender FROM dokumente WHERE dateiname = ?",
+                                            (fname,)
+                                        ).fetchone()
+                                        absender = doc["absender"] if doc and doc["absender"] else None
+                                        if absender:
+                                            con.execute(
+                                                "INSERT OR IGNORE INTO lernregeln (typ, muster, category_id, beschreibung) VALUES (?, ?, ?, ?)",
+                                                ("adressat", absender.strip(), person,
+                                                 f"Auto: Absender '{absender[:60]}' → Adressat {person}")
+                                            )
+                                            log.info(f"Lernregel gespeichert: Absender '{absender}' → {person}")
+                                    log.info(f"Adress-Review bestätigt: {fname} → {person}")
+                                    extra = f"\n📌 Lernregel: Absender → {person}" if absender else ""
+                                    tg_edit_message(_cb_chat2, _cb_msg_id2,
+                                        f"{_cb_text2}\n\n✅ Bestätigt: Adressat = {person}{extra}",
+                                        reply_markup={"inline_keyboard": []})
+                                except Exception as e:
+                                    log.warning(f"adr_yes Fehler: {e}")
+                            threading.Thread(target=_async_adr_yes, daemon=True,
+                                             name=f"adr-yes-{fname[:30]}").start()
 
                         elif cb_data.startswith("adr_no:"):
                             # Adress-Review abgelehnt
@@ -13251,30 +13255,38 @@ class _ApiHandler(BaseHTTPRequestHandler):
 
                 elif cb_data.startswith("rvok:"):
                     review_id = int(cb_data.split(":")[1])
-                    with get_db() as con:
-                        row = con.execute(
-                            "SELECT * FROM review_queue WHERE id = ? AND status = 'pending'",
-                            (review_id,)).fetchone()
-                    if row:
-                        fc = row["final_category"] or row["suggested_category"] or "archiv"
-                        fa = row["final_adressat"] or row["suggested_adressat"] or "Reinhard"
-                        tg_answer_callback(cb_id, "⏳ Verarbeite...")
-                        if _confirm_review(review_id, fc, fa):
-                            tg_edit_message(cb_chat, cb_msg_id,
-                                cb_msg_text + "\n\n✅ Bestätigt — in Vault verschoben",
-                                reply_markup={"inline_keyboard": []})
-                        else:
-                            tg_edit_message(cb_chat, cb_msg_id,
-                                cb_msg_text + "\n\n❌ Fehler bei Verarbeitung",
-                                reply_markup={"inline_keyboard": []})
+                    tg_answer_callback(cb_id, "⏳ Verarbeite...")
+                    _cb_chat3, _cb_msg_id3, _cb_text3 = cb_chat, cb_msg_id, cb_msg_text
+                    def _async_api_confirm():
+                        try:
+                            with get_db() as con:
+                                row = con.execute(
+                                    "SELECT * FROM review_queue WHERE id = ? AND status = 'pending'",
+                                    (review_id,)).fetchone()
+                            if row:
+                                fc = row["final_category"] or row["suggested_category"] or "archiv"
+                                fa = row["final_adressat"] or row["suggested_adressat"] or "Reinhard"
+                                if _confirm_review(review_id, fc, fa):
+                                    tg_edit_message(_cb_chat3, _cb_msg_id3,
+                                        _cb_text3 + "\n\n✅ Bestätigt — in Vault verschoben",
+                                        reply_markup={"inline_keyboard": []})
+                                else:
+                                    tg_edit_message(_cb_chat3, _cb_msg_id3,
+                                        _cb_text3 + "\n\n❌ Fehler bei Verarbeitung",
+                                        reply_markup={"inline_keyboard": []})
+                        except Exception as e:
+                            log.error(f"API Review rvok Fehler: {e}")
+                    threading.Thread(target=_async_api_confirm, daemon=True,
+                                     name=f"api-review-confirm-{review_id}").start()
 
                 elif cb_data.startswith("rvskip:"):
                     review_id = int(cb_data.split(":")[1])
                     tg_answer_callback(cb_id, "⏭️ Übersprungen")
-                    _skip_review(review_id)
                     tg_edit_message(cb_chat, cb_msg_id,
                         cb_msg_text + "\n\n⏭️ Übersprungen — nicht archiviert",
                         reply_markup={"inline_keyboard": []})
+                    threading.Thread(target=_skip_review, args=(review_id,),
+                                     daemon=True, name=f"api-review-skip-{review_id}").start()
 
                 else:
                     tg_answer_callback(cb_id, "❓ Unbekannter Callback")
@@ -13944,7 +13956,8 @@ def wait_for_docling(max_retries=30, delay=10):
 
 def _docling_convert(file_path: Path, force_ocr: bool) -> str | None:
     """Einzelner Docling-API-Call. force_ocr=True erzwingt Tesseract
-    statt EasyOCR (nötig für gescannte PDFs ohne Text-Layer)."""
+    statt EasyOCR (nötig für gescannte PDFs ohne Text-Layer).
+    Bei >3 Seiten: nur erste 3 Seiten konvertieren (page_range=[1,3])."""
     data: dict[str, object] = {
         "to_formats": "md",
         "image_export_mode": "placeholder",
@@ -13952,6 +13965,19 @@ def _docling_convert(file_path: Path, force_ocr: bool) -> str | None:
     }
     if force_ocr:
         data["force_ocr"] = True
+
+    # Bei mehr als 3 Seiten nur die ersten 3 Seiten per page_range.
+    # Spart massiv Zeit (23s statt >600s für 17-Seiter) und die ersten
+    # 3 Seiten enthalten alle relevanten Klassifikationsdaten.
+    try:
+        import pikepdf
+        with pikepdf.open(file_path) as pdf:
+            num_pages = len(pdf.pages)
+        if num_pages > 3:
+            data["page_range"] = [1, 3]
+            log.info(f"  page_range=[1,3] (Dokument hat {num_pages} Seiten)")
+    except Exception:
+        pass  # Fallback: ganzes Dokument konvertieren
 
     with open(file_path, "rb") as f:
         r = requests.post(
@@ -14993,10 +15019,45 @@ def classify_with_ollama(
     adressat_match: dict | None = None,
     absender_match: dict | None = None,
     doc_type_info: dict | None = None,
+    pre_filter: dict | None = None,
     _debug: bool = False,
 ) -> dict | None:
     cat_desc = build_category_description(categories)
     md_content = sanitize_for_ollama(md_content)
+
+    # Pre-Filter-Hinweis: deterministisch bestimmte Kategorie als Kontext an den LLM
+    pre_filter_block = ""
+    if pre_filter and pre_filter.get("category_id"):
+        pre_cat = pre_filter["category_id"]
+        pre_type = pre_filter.get("type_id") or "null"
+        pre_source = pre_filter.get("source", "unbekannt")
+        pre_conf = pre_filter.get("confidence", "mittel")
+        cat_label = categories.get(pre_cat, {}).get("label", pre_cat)
+        type_label = ""
+        if pre_type and pre_type != "null" and pre_cat in categories:
+            for t in categories[pre_cat].get("types", []):
+                if t.get("id") == pre_type:
+                    type_label = f" / {t.get('label', pre_type)}"
+                    break
+
+        if pre_conf == "hoch":
+            instruction = (
+                f"DIESE KATEGORIE STEHT BEREITS FEST (deterministisch bestimmt via {pre_source}). "
+                f"Überschreibe sie NICHT. Konzentriere dich stattdessen auf:\n"
+                f"- type_id: welcher Typ passt am besten?\n"
+                f"- rechnungsdatum, rechnungsbetrag, adressat (wie gewohnt)\n"
+                f"- positionen falls zutreffend\n"
+            )
+        else:
+            instruction = (
+                f"Dies ist ein Hinweis, keine feste Vorgabe. "
+                f"Wenn der Dokumentinhalt klar widerspricht, darfst du umklassifizieren.\n"
+            )
+        pre_filter_block = (
+            f"\nVORGEFILTERTE KATEGORIE ({pre_source}, confidence={pre_conf}):\n"
+            f"category_id=\"{pre_cat}\" ({cat_label}){type_label}\n"
+            f"{instruction}\n"
+        )
 
     # Kategorien mit Typ-Details (krankenversicherung, versicherung) bekommen erweiterte Regeln
     kv_rules = """
@@ -15131,7 +15192,7 @@ Verfügbare Kategorien und Typen:
 {kv_rules}
 TAXONOMIE-ZWANG: "category_id" und "type_id" MÜSSEN exakt aus der obigen Liste stammen.
 NIEMALS neue Kategorie-IDs erfinden. Wenn keine passt: category_id=null → landet in Inbox.
-{header_block}{ident_block}{doc_type_block}{negativ_regeln}
+{header_block}{ident_block}{doc_type_block}{pre_filter_block}{negativ_regeln}
 {branchen_block}
 Für ALLE Kategorien:
 - Adressat: "Reinhard" wenn Reinhard Janning/R. Janning der Empfänger ist, "Marion" wenn Marion Janning/M. Janning, "Reinhard & Marion" wenn beide adressiert sind.
@@ -15748,9 +15809,87 @@ def _keyword_rule_score(rule: dict, text_lower: str) -> tuple[int, int, bool]:
         return (matched, len(keywords), False)
 
 
+def pre_filter_classification(
+    text: str,
+    categories: dict,
+    identifiers: dict | None = None,
+    absender_match: dict | None = None,
+    doc_type_info: dict | None = None,
+) -> dict | None:
+    """Deterministischer Pre-Filter VOR dem LLM-Call.
+
+    Checkt in dieser Reihenfolge:
+    1. KFZ-Kennzeichen im Absender → fahrzeuge
+    2. Absender kategorie_hint aus absender.yaml
+    3. Keyword-Rules aus categories.yaml
+    4. Dokumenttyp kategorie_hint aus doc_types.yaml
+
+    Returns dict mit category_id, type_id, source, confidence oder None.
+    """
+    # 1. KFZ-Kennzeichen-Check (stärkster Indikator für fahrzeuge)
+    if identifiers and identifiers.get("kfz_kennzeichen"):
+        if "fahrzeuge" in categories:
+            return {
+                "category_id": "fahrzeuge",
+                "type_id": None,
+                "source": "kfz_kennzeichen",
+                "confidence": "hoch",
+            }
+
+    # 2. Absender kategorie_hint (harte Zuordnung aus absender.yaml)
+    if absender_match and absender_match.get("kategorie_hint"):
+        hint_cat = absender_match["kategorie_hint"]
+        if hint_cat in categories:
+            return {
+                "category_id": hint_cat,
+                "type_id": absender_match.get("typ_hint"),
+                "source": f"absender:{absender_match.get('id', '?')}",
+                "confidence": "hoch",
+            }
+
+    # 3. Keyword-Rules (spezifischste gewinnt)
+    text_lower = text.lower()
+    best_rule = None
+    best_score = (0, 0, False)  # (matched, total, alle_keywords)
+    for rule in KEYWORD_RULES:
+        score = _keyword_rule_score(rule, text_lower)
+        matched, total, alle = score
+        if matched == 0:
+            continue
+        cat_id = rule.get("category_id")
+        if not cat_id or cat_id not in categories:
+            continue
+        if matched > best_score[0] or (matched == best_score[0] and alle and not best_score[2]):
+            best_score = score
+            best_rule = rule
+
+    if best_rule:
+        return {
+            "category_id": best_rule.get("category_id"),
+            "type_id": best_rule.get("type_id"),
+            "source": f"keyword_rule:{best_rule.get('beschreibung', best_rule.get('category_id'))}",
+            "confidence": "hoch" if best_score[2] else "mittel",
+            "match_detail": f"matched={best_score[0]}/{best_score[1]}, alle={best_score[2]}",
+        }
+
+    # 4. Dokumenttyp kategorie_hint (schwächster Indikator)
+    if doc_type_info and doc_type_info.get("kategorie_hint"):
+        hint_cat = doc_type_info["kategorie_hint"]
+        if hint_cat in categories:
+            return {
+                "category_id": hint_cat,
+                "type_id": None,
+                "source": f"doc_type:{doc_type_info.get('quell_keyword', '?')}",
+                "confidence": "niedrig",
+            }
+
+    return None
+
+
 def apply_keyword_rules(result: dict, text: str, categories: dict) -> dict:
     """Überschreibt LLM-Klassifikation mit deterministischen Keyword-Rules.
-    Läuft nach dem LLM. Alle passenden Regeln werden gesammelt, die spezifischste gewinnt.
+    Läuft nach dem LLM als Safety-Net. Alle passenden Regeln werden gesammelt,
+    die spezifischste gewinnt.
     Spezifität = Anzahl gematchter Keywords; AND schlägt OR bei gleicher Keyword-Zahl.
     """
     text_lower = text.lower()
@@ -16870,6 +17009,28 @@ def process_file(file_path: Path):
         tg_send(f"❌ Keine Kategorien konfiguriert\n<code>{file_path.name}</code>")
         return
 
+    # 4a. Deterministischer Pre-Filter VOR dem LLM-Call (B8)
+    #     Bei bekannter Kategorie (Absender-Hint, KFZ-Kennzeichen, Keyword-Rule) wird
+    #     die Kategorie als Kontext an den LLM übergeben → LLM fokussiert auf Typ+Extraktion.
+    pre_filter = pre_filter_classification(
+        classify_input, categories,
+        identifiers=identifiers,
+        absender_match=absender_match,
+        doc_type_info=doc_type_info,
+    )
+    if pre_filter:
+        _step_emit(_fn, "prefilter", "Pre-Filter (deterministisch)", "done",
+                   extracted={"category_id": pre_filter["category_id"],
+                              "type_id": pre_filter.get("type_id"),
+                              "source": pre_filter["source"],
+                              "confidence": pre_filter["confidence"]})
+        log.info(
+            f"Pre-Filter: {pre_filter['category_id']}/{pre_filter.get('type_id') or 'None'}"
+            f" (source={pre_filter['source']}, confidence={pre_filter['confidence']})"
+        )
+    else:
+        _step_emit(_fn, "prefilter", "Pre-Filter (deterministisch)", "skip")
+
     _step_emit(_fn, "llm", "LLM-Klassifikation (Ollama)", "running")
     _t0 = time.monotonic()
     result = classify_with_ollama(
@@ -16880,6 +17041,7 @@ def process_file(file_path: Path):
         adressat_match=adressat_match,
         absender_match=absender_match,
         doc_type_info=doc_type_info,
+        pre_filter=pre_filter,
     )
     _step_emit(_fn, "llm", "LLM-Klassifikation (Ollama)",
                "done" if result else "error",
@@ -16900,6 +17062,7 @@ def process_file(file_path: Path):
             adressat_match=adressat_match,
             absender_match=absender_match,
             doc_type_info=doc_type_info,
+            pre_filter=pre_filter,
         )
         if result and result.get("category_id"):
             log.info(f"LLM-Retry erfolgreich fuer: {_fn}")
@@ -17138,8 +17301,10 @@ def process_file(file_path: Path):
     _t0 = time.monotonic()
     match_infos = save_to_db(file_path, result)
     save_klassifikation_historie(result.get("_dok_id"), result)
-    _write_kk_leistungen_db(result, file_path)
-    _write_immobilien_db(result, file_path)
+    if _kv_la_is_leistungsabrechnung(result):
+        _write_kk_leistungen_db(result, file_path)
+    if _immo_is_immobiliendokument(result):
+        _write_immobilien_db(result, file_path)
     # KFZ/AV/SV: Hintergrund-Extraktion per Skill-analyze.py
     if _kfz_is_fahrzeugdokument(result):
         beschr = result.get("beschreibung", "")
