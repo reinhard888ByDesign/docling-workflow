@@ -15215,7 +15215,9 @@ Antworte NUR mit einem JSON-Objekt mit diesen Feldern:
 - "konfidenz_type":     "hoch" | "mittel" | "niedrig" — wie sicher bist du beim Typ?
 - "konfidenz_absender": "hoch" | "mittel" | "niedrig" — wie sicher bist du beim Absender?
 - "konfidenz_adressat": "hoch" | "mittel" | "niedrig" — wie sicher bist du beim Adressat?
-- "konfidenz_datum":    "hoch" | "mittel" | "niedrig" — wie sicher bist du beim Datum?
+- "konfidenz_datum":    "hoch" | "mittel" | "niedrig"
+	- "title_de": Aussagekraeftiger Titel auf Deutsch (max 80 Zeichen), oder null
+	- "summary_de": 2-3 Saetze Zusammenfassung auf Deutsch (max 400 Zeichen), oder null. Beschreibe worum es im Dokument geht, fuer wen, und was die Kernaussage ist. Bei Rechnungen: Betrag und Zweck nennen. — wie sicher bist du beim Datum?
 
 Regeln für Per-Feld-Konfidenz:
   - "hoch": Feld eindeutig und direkt aus dem Dokument ablesbar (explizite Nennung, kein Raten).
@@ -17283,19 +17285,35 @@ def process_file(file_path: Path):
         result["category_id"] = None
         result["type_id"] = None
 
-    # 5a. Summarization (universell — fuer JEDES Dokument)
+    # 5a. Summarization (B7: embedded in LLM response, Fallback auf separaten Call)
     _step_emit(_fn, "summarize", "LLM-Zusammenfassung", "running")
     _t0_sum = time.monotonic()
-    summary = summarize_document(
-        raw_md=md_content,
-        doc_type=result.get("type_id", ""),
-        category=result.get("category_id", ""),
-    )
-    result["_summary"] = summary
-    _step_emit(_fn, "summarize", "LLM-Zusammenfassung",
-               "done" if (summary.get("title") or summary.get("summary")) else "skip",
-               extracted={"title": summary.get("title", "")[:80]},
-               duration_ms=(time.monotonic() - _t0_sum) * 1000)
+    embedded_title = result.get("title_de") or ""
+    embedded_summary = result.get("summary_de") or ""
+    if embedded_title or embedded_summary:
+        # B7: Summary war im Klassifikations-JSON enthalten — kein zweiter LLM-Call nötig
+        summary = {
+            "title": embedded_title,
+            "summary": embedded_summary,
+            "_source": "embedded",
+        }
+        result["_summary"] = summary
+        _step_emit(_fn, "summarize", "LLM-Zusammenfassung", "done",
+                   extracted={"title": embedded_title[:80], "source": "embedded"},
+                   duration_ms=(time.monotonic() - _t0_sum) * 1000)
+        log.info(f"Summary embedded: {embedded_title[:80]}")
+    else:
+        # Fallback: separater Summarization-Call (wenn LLM kein title_de/summary_de lieferte)
+        summary = summarize_document(
+            raw_md=md_content,
+            doc_type=result.get("type_id", ""),
+            category=result.get("category_id", ""),
+        )
+        result["_summary"] = summary
+        _step_emit(_fn, "summarize", "LLM-Zusammenfassung",
+                   "done" if (summary.get("title") or summary.get("summary")) else "skip",
+                   extracted={"title": summary.get("title", "")[:80], "source": "fallback"},
+                   duration_ms=(time.monotonic() - _t0_sum) * 1000)
 
     _step_emit(_fn, "db", "Datenbank speichern", "running")
     _t0 = time.monotonic()
