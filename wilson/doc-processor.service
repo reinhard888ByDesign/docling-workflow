@@ -5,11 +5,9 @@ Wants=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /home/reinhard/.openclaw/scripts/doc_processor.py
+ExecStart=/bin/bash -c '/usr/bin/python3 -u /home/reinhard/.openclaw/scripts/doc_processor.py >> /home/reinhard/doc_processor.log 2>&1'
 Restart=on-failure
 RestartSec=30
-StandardOutput=journal
-StandardError=journal
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/home/reinhard/.openclaw/secrets.env
 Environment=TELEGRAM_CHAT_ID=8620231031
@@ -17,6 +15,22 @@ Environment=DISPATCHER_URL=http://192.168.86.195:8765
 Environment=OLLAMA_URL=http://192.168.86.195:11434
 Environment=OLLAMA_MODEL=gemma4:e4b
 Environment=DEEPSEEK_MODEL=deepseek-chat
+#
+# Telegram-Architektur (2026-07-07):
+# ─────────────────────────────────────
+# NUR der Dispatcher (Ryzen) pollt Telegram (tg_poll). Der doc-processor
+# hat DISABLE_TELEGRAM_POLL=1, um eine Race Condition zu vermeiden.
+# Beide nutzen denselben Bot-Token (@hotelbaer_bot). Telegram liefert
+# jedes Update nur an EINE getUpdates-Verbindung aus.
+#
+# Dispatcher → verarbeitet Review-Callbacks (rvcat:/rvok:/rvadr:/rvskip:)
+#             direkt und forwarded Wilson-Callbacks (confirm:/correct:/etc.)
+#             an den Callback-Relay des doc-processors (Port 8770).
+#
+# doc-processor → empfängt Callbacks ausschließlich via Relay, pollt
+#                 Telegram NICHT selbst (DISABLE_TELEGRAM_POLL=1).
+#
+Environment=DISABLE_TELEGRAM_POLL=1
 Environment=PENDING_MINUTES=60
 Environment=POLL_INTERVAL=15
 Environment=GOG_BIN=/home/linuxbrew/.linuxbrew/bin/gog

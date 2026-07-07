@@ -56,6 +56,8 @@ services:
       - SUMMARIZE_MODEL=${SUMMARIZE_MODEL:-qwen3:4b-instruct}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      # tg_poll MUSS auf 0 bleiben — Dispatcher ist der EINZIGE Telegram-Poller.
+      # doc-processor (Wilson) hat DISABLE_TELEGRAM_POLL=1 (Race Condition Fix 2026-07-07).
       - DISABLE_TELEGRAM_POLL=0
       - REVIEW_MODE=on
       - VAULT_PDF_ARCHIV=/data/reinhards-vault/Anlagen
