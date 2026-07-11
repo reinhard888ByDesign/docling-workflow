@@ -67,13 +67,42 @@ Drop-ins in `~/.config/systemd/user/<service>.service.d/memory-limit.conf`.
 - Lärmbär-Monitor warnt bei Gateway > 700 MB RSS
 - swappiness auf 80 erhöht (Swap-Entlastung vor OOM)
 
-## Verifikation
+## Verifikation (2026-07-11 08:26 CEST nach Reboot)
 
 ```bash
-# Nach Reboot:
-cat /sys/fs/cgroup/cgroup.subtree_control  # muss "memory" enthalten
-systemctl --user show openclaw-gateway --property=MemoryCurrent  # Zahl, nicht [not set]
-cat /proc/cmdline | grep cgroup  # cgroup_enable=memory vorhanden
+# Fix 1: cgroup memory controller
+$ cat /sys/fs/cgroup/cgroup.subtree_control
+cpu memory pids                    # ✅ "memory" ist drin
+
+$ cat /proc/cmdline | grep -o 'cgroup[^ ]*'
+cgroup_disable=memory              # Pi Firmware
+cgroup_enable=memory               # ✅ unser Override
+
+# Fix 2: Memory-Limits aktiv
+$ systemctl --user show openclaw-gateway --property=MemoryCurrent,MemoryMax
+MemoryCurrent=593625088             # ✅ 566 MB (Zahl, nicht [not set]!)
+MemoryMax=838860800                # ✅ 800 MB
+
+$ systemctl --user show doc-processor --property=MemoryCurrent
+MemoryCurrent=57425920             # ✅ 55 MB (Limit: 500 MB)
+
+$ systemctl --user show laerenbaer --property=MemoryCurrent
+MemoryCurrent=24838144             # ✅ 24 MB (Limit: 200 MB)
+
+# Fix 3: earlyoom
+$ cat /etc/default/earlyoom
+EARLYOOM_ARGS="-m 10 -r 3600"     # ✅ -s 10 entfernt
+
+# Fix 4: swappiness
+$ cat /proc/sys/vm/swappiness
+80                                 # ✅
+
+# Health
+$ curl http://192.168.3.124:8095/health
+{"status":"ok","services_up":6,"services_total":6,"memory_pct":43}
+                                   # ✅ 6/6
+
+# Gateway RSS: 412 MB (frisch nach Boot)
 ```
 
 ## Dateien
