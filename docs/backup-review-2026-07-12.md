@@ -17,16 +17,22 @@
 
 | System | Risiko |
 |--------|--------|
-| **Home Assistant** (192.168.86.183) | Kein Backup! Automationen, Dashboards, Sensor-History ungesichert |
+| **Home Assistant** (192.168.86.183) | Eingerichtet (Web UI → System → Backups) |
 | Time Machine (Mac) | Nicht verifiziert — läuft vermutlich auf NAS |
 
-## NAS-Belegung (924 GB)
+## NAS-Belegung — UniFi UNAS 2, Pool 1 (2×1TB RAID1)
 
-| Bereich | Größe | Notiz |
-|--------|-------|-------|
-| `backups/ryzen/` (CIFS) | 272 GB | 7 Snapshots, Hardlinks werden auf CIFS mehrfach gezählt |
-| Andere Shares | ~630 GB | Vermutlich Time Machine + Medien |
-| Frei | ~22 GB | Chronisch knapp |
+| Share | Belegt | Quota/Gesamt | Notiz |
+|-------|--------|-------------|-------|
+| **Ryzen** | 292 GB | 500 GB Quota | Backups (7 Snapshots) |
+| **Mac Mini's Drive** | 383 GB | 991 GB | Time Machine |
+| **Reinhard's Drive** | 75 GB | — | Persönliche Daten |
+| **Shared_Drive** | 65 KB | — | Leer |
+| **Marion's Drive** | 65 KB | 20 GB | Leer |
+
+**Pool-Füllstand**: 754 GB / 991 GB (76%) — **237 GB frei, kein Handlungsbedarf** ✅
+
+Die „22 GB frei"-Warnung kam von temporärem Backup-Plattenplatz während der Rotation (incoming + Snapshots). Einmalig, kein Dauerproblem.
 
 ## Redundanzen
 
@@ -40,7 +46,7 @@
 
 ## Empfehlungen
 
-1. **HA-Backup einrichten** — HA Web UI → Einstellungen → System → Backups, Ziel: NAS
+1. ~~HA-Backup einrichten~~ — Besteht bereits (HA Web UI → System → Backups)
 2. **NAS aufräumen** — Über Web-Oberfläche alte Time-Machine-Backups/Medien prüfen
-3. **Snapshots von 7 auf 3 reduzieren** — daily.0-2 reichen
-4. **Syncthing auf Wilson prüfen** — warum nur 51 MB von 16 GB?
+3. ~~Snapshots reduzieren~~ — 7 tägliche sind ok, NAS hat 237 GB frei
+4. ~~Syncthing Wilson-Vault~~ — Wilson hat Haupt-Vault bewusst nicht (nur projekte-vault + input-dispatcher)
