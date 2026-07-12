@@ -2513,6 +2513,10 @@ def _fetch_new_emails() -> list[dict]:
 
 
 def email_poll_thread():
+    """Gmail-Poller — DEAKTIVIERT 2026-07-12."""
+    import logging
+    logging.getLogger(__name__).info("Gmail-Poller deaktiviert (2026-07-12)")
+    return  # GMAIL DEAKTIVIERT
     """Polling-Loop: prüft alle EMAIL_POLL_INTERVAL Sekunden auf neue Emails."""
     log.info(f"Email-Poller startet (Intervall: {EMAIL_POLL_INTERVAL}s, Account: {GOG_ACCOUNT})")
     while True:
@@ -3229,7 +3233,7 @@ def main():
         threading.Thread(target=telegram_poll_thread, daemon=True, name="tg-poll"),
         threading.Thread(target=scan_incoming,        daemon=True, name="scanner"),
         threading.Thread(target=relay_server_thread,  daemon=True, name="relay"),
-        threading.Thread(target=email_poll_thread,    daemon=True, name="email-poll"),
+# GMAIL DEAKTIVIERT 2026-07-12:         threading.Thread(target=email_poll_thread,    daemon=True, name="email-poll"),
         threading.Thread(target=sender_ui_thread,     daemon=True, name="sender-ui"),
     ]
     for t in threads:
