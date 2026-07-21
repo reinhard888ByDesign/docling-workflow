@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """
-Tages-Briefing Generator — klassisches Morgenbriefing-Format.
-Ersetzt den LLM-Agent-Cron-Job durch deterministische Datenabfrage.
+Tages-Briefing — kurz, motivierend, prägnant.
+Fokus: Wetter, Tagesenergie (1 Zeile), wichtige Aufgaben, Portfolio, PV/Cisterna.
 
-Datenquellen:
-  - Wetter:          HA weather.forecast_home (Fallback: N/A)
-  - Gestern:         ~/Vaults/memory/YYYY-MM-DD.md
-  - Portfolio:       ~/Vaults/portfolio.db (SQLite)
-  - PV + Batterie:   HA FSP/PV-Sensoren
-  - Cisterna:        HA sensor.cisterna_flussigkeitsfullstand
-  - Aufgaben:        ~/Vaults/AUFGABEN.md (Markdown)
-  - Feng Shui:       gua-energy-calculator
+Abgrenzung zum Feng Shui Briefing (07:50):
+  - Tages-Briefing: NUR eine Zeile zur aktuellen Tagesenergie
+  - Feng Shui Briefing: Ausführliche Interaktions-Analyse aller Energien
 
 Aufruf: python3 tagesbriefing.py [--dry-run]
 """
@@ -18,6 +13,7 @@ Aufruf: python3 tagesbriefing.py [--dry-run]
 import sqlite3, json, sys, os, subprocess
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from collections import Counter
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONFIG
@@ -25,11 +21,10 @@ from pathlib import Path
 
 HA_URL = "http://192.168.86.183:8123"
 HA_TOKEN_FILE = Path("/home/reinhard/.config/homeassistant/token")
-VAULT_DIR = Path("/home/reinhard/Vaults")
-PORTFOLIO_DB = VAULT_DIR / "portfolio.db"
-AUFGABEN_MD = VAULT_DIR / "Aufgaben.md.bak-20260703"  # Aufgaben.md wurde Juni 2026 konsolidiert
-GUA_CALC_DIR = Path("/home/reinhard/gua-energy-calculator")
+PORTFOLIO_DB = Path("/home/reinhard/Vaults/portfolio.db")
+AUFGABEN_MD = Path("/home/reinhard/Vaults/Aufgaben.md.bak-20260703")
 GUA_CACHE = Path("/home/reinhard/Vaults/.openclaw/agents/fengshui-gua-calculator/calculations.json")
+GUA_CALC_DIR = Path("/home/reinhard/gua-energy-calculator")
 
 TELEGRAM_BOT = "8621101278:AAHI9CkevPBpZ2uxZQIFyxjGP2m4VUXislE"
 TELEGRAM_CHAT = "8620231031"
@@ -37,6 +32,12 @@ TELEGRAM_CHAT = "8620231031"
 WEEKDAYS = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
 MONTHS = ["Januar", "Februar", "März", "April", "Mai", "Juni",
            "Juli", "August", "September", "Oktober", "November", "Dezember"]
+
+GUA_NAMES = {
+    1: "Wasser", 2: "Große Erde", 3: "Großes Holz", 4: "Kleines Holz",
+    5: "Mittlere Erde", 6: "Großes Metall", 7: "Kleines Metall",
+    8: "Kleine Erde", 9: "Kleines Feuer",
+}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -49,27 +50,22 @@ def _ha_token():
     return t
 
 def ha_get(entity_id):
-    """Fetch HA entity state. Returns (state, attributes) or (None, {})."""
-    import urllib.request, urllib.error
+    import urllib.request
     try:
         req = urllib.request.Request(
             f"{HA_URL}/api/states/{entity_id}",
             headers={"Authorization": f"Bearer {_ha_token()}"}
         )
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            d = json.loads(resp.read())
-            return d.get("state"), d.get("attributes", {})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read())
     except Exception:
-        return None, {}
+        return None
 
 def send_telegram(text):
-    """Send Markdown-formatted message via Telegram bot."""
-    import urllib.request, urllib.error
+    import urllib.request
     payload = json.dumps({
-        "chat_id": TELEGRAM_CHAT,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True
+        "chat_id": TELEGRAM_CHAT, "text": text,
+        "parse_mode": "Markdown", "disable_web_page_preview": True
     }).encode()
     try:
         req = urllib.request.Request(
@@ -82,179 +78,160 @@ def send_telegram(text):
         print(f"[ERROR] Telegram: {e}", file=sys.stderr)
         return False
 
-def fmt_val(val, unit="", decimals=1):
-    """Format numeric value, return 'N/A' if None."""
-    if val is None:
-        return "N/A"
+def fval(v, unit="", decimals=1):
+    if v is None: return "N/A"
     try:
-        v = float(val)
-        if decimals == 0:
-            return f"{v:.0f}{unit}"
-        return f"{v:.{decimals}f}{unit}"
-    except (ValueError, TypeError):
-        return f"{val}{unit}"
+        f = float(v)
+        if decimals == 0: return f"{f:.0f}{unit}"
+        return f"{f:.{decimals}f}{unit}"
+    except: return f"{v}{unit}"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DATA FETCHERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def get_weather():
-    """Aktuelles Wetter aus HA weather.forecast_home."""
-    state, attrs = ha_get("weather.forecast_home")
+    """Kompakte Wetterzeile."""
+    state = ha_get("weather.forecast_home")
     if not state:
-        return "N/A | Min/Max: N/A/N/A | Regen: N/A"
+        return "N/A"
 
+    attrs = state.get("attributes", {})
     temp = attrs.get("temperature")
     humidity = attrs.get("humidity")
+    condition = state.get("state", "")
 
-    # Versuche OpenWeatherMap forecast (kann fehlen)
-    owm_temp_low, _ = ha_get("sensor.openweathermap_forecast_temperature_low")
-    owm_temp_high, _ = ha_get("sensor.openweathermap_forecast_temperature_high")
-    owm_rain, _ = ha_get("sensor.openweathermap_forecast_precipitation_probability")
+    parts = []
+    if temp: parts.append(f"{fval(temp, '°C')}")
+    if condition: parts.append(condition)
+    if humidity: parts.append(f"{fval(humidity, '%', 0)} Feuchte")
+    return ", ".join(parts) if parts else "N/A"
 
-    parts = [fmt_val(temp, "°C")]
-    if owm_temp_low and owm_temp_high:
-        parts.append(f"Min/Max: {fmt_val(owm_temp_low, '°C')}/{fmt_val(owm_temp_high, '°C')}")
-    else:
-        parts.append(f"Min/Max: N/A/N/A")
-    if owm_rain:
-        parts.append(f"Regen: {fmt_val(owm_rain, '%', 0)}")
-    elif humidity is not None:
-        parts.append(f"Feuchte: {fmt_val(humidity, '%', 0)}")
-    else:
-        parts.append("Regen: N/A")
+def get_daily_energy():
+    """NUR eine Zeile: heutige Tagesenergie mit kurzer Deutung."""
+    today = date.today().isoformat()
 
-    return " | ".join(parts)
-
-def get_yesterday_notes():
-    """Gestrige Notizen aus Vault/memory/."""
-    yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-    mf = VAULT_DIR / "memory" / f"{yesterday}.md"
-    if mf.exists():
-        lines = [l.strip("- ").strip() for l in mf.read_text().split("\n") if l.strip().startswith("-")]
-        if lines:
-            return "\n".join(f"  • {l}" for l in lines[:8])
-    return "_(Keine Stichpunkte im Gedächtnis protokolliert)_"
-
-def get_portfolio():
-    """Portfolio-Daten aus portfolio.db (letzter Eintrag)."""
+    # 1. Cache check
     try:
-        db = sqlite3.connect(str(PORTFOLIO_DB))
-        cur = db.cursor()
-        cur.execute("SELECT DISTINCT date FROM portfolio_history ORDER BY date DESC LIMIT 1")
-        latest = cur.fetchone()
-        if not latest:
-            return "Gesamt N/A"
-        cur.execute(
-            "SELECT name, delta_pct FROM portfolio_history "
-            "WHERE date=? ORDER BY ABS(delta_pct) DESC LIMIT 4",
-            (latest[0],)
-        )
-        movers = cur.fetchall()
-        if not movers:
-            return f"Gesamt N/A (Stand {latest[0]})"
-
-        parts = [f"Gesamt N/A"]
-        for name, delta in movers:
-            emoji = "🟢" if delta >= 0 else "🔴"
-            parts.append(f"{emoji} {name[:35]} [{delta:+.2f}]%")
-        return " | ".join(parts)
-    except Exception as e:
-        print(f"[WARN] Portfolio: {e}", file=sys.stderr)
-        return "Gesamt N/A"
-
-def get_pv_battery():
-    """PV-Produktion und Batterie-Status aus HA."""
-    # PV: Summe beider Strings
-    pv1, _ = ha_get("sensor.fsp_ne_160305365_pv_1_input_power")
-    pv2, _ = ha_get("sensor.fsp_ne_160305365_pv_2_input_power")
-    # Batterie: Durchschnitt über alle Packs
-    bat_states = []
-    for mod in [1, 2]:
-        for pack in [1, 2, 3]:
-            if mod == 1 and pack == 3:
-                continue  # Module 1 hat nur 2 Packs
-            soc, _ = ha_get(f"sensor.fsp_ne_160305509_module_{mod}_battery_pack_{pack}_soc")
-            if soc and soc not in ("unavailable", "unknown"):
-                try:
-                    bat_states.append(float(soc))
-                except ValueError:
-                    pass
-
-    pv_total = None
-    if pv1 and pv1 not in ("unavailable", "unknown") and pv2 and pv2 not in ("unavailable", "unknown"):
-        try:
-            pv_total = float(pv1) + float(pv2)
-        except ValueError:
-            pass
-
-    pv_str = f"{fmt_val(pv_total, 'W', 0)}" if pv_total is not None else "N/A"
-    bat_str = f"{fmt_val(sum(bat_states)/len(bat_states), '%', 0)}" if bat_states else "N/A"
-    return f"PV: {pv_str} | Batterie: {bat_str}"
-
-def get_cisterna():
-    """Cisterna-Füllstand aus HA."""
-    state, _ = ha_get("sensor.cisterna_flussigkeitsfullstand")
-    if state and state not in ("unavailable", "unknown"):
-        return fmt_val(state, "%", 0)
-    return "N/A"
-
-def get_tasks():
-    """Aufgaben aus AUFGABEN.md (Tabellen-Format wie in Backup)."""
-    if not AUFGABEN_MD.exists():
-        return None
-
-    content = AUFGABEN_MD.read_text()
-    from collections import Counter
-    categories = Counter()
-
-    for line in content.split("\n"):
-        line = line.strip()
-        if line.startswith("|") and not line.startswith("|---"):
-            parts = [p.strip() for p in line.split("|")]
-            if len(parts) >= 5 and parts[1] and parts[1] not in ("Datum", "Aufgabe"):
-                cat = parts[4] if len(parts) > 4 else "Sonstige"
-                if cat:
-                    # Kurzform für lange Kategorienamen
-                    short = cat.replace("Podere dei venti - ", "").replace("Karlsruhe-", "")
-                    short = short.replace("Giardino-Garten", "Giardino")
-                    categories[short] += 1
-
-    if not categories:
-        return None
-
-    sorted_cats = sorted(categories.items(), key=lambda x: -x[1])
-    return " · ".join(f"{cat} ({count})" for cat, count in sorted_cats[:8])
-
-def get_fengshui():
-    """Feng Shui Tagesenergie aus gua-calculator."""
-    # Versuche Cache
-    if GUA_CACHE.exists():
-        try:
+        if GUA_CACHE.exists():
             data = json.loads(GUA_CACHE.read_text())
-            today = date.today().isoformat()
-            if today in data:
-                entry = data[today]
-                focus = entry.get("focus") or entry.get("daily_focus") or ""
-                if focus:
-                    return focus
-        except Exception:
-            pass
+            entries = data if isinstance(data, list) else [data];
+            for entry in reversed(entries):
+                td = entry.get("target_date", "")
+                if entry.get("first_name") == "Reinhard" and td in (today, "heute"):
+                    gua_t = entry.get("gua_t")
+                    if gua_t:
+                        return f"GUA {gua_t} ({GUA_NAMES.get(gua_t, '')})"
+                    break
+    except Exception:
+        pass
 
-    # Fallback: Calculator aufrufen
+    # 2. Fallback: Calculator direkt aufrufen
     try:
         r = subprocess.run(
             f"cd {GUA_CALC_DIR} && python3 -c \""
             "from gua_calculator import get_gua_energies; "
             "print(get_gua_energies('08.12.1962', 'Männlich', 'heute', 'Reinhard', "
             f"'{GUA_CACHE}'))\"",
-            shell=True, capture_output=True, text=True, timeout=20
+            shell=True, capture_output=True, text=True, timeout=15
         )
-        if r.returncode == 0 and r.stdout.strip():
-            return r.stdout.strip()[:600]
-    except Exception as e:
-        print(f"[WARN] Feng Shui: {e}", file=sys.stderr)
+        if r.returncode == 0:
+            for line in r.stdout.split("\n"):
+                if "TAGESENERGIE" in line.upper():
+                    import re
+                    m = re.search(r'GUA\s*(\d)', line)
+                    if m:
+                        g = int(m.group(1))
+                        return f"GUA {g} ({GUA_NAMES.get(g, '')})"
+                    break
+    except Exception:
+        pass
+
     return None
+
+def get_critical_tasks():
+    """Heute fällige + überfällige High-Prio-Aufgaben aus AUFGABEN.md."""
+    if not AUFGABEN_MD.exists():
+        return None, None
+
+    content = AUFGABEN_MD.read_text()
+    today_str = date.today().strftime("%Y-%m-%d")
+    due_today, overdue_high = [], []
+
+    for line in content.split("\n"):
+        line = line.strip()
+        if line.startswith("|") and not line.startswith("|---"):
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 4 and parts[1] and parts[1] != "Aufgabe":
+                task = parts[1][:60]
+                due_date = parts[2] if len(parts) > 2 else ""
+                prio = parts[3] if len(parts) > 3 else ""
+
+                if due_date == today_str:
+                    due_today.append(task)
+                elif due_date and due_date < today_str and "hoch" in prio.lower():
+                    overdue_high.append(task)
+
+    return due_today, overdue_high
+
+def get_portfolio():
+    """Top-3 Mover aus portfolio.db."""
+    try:
+        db = sqlite3.connect(str(PORTFOLIO_DB))
+        cur = db.cursor()
+        cur.execute("SELECT DISTINCT date FROM portfolio_history ORDER BY date DESC LIMIT 1")
+        latest = cur.fetchone()
+        if not latest: return None
+        cur.execute(
+            "SELECT name, delta_pct FROM portfolio_history "
+            "WHERE date=? ORDER BY ABS(delta_pct) DESC LIMIT 3",
+            (latest[0],)
+        )
+        movers = []
+        for name, delta in cur.fetchall():
+            emoji = "🟢" if delta >= 0 else "🔴"
+            short = name[:30]
+            movers.append(f"{emoji} {short} [{delta:+.1f}%]")
+        return "  ".join(movers) if movers else None
+    except Exception:
+        return None
+
+def get_pv_battery_cisterna():
+    """PV, Batterie, Cisterna in einer Zeile."""
+    pv1 = ha_get("sensor.fsp_ne_160305365_pv_1_input_power")
+    pv2 = ha_get("sensor.fsp_ne_160305365_pv_2_input_power")
+    cis = ha_get("sensor.cisterna_flussigkeitsfullstand")
+
+    # PV total
+    pv_total = None
+    for s in [pv1, pv2]:
+        if s and s.get("state") not in (None, "unavailable", "unknown"):
+            try: pv_total = (pv_total or 0) + float(s["state"])
+            except: pass
+
+    # Batterie average SOC
+    bat_avg = None
+    socs = []
+    for mod in [1, 2]:
+        for pack in [1, 2, 3]:
+            if mod == 1 and pack == 3: continue
+            s = ha_get(f"sensor.fsp_ne_160305509_module_{mod}_battery_pack_{pack}_soc")
+            if s and s.get("state") not in (None, "unavailable", "unknown"):
+                try: socs.append(float(s["state"]))
+                except: pass
+    if socs: bat_avg = sum(socs) / len(socs)
+
+    # Cisterna
+    cis_val = None
+    if cis and cis.get("state") not in (None, "unavailable", "unknown"):
+        try: cis_val = float(cis["state"])
+        except: pass
+
+    parts = []
+    parts.append(f"☀️ {fval(pv_total, 'W', 0)}" if pv_total is not None else "☀️ —W")
+    parts.append(f"🔋 {fval(bat_avg, '%', 0)}" if bat_avg is not None else "🔋 —")
+    parts.append(f"💧 {fval(cis_val, '%', 0)}" if cis_val is not None else "💧 —")
+    return "  ".join(parts)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN
@@ -265,58 +242,59 @@ def main():
     dry = "--dry-run" in sys.argv
 
     weather = get_weather()
-    yesterday = get_yesterday_notes()
+    daily_energy = get_daily_energy()
+    due_today, overdue_high = get_critical_tasks()
     portfolio = get_portfolio()
-    pv_bat = get_pv_battery()
-    cisterna = get_cisterna()
-    tasks = get_tasks()
-    fengshui = get_fengshui()
+    pv_bat_cis = get_pv_battery_cisterna()
 
-    lines = [
-        f"🌅 *GUTEN MORGEN, REINHARD!* {today.day}. {MONTHS[today.month-1]} {today.year}, {WEEKDAYS[today.weekday()]}",
-        "",
-        f"☀️ *WETTER:* {weather}",
-        "",
-        f"📓 *GESTERN:* {yesterday}",
-        "",
-        f"📊 *PORTFOLIO:* {portfolio}",
-        "",
-        f"☀️ {pv_bat}",
-        "",
-        f"💧 *CISTERNA:* {cisterna}",
-        "",
-    ]
-
-    if tasks:
-        lines.append(f"📋 *AUFGABEN:* {tasks}")
-    else:
-        lines.append("📋 *AUFGABEN:* _(keine Daten)_")
-
+    # ── Aufbau ──
+    lines = []
+    lines.append(f"🌅 *Guten Morgen, Reinhard!*")
+    lines.append(f"{WEEKDAYS[today.weekday()]}, {today.day}. {MONTHS[today.month-1]} {today.year}")
     lines.append("")
-    lines.append("🗓️ *ROUTINEN:* Italienisch + Feng Shui")
 
-    if fengshui:
+    # Wetter
+    lines.append(f"☀️ *Wetter:* {weather}")
+    lines.append("")
+
+    # Tagesenergie — eine prägnante Zeile
+    if daily_energy:
+        lines.append(f"⚡ *Heute:* {daily_energy}")
+    lines.append("")
+
+    # Kritische Aufgaben
+    if due_today:
+        lines.append(f"📋 *Heute fällig:* {', '.join(due_today[:4])}")
+    if overdue_high:
+        lines.append(f"⚠️ *Überfällig:* {', '.join(overdue_high[:4])}")
+    if due_today or overdue_high:
         lines.append("")
-        lines.append("---")
-        lines.append(fengshui)
+
+    # Portfolio
+    if portfolio:
+        lines.append(f"📊 *Portfolio:* {portfolio}")
+        lines.append("")
+
+    # PV / Batterie / Cisterna
+    lines.append(pv_bat_cis)
+    lines.append("")
+
+    # Routinen
+    lines.append("🗓️ *Routinen:* Italienisch 🇮🇹  •  Feng Shui 🌿")
 
     message = "\n".join(lines)
-
-    # Telegram-Limit 4096
     if len(message) > 4000:
-        message = message[:4000] + "\n...\n_(gekürzt)_"
+        message = message[:4000] + "\n..."
 
     print(message)
     print(f"\n--- {len(message)} Zeichen ---")
 
     if dry:
-        print("🔍 Dry-run — nicht gesendet")
+        print("🔍 Dry-run")
     else:
-        if send_telegram(message):
-            print("✅ Telegram gesendet")
-        else:
-            print("❌ Telegram fehlgeschlagen")
-            sys.exit(1)
+        ok = send_telegram(message)
+        print("✅ Telegram" if ok else "❌ Fehler")
+        if not ok: sys.exit(1)
 
 if __name__ == "__main__":
     main()
