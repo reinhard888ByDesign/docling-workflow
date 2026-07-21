@@ -120,16 +120,17 @@ def main():
             positions_filled = 0
             for isin, name, ticker, base_weight in POSITIONS:
                 price, prev = fetch_historical(ticker, day)
+                # Currency hardcoded per ticker type
+                if ticker.endswith(".DE"): currency = "EUR"
+                elif ticker.endswith(".L"): currency = "GBp" if ticker in ("CPXJ.L","EMVL.L","IWVL.L","ACWI.L","XBLC.L") else "GBP"
+                elif ticker.endswith(".PA"): currency = "EUR"
+                elif "BTC" in ticker or "ETH" in ticker: currency = "EUR"
+                elif "GC=F" == ticker: currency = "USD"
+                else: currency = "EUR"
+
                 price_eur = None
                 prev_eur = None
                 if price:
-                    # Currency hardcoded per ticker type
-                    if ticker.endswith(".DE"): currency = "EUR"
-                    elif ticker.endswith(".L"): currency = "GBp" if ticker in ("CPXJ.L","EMVL.L","IWVL.L","ACWI.L","XBLC.L") else "GBP"
-                    elif ticker.endswith(".PA"): currency = "EUR"
-                    elif "BTC" in ticker or "ETH" in ticker: currency = "EUR"
-                    elif "GC=F" == ticker: currency = "USD"
-                    else: currency = "EUR"
 
                     price_eur = to_eur(price, currency, gbp_eur, usd_eur, isin)
                     prev_eur = to_eur(prev, currency, gbp_eur, usd_eur, isin)
