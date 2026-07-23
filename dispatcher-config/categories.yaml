@@ -773,7 +773,8 @@ categories:
 branchen_regeln:
 - beschreibung: 'Handwerker, Bausanierung, Abwasser, Kläranlage, Heizung, Elektrik,
     Sanitär, Dachdecker, Maurer, Gartenbau, Asbest-/Schadstoffsanierung (IT: Ecologia,
-    Bonifica, Fognaria, Servizi Ecologici, Manutenzione edile) — Leistung ist Wartung/Reparatur/
+    Bonifica, Fognaria, Servizi Ecologici, Manutenzione edile, Caldaia, Termico, Riscaldamento)
+    — Leistung ist Wartung/Reparatur/
     Sanierung an einem Gebäude oder Grundstück.
 
     '
@@ -793,6 +794,11 @@ branchen_regeln:
   - Servizi Ecologici
   - Bausanierung
   - Abwasser
+  - Caldaia
+  - Termico
+  - Riscaldamento
+  - Termoidraulico
+  - Idraulico
   category_id: immobilien
   hinweis: 'Gilt für alle Immobilien-Dokumente (eigen und vermietet).
 
@@ -1044,11 +1050,14 @@ keyword_rules:
   - Tierarzt
   - Tierklinik
   - Veterinär
-  - Veterinaria
-  - Clinica Veterinaria
   - Tierheilpraktiker
   category_id: familie
-  beschreibung: Tierarzt / Tierklinik
+  beschreibung: Tierarzt / Tierklinik (DE)
+- keywords:
+  - Veterinaria
+  category_id: familie
+  alle_keywords: true
+  beschreibung: Veterinaria / Clinica (IT) — AND-Regel schlaegt Absender-Hint
 - keywords:
   - Polizia Stradale
   - POLIZIA DI STATO
@@ -1305,6 +1314,18 @@ keyword_rules:
   alle_keywords: true
   category_id: immobilien
   beschreibung: Notarkosten / Notar-Rechnung
+- keywords:
+  - 'Caldaia '
+  - 'Manutenzione Caldaia'
+  - 'Gruppo Termico'
+  - 'Manutenzione termica'
+  - 'Termoidraulico'
+  - 'verifica periodica'
+  - 'ripristino funzionalità'
+  - 'libretto caldaia'
+  - 'Manut. annuale gruppo termico'
+  category_id: immobilien
+  beschreibung: 'IT: Heizungswartung (Caldaia, Termoidraulico, Gruppo Termico)'
 - keywords:
   - FALKE KGaA
   category_id: finanzen

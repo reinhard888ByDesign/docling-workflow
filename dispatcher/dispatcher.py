@@ -15438,6 +15438,17 @@ def apply_overrides(result: dict, md_content: str, categories: dict,
             r["category_label"] = categories[abm["kategorie_hint"]].get("label")
             if abm.get("typ_hint"):
                 r["type_id"] = abm["typ_hint"]
+                valid_typs = {t["id"]: t.get("label") for t in categories[abm["kategorie_hint"]].get("types", [])}
+                if abm["typ_hint"] in valid_typs:
+                    r["type_label"] = valid_typs[abm["typ_hint"]]
+                else:
+                    r["type_label"] = None
+            else:
+                r["type_id"] = None
+                r["type_label"] = None
+            # Kategorie-Wechsel → LLM-Textfelder verwerfen
+            r["summary_de"] = None
+            r["beschreibung"] = None
     _add(7,"category_id",b7,r.get("category_id"),"Absender-Hint" if (abm and abm.get("kategorie_hint")) else "-")
     
     # 8: Dokumenttyp-Hint (schwächster Override)
@@ -15660,6 +15671,10 @@ def _build_frontmatter(result: dict, pdf_filename: str, category_id: str, type_i
     adressat    = r.get("adressat") or ""
     kategorie   = r.get("category_label") or category_id or ""
     typ_label   = r.get("type_label") or type_id or ""
+    # Safety-Net: type_label ohne type_id ist verdächtig (kann von alter Kategorie stammen).
+    # Wenn type_id nicht gesetzt ist, nur verwenden falls type_label dem type_id-Parameter entspricht.
+    if r.get("type_label") and not r.get("type_id") and type_id:
+        typ_label = type_id
     thema       = f"{absender} {typ_label}".strip() if absender or typ_label else ""
     betrag      = r.get("rechnungsbetrag") or ""
     faellig     = r.get("faelligkeitsdatum") or ""
@@ -15812,12 +15827,13 @@ def _write_vault_md(pdf_dest: Path, dest_md: Path, vault_pfad: str,
         frontmatter = _build_frontmatter(result or {}, pdf_filename, category_id, type_id)
         pdf_link_line = f"📎 [[Anlagen/{pdf_filename}]]\n\n"
 
-        # Wilson-Summary (Deutsch) aus Sidecar v3.0
+        # Summary (Deutsch) — aus Wilson-Sidecar (Bypass) oder Dispatchers eigenem LLM
         summary_de = (result or {}).get("summary_de", "")
         summary_block = ""
         if summary_de:
+            source_label = "Wilson" if (result or {}).get("_wilson_bypass") else "LLM"
             summary_block = (
-                f"> **Wilson-Zusammenfassung (DE):** {summary_de}\n\n"
+                f"> **{source_label}-Zusammenfassung (DE):** {summary_de}\n\n"
                 f"---\n\n"
             )
 
@@ -15889,15 +15905,16 @@ def pre_filter_classification(
 ) -> dict | None:
     """Deterministischer Pre-Filter VOR dem LLM-Call.
 
-    Checkt in dieser Reihenfolge:
-    1. KFZ-Kennzeichen im Absender → fahrzeuge
-    2. Absender kategorie_hint aus absender.yaml
-    3. Keyword-Rules aus categories.yaml
-    4. Dokumenttyp kategorie_hint aus doc_types.yaml
+    Checkt alle Indikatoren und waehlt den spezifischsten:
+    1. KFZ-Kennzeichen → fahrzeuge (hoechste Prioritaet)
+    2. Absender-Hint vs. Keyword-Rule: die spezifischere Regel gewinnt
+       - AND-Keyword-Rule schlaegt Absender-Hint (ist spezifischer)
+       - Absender-Hint schlaegt OR-Keyword-Rule (ist verlaesslicher)
+    3. Dokumenttyp kategorie_hint (schwaechster Indikator)
 
     Returns dict mit category_id, type_id, source, confidence oder None.
     """
-    # 1. KFZ-Kennzeichen-Check (stärkster Indikator für fahrzeuge)
+    # 1. KFZ-Kennzeichen-Check (staerkster Indikator fuer fahrzeuge)
     if identifiers and identifiers.get("kfz_kennzeichen"):
         if "fahrzeuge" in categories:
             return {
@@ -15907,18 +15924,19 @@ def pre_filter_classification(
                 "confidence": "hoch",
             }
 
-    # 2. Absender kategorie_hint (harte Zuordnung aus absender.yaml)
+    # 2. Absender-Hint + Keyword-Rules parallel pruefen
+    absender_hint = None
     if absender_match and absender_match.get("kategorie_hint"):
         hint_cat = absender_match["kategorie_hint"]
         if hint_cat in categories:
-            return {
+            absender_hint = {
                 "category_id": hint_cat,
                 "type_id": absender_match.get("typ_hint"),
                 "source": f"absender:{absender_match.get('id', '?')}",
                 "confidence": "hoch",
             }
 
-    # 3. Keyword-Rules (spezifischste gewinnt)
+    # Keyword-Rules (spezifischste gewinnt)
     text_lower = text.lower()
     best_rule = None
     best_score = (0, 0, False)  # (matched, total, alle_keywords)
@@ -15934,14 +15952,39 @@ def pre_filter_classification(
             best_score = score
             best_rule = rule
 
+    kw_result = None
     if best_rule:
-        return {
+        kw_result = {
             "category_id": best_rule.get("category_id"),
             "type_id": best_rule.get("type_id"),
             "source": f"keyword_rule:{best_rule.get('beschreibung', best_rule.get('category_id'))}",
             "confidence": "hoch" if best_score[2] else "mittel",
             "match_detail": f"matched={best_score[0]}/{best_score[1]}, alle={best_score[2]}",
+            "is_and": best_score[2],  # AND-Regel = alle Keywords mussten matchen
         }
+
+    # Entscheidung: Absender vs. Keyword
+    # - AND-Keyword (alle Keywords gematcht) schlaegt Absender-Hint
+    # - Absender-Hint schlaegt OR-Keyword (nur teilweise gematcht)
+    # - Bei gleicher Kategorie: Keyword praezisiert den Typ
+    if kw_result and absender_hint:
+        if kw_result.get("is_and"):
+            # AND-Regel ist spezifischer → Keyword gewinnt
+            return kw_result
+        elif kw_result["category_id"] == absender_hint["category_id"]:
+            # Gleiche Kategorie → Keyword fuer Typ-Details nutzen
+            merged = dict(absender_hint)
+            if kw_result.get("type_id"):
+                merged["type_id"] = kw_result["type_id"]
+            merged["source"] = f"{absender_hint['source']}+{kw_result['source']}"
+            return merged
+        else:
+            # OR-Keyword, unterschiedliche Kategorie → Absender gewinnt
+            return absender_hint
+    elif absender_hint:
+        return absender_hint
+    elif kw_result:
+        return kw_result
 
     # 4. Dokumenttyp kategorie_hint (schwächster Indikator)
     if doc_type_info and doc_type_info.get("kategorie_hint"):
@@ -15998,6 +16041,14 @@ def apply_keyword_rules(result: dict, text: str, categories: dict) -> dict:
             if t.get("id") == type_id:
                 result["type_label"] = t.get("label", type_id)
                 break
+    else:
+        result["type_label"] = None  # alten type_label der falschen Kategorie verwerfen
+    # Kategorie wurde durch Keyword-Rule geändert → LLM-generierte Felder
+    # (summary_de, beschreibung) basieren auf der falschen Kategorie und werden gelöscht.
+    if old_cat != cat_id:
+        result["summary_de"] = None
+        result["beschreibung"] = None
+        log.info(f"Keyword-Rule: stale Felder (summary_de, beschreibung) gelöscht (Kategorie-Wechsel {old_cat} → {cat_id})")
     result["konfidenz_category"] = "hoch"
     result["konfidenz_keyword"] = "hoch"
     log.info(
@@ -16789,10 +16840,35 @@ def process_file(file_path: Path):
                 encoding="utf-8",
             )
 
-            # Keyword-Rules auf Bypass-Text (beschreibung + Dateiname) anwenden.
+            # B8 Pre-Filter + Keyword-Rules auf Bypass-Text anwenden.
             # Fängt Fälle ab, wo Wilson-LLM die Kategorie falsch bestimmt hat
-            # (z.B. Scanner-OCR mit ß→B-Fehlern, die im Sidecar-Text noch erkennbar sind).
+            # (z.B. "CLINICA VETERINARIA" im Sidecar → Tierarzt, nicht HUK-Coburg).
             _bypass_text = f"{beschreibung} {force_stem} {absender}"
+            _pre_filter = pre_filter_classification(
+                _bypass_text, categories,
+                identifiers=None, absender_match=None, doc_type_info=None,
+            )
+            if _pre_filter and _pre_filter.get("category_id") != kategorie_id:
+                old_kat = kategorie_id
+                kategorie_id = _pre_filter["category_id"]
+                category_label = categories.get(kategorie_id, {}).get("label", kategorie_id)
+                result_bypass["category_id"]    = kategorie_id
+                result_bypass["category_label"] = category_label
+                if _pre_filter.get("type_id"):
+                    result_bypass["type_id"]    = _pre_filter["type_id"]
+                    result_bypass["type_label"] = categories.get(kategorie_id, {}).get("types", [{}])[0].get("label", "") if categories else ""
+                else:
+                    result_bypass["type_id"]    = None
+                    result_bypass["type_label"] = None
+                # Kategorie von Wilson wurde überschrieben → Wilsons summary_de verwerfen
+                result_bypass["summary_de"]   = None
+                result_bypass["beschreibung"] = None
+                result_bypass["konfidenz_category"] = "hoch"
+                log.info(
+                    f"Bypass Pre-Filter Override: {old_kat} → {kategorie_id}"
+                    f" (source={_pre_filter['source']}, confidence={_pre_filter['confidence']})"
+                )
+            # Zusätzlich: Keyword-Rules (Safety-Net, greift bei niedriger Pre-Filter-Confidence)
             _kw_result = apply_keyword_rules(dict(result_bypass), _bypass_text, categories)
             if _kw_result.get("category_id") != kategorie_id:
                 old_kat = kategorie_id
@@ -16800,6 +16876,10 @@ def process_file(file_path: Path):
                 category_label = categories.get(kategorie_id, {}).get("label", kategorie_id)
                 result_bypass["category_id"]    = kategorie_id
                 result_bypass["category_label"] = category_label
+                result_bypass["type_id"]        = _kw_result.get("type_id")
+                result_bypass["type_label"]     = _kw_result.get("type_label")
+                result_bypass["summary_de"]     = _kw_result.get("summary_de")
+                result_bypass["beschreibung"]   = _kw_result.get("beschreibung")
                 log.info(f"Bypass Keyword-Override: {old_kat} → {kategorie_id} ({file_path.name})")
 
             # Normalisiere Kategorie-ID (Wilson→Ryzen)
@@ -17229,6 +17309,7 @@ def process_file(file_path: Path):
                 f"— Typ auf null zurückgesetzt (bleibt in Kategorie-Wurzel)"
             )
             result["type_id"] = None
+            result["type_label"] = None  # type_label ist jetzt auch ungültig
             if result.get("konfidenz") == "hoch":
                 result["konfidenz"] = "mittel"
 
@@ -17251,6 +17332,9 @@ def process_file(file_path: Path):
             else:
                 result["type_id"] = None
                 result["type_label"] = None
+            # Kategorie-Wechsel → LLM-generierte Textfelder verwerfen (basieren auf falscher Kategorie)
+            result["summary_de"] = None
+            result["beschreibung"] = None
             if result.get("konfidenz") == "hoch":
                 result["konfidenz"] = "mittel"
 
